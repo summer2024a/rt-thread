@@ -390,12 +390,16 @@ rt_uint16_t _aspace_get_asid(rt_aspace_t aspace)
         if (_asid_pool && _asid_pool < MAX_ASID)
         {
             asid_to = ++_asid_pool;
+#ifdef RT_USING_SMART
             LOG_D("Allocated ASID %d to PID %d(aspace %p)", asid_to, lwp_self()->pid, aspace);
+#endif
         }
         else
         {
             asid_to = _asid_pool = 1;
+#ifdef RT_USING_SMART
             LOG_D("Overflowed ASID %d to PID %d(aspace %p)", asid_to, lwp_self()->pid, aspace);
+#endif
         }
 
         rt_spin_unlock(&_asid_lock);
@@ -508,10 +512,14 @@ void rt_hw_mmu_setup(rt_aspace_t aspace, struct mem_desc *mdesc, int desc_nr)
             RT_ASSERT(0);
         }
         mdesc++;
+        LOG_D("%s: rt_aspace_map_phy_static_a", __func__);
     }
 
+    LOG_D("%s: rt_hw_mmu_ktbl_set_b  page_tabl 0x%p", __func__, rt_kernel_space.page_table);
     rt_hw_mmu_ktbl_set((unsigned long)rt_kernel_space.page_table);
+    LOG_D("%s: rt_hw_mmu_ktbl_set_a", __func__);
     rt_page_cleanup();
+    LOG_D("%s: rt_page_cleanup_a", __func__);
 }
 
 static void _init_region(void *vaddr, size_t size)
@@ -553,6 +561,8 @@ int rt_hw_mmu_map_init(rt_aspace_t aspace, void *v_address, size_t size,
 
     va_s >>= ARCH_SECTION_SHIFT;
     va_e >>= ARCH_SECTION_SHIFT;
+
+    LOG_D("va_s(%p) va_e(%p)", va_s, va_e);
 
     if (va_s == 0)
     {

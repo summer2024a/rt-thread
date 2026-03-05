@@ -161,8 +161,12 @@ static int _do_named_map(rt_aspace_t aspace, rt_varea_t varea, void *vaddr,
         err = -RT_ERROR;
     }
 
+    LOG_D("%s: rt_hw_mmu_map_a %p", __func__, ret);
+
     if (err == RT_EOK)
         rt_hw_tlb_invalidate_range(aspace, vaddr, length, ARCH_PAGE_SIZE);
+
+    LOG_D("%s: rt_hw_tlb_invalidate_range_a %d", __func__, err);
 
     return err;
 }
@@ -801,6 +805,8 @@ int _mm_aspace_map_phy(rt_aspace_t aspace, rt_varea_t varea,
         else
             *ret_va = RT_NULL;
     }
+
+    LOG_D("%s: _mm_aspace_map_phy finish %d", __func__, err);
 
     return err;
 }

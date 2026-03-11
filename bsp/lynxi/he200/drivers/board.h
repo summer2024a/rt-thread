@@ -26,8 +26,8 @@ extern int __bss_end;
 #else
 
 #define MEM_PADDR_START 0x800000000
-#define MEM_NOCACHE_SZ  0x40000000
-#define MEM_CACHE_SZ    0x40000000
+#define MEM_NOCACHE_SZ  0x100000000
+#define MEM_CACHE_SZ    0x100000000
 
 #ifndef RT_USING_SMART
 #define KERNEL_VADDR_START 0

@@ -13,26 +13,30 @@
 #define DBG_TAG "board"
 #define DBG_LVL DBG_INFO
 #include <rtdbg.h>
-
+#include <smp_call.h>
 #include <rthw.h>
 #include <rtthread.h>
 #include <mm_aspace.h>
+#include <cpuport.h>
 
 #include "board.h"
 #include "drv_uart.h"
 
 #include "cp15.h"
-#include "mmu.h"
+#include <mmu.h>
+#include <cpuport.h>
+#include <interrupt.h>
 #include <mm_page.h>
+#include <gic.h>
+#include <gicv3.h>
+#include <gtimer.h>
 
 #ifdef RT_USING_SMART
 #include <lwp_arch.h>
 #endif
 
-#define MEM_DESC(vaddr_start, size, paddr_start, attr) \
-    vaddr_start, (vaddr_start + size - 1uL), paddr_start, attr
-
 extern size_t MMUTable[];
+extern void *system_vectors;
 
 size_t gpio_base_addr = GPIO_BASE_ADDR;
 
@@ -65,9 +69,18 @@ struct mem_desc platform_mem_desc[] = {
 // };
 
 struct mem_desc platform_mem_desc[] = {
-    {INTC_BASE, INTC_BASE + 0x200000 - 1, INTC_BASE, DEVICE_MEM},
-    {0x10006000, 0x10007FFF, 0x10006000, DEVICE_MEM}, /* uart0,1 */
-    {0x000800000000ULL, 0x00082FFFFFFFULL, 0x000800000000ULL, NORMAL_MEM},
+    /* IRAM  */
+    {0x04000000UL, 0x040FFFFFUL, 0x04000000UL, NORMAL_MEM},
+    /*CPU_SUB_SLV + PERIPH_SLV + SYS_CTRL_SLV + DDR_CFG_SLV + \
+            VPU_CFG_SLV + V52_CFG_SLV + PCIE_DBI_SLV + PCIE_X2_SLV 224MB*/
+    {0x08000000UL, 0x08000000UL + 0x14000000UL - 1, 0x08000000UL, DEVICE_MEM},
+    // {INTC_BASE, INTC_BASE + 0x200000 - 1, INTC_BASE, DEVICE_MEM},
+    // {0x10006000, 0x10007FFF, 0x10006000, DEVICE_MEM}, /* uart0,1 */
+    // {0x000800000000ULL, 0x00082FFFFFFFULL, 0x000800000000ULL, NORMAL_MEM},
+    /* 0x000800000000 ~ 0x0008FFFFFFFF is for cacheable memory */
+    {MEM_PADDR_START, MEM_PADDR_START+MEM_CACHE_SZ - 1, MEM_PADDR_START, NORMAL_MEM},
+    /* 0x000900000000 ~ 0x0009FFFFFFFF is for cacheable memory */
+    {MEM_PADDR_START+MEM_CACHE_SZ, MEM_PADDR_START+MEM_CACHE_SZ+MEM_NOCACHE_SZ - 1, MEM_PADDR_START+MEM_CACHE_SZ, NORMAL_NOCACHE_MEM},
 };
 
 #endif
@@ -75,7 +88,18 @@ struct mem_desc platform_mem_desc[] = {
 #ifdef BSP_USING_GICV3
 rt_uint64_t rt_cpu_mpidr_table[] =
 {
+#if RT_CPUS_NR > 1
+    [0] = 0x0UL, /* CPU0 */
+    [1] = 0x1UL, /* CPU1 */
+    [2] = 0x2UL, /* CPU2 */
+    [3] = 0x3UL, /* CPU3 */
+    [4] = 0x100UL, /* CPU4 */
+    [5] = 0x101UL, /* CPU5 */
+    [6] = 0x102UL, /* CPU6 */
+    [7] = 0x103UL, /* CPU7 */
+#else
     [RT_CPUS_NR] = 0,
+#endif
 };
 #endif
 
@@ -86,12 +110,16 @@ void idle_wfi(void)
     asm volatile ("wfi");
 }
 
+static void system_vectors_init(void)
+{
+    rt_hw_set_current_vbar((rt_ubase_t)&system_vectors);
+}
+
 /**
  * This function will initialize board
  */
 
 extern size_t MMUTable[];
-int rt_hw_gtimer_init(void);
 
 rt_region_t init_page_region = {
     PAGE_START,
@@ -110,14 +138,13 @@ void rt_hw_board_init(void)
 #ifdef RT_USING_SMART
     rt_hw_mmu_map_init(&rt_kernel_space, (void*)0xfffffffff0000000, 0x10000000, MMUTable, PV_OFFSET);
 #else
-    rt_hw_mmu_map_init(&rt_kernel_space, (void*)0x080000000000ULL, 0x40000000ULL, MMUTable, 0);
+    rt_hw_mmu_map_init(&rt_kernel_space, (void*)0x080000000000ULL, 0x400000000ULL, MMUTable, 0);
 #endif /* RT_USING_SMART */
 
     LOG_D("1rt_kernel_space [%p : %p]\n", rt_kernel_space.start, rt_kernel_space.size);
     rt_page_init(init_page_region);
     LOG_D("2rt_kernel_space [%p : %p]\n", rt_kernel_space.start, rt_kernel_space.size);
     rt_hw_mmu_setup(&rt_kernel_space, platform_mem_desc, platform_mem_desc_size);
-    // rt_hw_ioremap_after_mmu();
     LOG_D("-->rt_hw_mmu_setup ok");
     /* map peripheral address to virtual address */
 #ifdef RT_USING_HEAP
@@ -146,6 +173,17 @@ void rt_hw_board_init(void)
     rt_components_board_init();
 #endif
     rt_thread_idle_sethook(idle_wfi);
+
+#ifdef RT_USING_SMP
+    rt_smp_call_init();
+    /* Install the IPI handle */
+    rt_hw_ipi_handler_install(RT_SCHEDULE_IPI, rt_scheduler_ipi_handler);
+    rt_hw_ipi_handler_install(RT_STOP_IPI, rt_scheduler_ipi_handler);
+    rt_hw_ipi_handler_install(RT_SMP_CALL_IPI, rt_smp_call_ipi_handler);
+    rt_hw_interrupt_umask(RT_SCHEDULE_IPI);
+    rt_hw_interrupt_umask(RT_STOP_IPI);
+    rt_hw_interrupt_umask(RT_SMP_CALL_IPI);
+#endif
 }
 
 #ifdef RT_USING_SMP
@@ -156,48 +194,98 @@ void _secondary_cpu_entry(void);
 
 static unsigned long cpu_release_paddr[] =
 {
-    [0] = 0xd8,
-    [1] = 0xe0,
-    [2] = 0xe8,
-    [3] = 0xf0,
-    [4] = 0x00
+    [0] = 0x401ff00,
+    [1] = 0x401ff00,
+    [2] = 0x401ff08,
+    [3] = 0x401ff10,
+    [4] = 0x401ff18,
+    [5] = 0x401ff20,
+    [6] = 0x401ff28,
+    [7] = 0x401ff30,
 };
 
 void rt_hw_secondary_cpu_up(void)
 {
     int i;
     void *release_addr;
+    rt_uint64_t entry = (rt_uint64_t)rt_kmem_v2p(_secondary_cpu_entry);
 
     for (i = 1; i < RT_CPUS_NR && cpu_release_paddr[i]; ++i)
     {
+#ifdef RT_USING_SMART
         release_addr = rt_ioremap((void *)cpu_release_paddr[i], sizeof(cpu_release_paddr[0]));
-        __asm__ volatile ("str %0, [%1]"::"rZ"((unsigned long)_secondary_cpu_entry + PV_OFFSET), "r"(release_addr));
+#else
+        release_addr = (void *)cpu_release_paddr[i];
+#endif
+        __asm__ volatile ("str %0, [%1]"::"rZ"(entry), "r"(release_addr));
+        LOG_D("release_addr[%d]: %p, 0x%llx, PV_OFFSET: 0x%llx", i, release_addr, *(unsigned long *)release_addr);
         rt_hw_cpu_dcache_ops(RT_HW_CACHE_FLUSH, release_addr, sizeof(release_addr));
-        asm volatile ("dsb sy");
-        asm volatile ("sev");
+        rt_hw_barrier(dsb, sy);
+        rt_hw_sev();
     }
+#ifdef RT_USING_SMART
+    rt_iounmap(release_addr);
+#endif
 }
 
 void rt_hw_secondary_cpu_bsp_start(void)
 {
+    int cpu_id = rt_hw_cpu_id();
+
+    rt_kprintf("\r\n", cpu_id);
+    LOG_D("cpu %d start", cpu_id);
+
+    system_vectors_init();
+    LOG_D("system_vectors_init ok\n");
+
     rt_hw_spin_lock(&_cpus_lock);
+
+    /* Save all mpidr */
+    rt_hw_sysreg_read(mpidr_el1, rt_cpu_mpidr_table[cpu_id]);
 
     rt_hw_mmu_ktbl_set((unsigned long)MMUTable);
 
+#ifdef RT_USING_PIC
+    rt_pic_irq_init();
+#else
+
+    /* initialize vector table */
     rt_hw_vector_init();
+    LOG_D("rt_hw_vector_init ok\n");
 
+    // arm_gic_cpu_init(0, platform_get_gic_cpu_base());
     arm_gic_cpu_init(0, 0);
+    LOG_D("arm_gic_cpu_init ok\n");
+#ifdef BSP_USING_GICV3
+    // arm_gic_redist_init(0, platform_get_gic_redist_base());
+    arm_gic_redist_init(0, 0);
+#endif /* BSP_USING_GICV3 */
+#endif
 
-    rt_hw_gtimer_init();
+#ifndef RT_CLOCK_TIME_ARM_ARCH
+    /* initialize timer for os tick */
+    rt_hw_gtimer_local_enable();
+#endif /* !RT_CLOCK_TIME_ARM_ARCH */
 
-    rt_kprintf("\rcpu %d boot success\n", rt_hw_cpu_id());
+    rt_hw_interrupt_umask(RT_SCHEDULE_IPI);
+    rt_hw_interrupt_umask(RT_STOP_IPI);
+    rt_hw_interrupt_umask(RT_SMP_CALL_IPI);
+
+    LOG_I("Call cpu %d on %s", cpu_id, "success");
+
+#if defined(RT_USING_CLOCK_TIME) && defined(RT_USING_DM)
+    if (rt_clock_timer_us_delay == &cpu_us_delay)
+    {
+        cpu_loops_per_tick_init();
+    }
+#endif
 
     rt_system_scheduler_start();
 }
 
 void rt_hw_secondary_cpu_idle_exec(void)
 {
-    asm volatile ("wfe":::"memory", "cc");
+    rt_hw_wfe();
 }
 
 #endif

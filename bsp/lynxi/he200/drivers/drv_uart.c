@@ -162,11 +162,6 @@ void rt_hw_earlycon_ioremap_early(void)
     uart_init((rt_ubase_t)earlycon_base, 115200);
 }
 
-void rt_hw_ioremap_after_mmu(void)
-{
-    earlycon_base = rt_ioremap((void*)UART0_BASE, 0x1000);
-}
-
 void rt_hw_console_output(const char *str)
 {
     if (earlycon_base)

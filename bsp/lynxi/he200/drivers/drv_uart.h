@@ -82,6 +82,5 @@
 
 int rt_hw_uart_init(void);
 void rt_hw_earlycon_ioremap_early(void);
-void rt_hw_ioremap_after_mmu(void);
 
 #endif /* DRV_UART_H__ */

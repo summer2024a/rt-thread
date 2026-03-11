@@ -434,7 +434,7 @@ int list_isr()
     {
         if (isr_table[idx].handler != RT_NULL)
         {
-            rt_kprintf("%*.s %4d %p %p %16d", RT_NAME_MAX, isr_table[idx].name, idx, isr_table[idx].handler,
+            rt_kprintf("%-*s %4d %p %p %16d", RT_NAME_MAX, isr_table[idx].name, idx, isr_table[idx].handler,
                        isr_table[idx].param, isr_table[idx].counter);
 #ifdef RT_USING_SMP
             for (int i = 0; i < RT_CPUS_NR; i++)

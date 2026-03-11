@@ -49,3 +49,14 @@ msh />
 /data/biao.xia/rt-thread/bsp/thead-smart/drivers/ck_usart.c
 /data/biao.xia/rt-thread/bsp/cvitek/drivers/drv_uart.c
 ```
+
+## 5. 问题与解决
+1. mmu初始化失败
+
+2. 串口无法输入数据
+
+3. gic初始化失败
+
+4. 多核启动失败
+
+5. 中断0只有0~3核存在，4~7核无中断产生

@@ -213,6 +213,14 @@ init_cpu_el:
     msr     cnthctl_el2, x0
     msr     cntvoff_el2, xzr
 
+#ifdef BSP_USING_GICV3
+	mrs 	x0, S3_4_C12_C9_5
+	orr	    x0, x0, #(1 << 0)	    /* Set ICC_SRE_EL2.SRE==1 */
+	orr	    x0, x0, #(1 << 3)	    /* Set ICC_SRE_EL2.Enable==1 */
+	msr 	S3_4_C12_C9_5, x0
+	isb					        /*  Make sure SRE is now set */
+#endif /* BSP_USING_GICV3 */
+
     mov     x0, #(1 << 31)          /* Enable AArch64 in EL1 */
     orr     x0, x0, #(1 << 1)       /* SWIO hardwired */
     msr     hcr_el2, x0

@@ -823,18 +823,21 @@ void netdev_set_if(char *netdev_name, char *ip_addr, char *gw_addr, char *nm_add
     if ((ip_addr != RT_NULL) && inet_aton(ip_addr, &addr))
     {
         netdev_set_ipaddr(netdev, &addr);
+        rt_kprintf("set network interface device(%s) IP address: %s\n", netdev_name, ip_addr);
     }
 
     /* set gateway address */
     if ((gw_addr != RT_NULL) && inet_aton(gw_addr, &addr))
     {
         netdev_set_gw(netdev, &addr);
+        rt_kprintf("set network interface device(%s) gateway address: %s\n", netdev_name, gw_addr);
     }
 
     /* set netmask address */
     if ((nm_addr != RT_NULL) && inet_aton(nm_addr, &addr))
     {
         netdev_set_netmask(netdev, &addr);
+        rt_kprintf("set network interface device(%s) netmask address: %s\n", netdev_name, nm_addr);
     }
 }
 
@@ -1293,6 +1296,7 @@ int netdev_ifconfig(int argc, char **argv)
         rt_kprintf("Gateway: %s\n", argv[3]);
         rt_kprintf("netmask: %s\n", argv[4]);
         netdev_set_if(argv[1], argv[2], argv[3], argv[4]);
+        rt_kprintf("success\n");
     }
     else
     {

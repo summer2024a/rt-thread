@@ -15,6 +15,16 @@
 
 int mnt_init(void)
 {
+#ifdef PKG_USING_LWEXT4
+    /* delay 1s */
+    rt_thread_delay(RT_TICK_PER_SECOND);
+    if (dfs_mount("emmc7", "/", "ext", 0, 0) == 0)
+    {
+        rt_kprintf("file system initialization done!\n");
+    } else {
+        rt_kprintf("Fail file system mount, errno=%d\n", rt_get_errno());
+    }
+#else
     rt_thread_delay(RT_TICK_PER_SECOND/100);
     if (dfs_mount("sd1", "/", "ext", 0, 0) == 0)
     {
@@ -24,6 +34,7 @@ int mnt_init(void)
     {
         rt_kprintf("file system initialization done!\n");
     }
+#endif
 
 #ifdef RT_USING_DFS_ROMFS
     mkdir("/rom", 0777);

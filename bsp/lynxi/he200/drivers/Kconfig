@@ -23,19 +23,64 @@ menu "Hardware Drivers Config"
                 bool "Enable UART 1"
                 default n
             endif
-            
+
+        menuconfig BSP_USING_SDIO
+            bool "Enable SDIO"
+            select RT_USING_SDIO
+            default y
+
+            if BSP_USING_SDIO
+
+                choice BSP_SDIO_DEV
+                    prompt "Select SDIO device"
+                    default BSP_USING_SDIO0
+                    help
+                        Select the SDIO device to be used.
+
+                    config BSP_USING_SDIO0
+                        bool "Enable SDIO0"
+
+                        if BSP_USING_SDIO0
+                            config BSP_SDIO0_EMMC
+                            bool "Enable eMMC"
+                            default n
+
+                            config BSP_SDIO0_1V8
+                            bool "Enable 1.8V"
+                            default n
+                        endif
+
+                    config BSP_USING_SDIO1
+                        bool "Enable SDIO1"
+                endchoice
+
+                config BSP_SD_MNT_DEVNAME
+                    string "The name of the SD-BlkDev to be mounted"
+                    default "sd0p1"
+                        config BSP_USING_PIN
+
+                config RT_MMCSD_DBG
+                    bool "Enable SDIO debug"
+                    default n
+            endif
+
         menuconfig BSP_USING_GIC
             bool "Enable GIC"
             select RT_USING_GIC
             default y
-        if BSP_USING_GIC
-            config BSP_USING_GICV2
-                bool "Enable GIC400(GICV2)"
-                default y
-            config BSP_USING_GICV3
-                bool "Enable GIC500(GICV3)"
-                default n
-        endif
+
+            if BSP_USING_GIC
+                choice
+                    prompt "GIC Version"
+                    default BSP_USING_GICV3
+
+                    config BSP_USING_GICV2
+                        bool "Enable GIC400(GICV2)"
+
+                    config BSP_USING_GICV3
+                        bool "Enable GIC500(GICV3)"
+                endchoice
+            endif
 
         config KERNEL_ASPACE_START
             hex "Kernel aspace start address"
@@ -45,6 +90,27 @@ menu "Hardware Drivers Config"
             bool "Using PIN"
             select RT_USING_PIN
             default y
+
+        config BSP_USING_CLK
+            bool "Enable Clock Controller(CLK)"
+            default n
+
+        menuconfig BSP_USING_PCIE
+            bool "Enable PCIE"
+            default n
+
+            if BSP_USING_PCIE
+                choice
+                    prompt "PCIE MODE"
+                    default BSP_USING_PCIE_EP
+
+                    config BSP_USING_PCIE_EP
+                        bool "PCIE EP"
+
+                    config BSP_USING_PCIE_RC
+                        bool "PCIE RC"
+                endchoice
+            endif
 
         config BSP_USING_CORETIMER
             bool "Using core timer"
@@ -61,6 +127,14 @@ menu "Hardware Drivers Config"
                 default n
             config RT_USING_SYSTIMER3
                 bool "Enable sys timer3"
+                default n
+        endif
+
+        if PKG_USING_RPMSG_LITE
+            config BSP_USING_RPMSG_NET
+                bool "Using RPMSG-NET"
+                select RT_USING_LWIP
+                select RT_USING_MUTEX
                 default n
         endif
     endmenu

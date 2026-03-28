@@ -24,11 +24,13 @@
 //gpio offset
 #define GPIO_BASE_OFFSET            (0x1000E000)
 
-
+//uart offset
 #define APB_UART_BASE_OFFSET      (0x10006000)
-//pl011 offset
 #define APB_UART0_BASE_OFFSET     (0x10006000)
 #define APB_UART1_BASE_OFFSET     (0x10007000)
+
+//sdio offset
+#define SDIO_BASE_OFFSET            (0x10040000)
 
 /* GPIO */
 #define GPIO_BASE_ADDR              (PER_BASE + GPIO_BASE_OFFSET)
@@ -54,16 +56,16 @@ extern size_t arm_timer_base;
 #define ARM_TIMER_PREDIV    HWREG32(arm_timer_base + 0x41C)
 #define ARM_TIMER_CNTR      HWREG32(arm_timer_base + 0x420)
 
-/* UART PL011 */
+/* UART */
 #define UART_BASE                   (PER_BASE + APB_UART_BASE_OFFSET)
-//extern uint32_t uart_base_addr;
 #define UART0_BASE                  (UART_BASE + 0x0)
 #define UART1_BASE                  (UART_BASE + 0x1000)
-#define IRQ_AUX_UART                (96 + 29)
 #define UART_REFERENCE_CLOCK        (50000000)
-
 #define IRQ_UART0                   (32 + 25)
 #define IRQ_UART1                   (32 + 26)
+
+/* SDIO */
+#define SDIO_BASE                   (PER_BASE + SDIO_BASE_OFFSET)
 
 // 0x40, 0x44, 0x48, 0x4c: Core 0~3 Timers interrupt control
 #define CORE0_TIMER_IRQ_CTRL        HWREG32(0x08600000)
@@ -109,16 +111,17 @@ extern size_t         wdt_base_addr;
 #define PM_RSTC_RESET               (0x00000102)
 
 //timer
-#define ST_BASE_OFFSET     (0x003000)
+#define CONFIG_TIMER_NUM    4
+#define ST_BASE_OFFSET     (0x10012000)
 #define STIMER_BASE  (PER_BASE  + ST_BASE_OFFSET)
+#define DRV_ERRNO_TIMER_BASE STIMER_BASE
+#define TIMER_IRQ_START    (66)
 extern size_t stimer_base_addr;
-#define STIMER_CS    __REG32(stimer_base_addr + 0x0000)
-#define STIMER_CLO   __REG32(stimer_base_addr + 0x0004)
-#define STIMER_CHI   __REG32(stimer_base_addr + 0x0008)
-#define STIMER_C0    __REG32(stimer_base_addr + 0x000C)
-#define STIMER_C1    __REG32(stimer_base_addr + 0x0010)
-#define STIMER_C2    __REG32(stimer_base_addr + 0x0014)
-#define STIMER_C3    __REG32(stimer_base_addr + 0x0018)
+
+//pcie ep
+#define PCIE_EP_BASE_OFFSET     (0x1a000000)
+#define PCIE_EP_BASE (PER_BASE + PCIE_EP_BASE_OFFSET)
+extern size_t pcie_ep_base_addr;
 
 #define DELAY_MICROS(micros)                            \
     do{                                                 \

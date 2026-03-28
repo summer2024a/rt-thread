@@ -4,11 +4,21 @@ cwd     = GetCurrentDir()
 src     = Glob('*.c') + Glob('*.cpp') + Glob('*.S')
 CPPPATH = [cwd, str(Dir('#'))]
 
-group = DefineGroup('driver', src, depend = [''], CPPPATH = CPPPATH)
+if GetDepend('BSP_USING_SDIO') == False:
+    SrcRemove(src, ['drv_sdhci.c'])
+
+if GetDepend('BSP_USING_CLK'):
+    src += ['clock/drv_clock.c']
+
+if GetDepend('BSP_USING_PCIE'):
+    if GetDepend('BSP_USING_PCIE_EP'):
+        src += ['pcie/ep/drv_pcie.c']
 
 # build for sub-directory
 list = os.listdir(cwd)
 objs = []
+
+group = DefineGroup('driver', src, depend = [''], CPPPATH = CPPPATH)
 
 for d in list:
     path = os.path.join(cwd, d)

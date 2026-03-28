@@ -52,6 +52,8 @@ size_t mmc2_base_addr   = MMC2_BASE_ADDR;
 
 size_t wdt_base_addr = WDT_BASE;
 
+size_t pcie_ep_base_addr = PCIE_EP_BASE;
+
 uint8_t *mac_reg_base_addr = (uint8_t *)MAC_REG;
 
 uint8_t *eth_send_no_cache = (uint8_t *)SEND_DATA_NO_CACHE;
@@ -62,12 +64,6 @@ struct mem_desc platform_mem_desc[] = {
     {KERNEL_VADDR_START, KERNEL_VADDR_START + 0x0fffffff, (rt_size_t)ARCH_MAP_FAILED, NORMAL_MEM}
 };
 #else
-// struct mem_desc platform_mem_desc[] = {
-//     {MEM_PADDR_START, MEM_PADDR_START + MEM_CACHE_SZ - 1, MEM_PADDR_START, NORMAL_MEM},
-//     {MEM_PADDR_START+MEM_CACHE_SZ, MEM_PADDR_START+MEM_CACHE_SZ+MEM_NOCACHE_SZ - 1, MEM_PADDR_START+MEM_CACHE_SZ, NORMAL_MEM},
-//     {MEM_PADDR_START+MEM_CACHE_SZ+MEM_NOCACHE_SZ, MEM_PADDR_START+MEM_CACHE_SZ+MEM_NOCACHE_SZ+0x1BFFFFFF, 0x0, DEVICE_MEM},
-// };
-
 struct mem_desc platform_mem_desc[] = {
     /* IRAM  */
     {0x04000000UL, 0x040FFFFFUL, 0x04000000UL, NORMAL_MEM},

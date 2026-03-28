@@ -17,7 +17,6 @@ config KA200_SOC
     select RT_USING_COMPONENTS_INIT
     select RT_USING_USER_MAIN
     select ARCH_CPU_64BIT
-    select ARCH_ARM_CORTEX_A
     default y
 
 rsource "drivers/Kconfig"

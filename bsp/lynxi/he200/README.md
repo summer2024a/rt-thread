@@ -9,12 +9,14 @@
 
 ```
 宿主机运行以下命令：
+source ~/.env/env.sh
 export RTT_CC_PREFIX=/data/biao.xia/tools/cross-compiler/gcc-arm-10.2-2020.11-x86_64-aarch64-none-elf/bin/aarch64-none-elf-
 scons --clean
 scons --menuconfig
 scons -j8
 
 容器中运行以下命令：
+source ~/.env/env.sh
 export RTT_CC_PREFIX=/work/tools/cross-compiler/gcc-arm-10.2-2020.11-x86_64-aarch64-none-elf/bin/aarch64-none-elf-
 scons --clean
 scons --menuconfig
@@ -41,6 +43,8 @@ msh />
 | 驱动 | 支持情况  |  备注  |
 | ------ | ----  | :------:  |
 | UART | 支持 | UART0|
+| GIC | 支持 | GICV3|
+| SMP | 支持 | 8核启动|
 
 
 ## 4.参考板卡
@@ -48,6 +52,12 @@ msh />
 /data/biao.xia/rt-thread/bsp/ck802/libraries/common/usart/dw_usart.c
 /data/biao.xia/rt-thread/bsp/thead-smart/drivers/ck_usart.c
 /data/biao.xia/rt-thread/bsp/cvitek/drivers/drv_uart.c
+
+/data/biao.xia/rt-thread/bsp/raspberry-pi/raspi-dm2.0/drivers/sdhci/
+/data/biao.xia/rt-thread/bsp/k230/drivers/interdrv/sdio/
+
+驱动参考
+/data/biao.xia/rt-thread/bsp/cvitek/drivers/
 ```
 
 ## 5. 问题与解决
@@ -60,3 +70,6 @@ msh />
 4. 多核启动失败
 
 5. 中断0只有0~3核存在，4~7核无中断产生
+
+6. emmc初始化失败
+1、针对emmc v4的版本，需要设置SDHCI_CLOCK_PLL_EN，具体参考lx_mmc_clock_freq_change接口

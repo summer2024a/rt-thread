@@ -75,7 +75,7 @@
 /* end of klibc options */
 #define RT_NAME_MAX 24
 #define RT_USING_SMP
-#define RT_CPUS_NR 8
+#define RT_CPUS_NR 1
 #define RT_ALIGN_SIZE 8
 #define RT_THREAD_PRIORITY_32
 #define RT_THREAD_PRIORITY_MAX 32
@@ -115,6 +115,7 @@
 #define RT_MEMHEAP_FAST_MODE
 #define RT_USING_SLAB_AS_HEAP
 #define RT_USING_MEMTRACE
+#define RT_USING_HEAP_ISR
 #define RT_USING_HEAP
 /* end of Memory Management */
 #define RT_USING_DEVICE
@@ -140,13 +141,10 @@
 /* end of AArch64 Architecture Configuration */
 #define ARCH_CPU_64BIT
 #define RT_USING_CACHE
-#define RT_USING_HW_ATOMIC
 #define RT_USING_CPU_FFS
 #define ARCH_MM_MMU
 #define ARCH_ARM
 #define ARCH_ARM_MMU
-#define ARCH_ARM_CORTEX_A
-#define RT_NO_USING_GIC
 #define ARCH_ARMV8
 #define ARCH_USING_ASID
 #define ARCH_USING_IRQ_CTX_LIST
@@ -210,11 +208,17 @@
 #define RT_USING_SERIAL
 #define RT_USING_SERIAL_V1
 #define RT_SERIAL_USING_DMA
-#define RT_SERIAL_RB_BUFSZ 64
+#define RT_SERIAL_RB_BUFSZ 256
 #define RT_USING_CLOCK_TIME
 #define RT_USING_NULL
 #define RT_USING_ZERO
 #define RT_USING_RANDOM
+#define RT_USING_SDIO
+#define RT_SDIO_STACK_SIZE 8192
+#define RT_SDIO_THREAD_PRIORITY 15
+#define RT_MMCSD_STACK_SIZE 8192
+#define RT_MMCSD_THREAD_PRIORITY 22
+#define RT_MMCSD_MAX_PARTITION 16
 #define RT_USING_BLK
 
 /* Partition Types */
@@ -259,6 +263,57 @@
 
 /* Network */
 
+#define RT_USING_NETDEV
+#define NETDEV_USING_IFCONFIG
+#define NETDEV_USING_PING
+#define NETDEV_USING_NETSTAT
+#define NETDEV_USING_AUTO_DEFAULT
+#define NETDEV_IPV4 1
+#define NETDEV_IPV6 0
+#define RT_USING_LWIP
+#define RT_USING_LWIP203
+#define RT_USING_LWIP_VER_NUM 0x20003
+#define RT_LWIP_MEM_ALIGNMENT 8
+#define RT_LWIP_IGMP
+#define RT_LWIP_ICMP
+#define RT_LWIP_DNS
+#define RT_LWIP_DHCP
+#define IP_SOF_BROADCAST 1
+#define IP_SOF_BROADCAST_RECV 1
+
+/* Static IPv4 Address */
+
+#define RT_LWIP_IPADDR "192.168.1.30"
+#define RT_LWIP_GWADDR "192.168.1.1"
+#define RT_LWIP_MSKADDR "255.255.255.0"
+/* end of Static IPv4 Address */
+#define RT_LWIP_UDP
+#define RT_LWIP_TCP
+#define RT_LWIP_RAW
+#define RT_MEMP_NUM_NETCONN 8
+#define RT_LWIP_PBUF_NUM 16
+#define RT_LWIP_RAW_PCB_NUM 4
+#define RT_LWIP_UDP_PCB_NUM 4
+#define RT_LWIP_TCP_PCB_NUM 4
+#define RT_LWIP_TCP_SEG_NUM 40
+#define RT_LWIP_TCP_SND_BUF 8196
+#define RT_LWIP_TCP_WND 8196
+#define RT_LWIP_TCPTHREAD_PRIORITY 10
+#define RT_LWIP_TCPTHREAD_MBOX_SIZE 8
+#define RT_LWIP_TCPTHREAD_STACKSIZE 2048
+#define RT_LWIP_ETHTHREAD_PRIORITY 12
+#define RT_LWIP_ETHTHREAD_STACKSIZE 2048
+#define RT_LWIP_ETHTHREAD_MBOX_SIZE 8
+#define LWIP_NETIF_STATUS_CALLBACK 1
+#define LWIP_NETIF_LINK_CALLBACK 1
+#define RT_LWIP_NETIF_NAMESIZE 6
+#define SO_REUSE 1
+#define LWIP_SO_RCVTIMEO 1
+#define LWIP_SO_SNDTIMEO 1
+#define LWIP_SO_RCVBUF 1
+#define LWIP_SO_LINGER 0
+#define LWIP_NETIF_LOOPBACK 0
+#define RT_LWIP_USING_PING
 /* end of Network */
 
 /* Memory protection */
@@ -267,10 +322,29 @@
 
 /* Utilities */
 
-#define RT_USING_UTEST
-#define UTEST_THR_STACK_SIZE 8192
-#define UTEST_THR_PRIORITY 20
-#define RT_UTEST_MAX_OPTIONS 64
+#define RT_USING_ULOG
+#define ULOG_OUTPUT_LVL_D
+#define ULOG_OUTPUT_LVL 7
+#define ULOG_USING_ISR_LOG
+#define ULOG_ASSERT_ENABLE
+#define ULOG_LINE_BUF_SIZE 128
+#define ULOG_USING_ASYNC_OUTPUT
+#define ULOG_ASYNC_OUTPUT_BUF_SIZE 2048
+#define ULOG_ASYNC_OUTPUT_BY_THREAD
+#define ULOG_ASYNC_OUTPUT_THREAD_STACK 8192
+#define ULOG_ASYNC_OUTPUT_THREAD_PRIORITY 10
+
+/* log format */
+
+#define ULOG_OUTPUT_TIME
+#define ULOG_TIME_USING_TIMESTAMP
+#define ULOG_OUTPUT_LEVEL
+#define ULOG_OUTPUT_TAG
+/* end of log format */
+#define ULOG_BACKEND_USING_CONSOLE
+#define ULOG_USING_FILTER
+#define ULOG_USING_FINSH_CMD
+#define ULOG_USING_SYSLOG
 #define RT_USING_RESOURCE_ID
 #define RT_USING_ADT
 #define RT_USING_ADT_AVL
@@ -378,6 +452,11 @@
 /* Micrium: Micrium software products porting for RT-Thread */
 
 /* end of Micrium: Micrium software products porting for RT-Thread */
+#define PKG_USING_LWEXT4
+#define RT_USING_DFS_LWEXT4
+#define PKG_USING_LWEXT4_LATEST_VERSION
+#define PKG_USING_RPMSG_LITE
+#define PKG_USING_RPMSG_LITE_LATEST_VERSION
 /* end of system packages */
 
 /* peripheral libraries and drivers */
@@ -515,10 +594,18 @@
 
 #define BSP_USING_UART
 #define RT_USING_UART0
+#define BSP_USING_SDIO
+#define BSP_USING_SDIO0
+#define BSP_SDIO0_EMMC
+#define BSP_SDIO0_1V8
+#define BSP_SD_MNT_DEVNAME "sd0p1"
 #define BSP_USING_GIC
 #define BSP_USING_GICV3
 #define KERNEL_ASPACE_START 0x1000000
+#define BSP_USING_PCIE
+#define BSP_USING_PCIE_EP
 #define BSP_USING_CORETIMER
+#define BSP_USING_RPMSG_NET
 /* end of BCM Peripheral Drivers */
 /* end of Hardware Drivers Config */
 

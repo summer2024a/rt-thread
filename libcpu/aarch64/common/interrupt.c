@@ -204,12 +204,29 @@ void rt_hw_interrupt_set_target_cpus(int vector, unsigned long cpu_mask)
 {
 #ifdef BSP_USING_GIC
 #ifdef BSP_USING_GICV3
+    /* Argument is affinity / router value, not an 8-bit CPU bitmask. */
     arm_gic_set_router_cpu(0, vector, cpu_mask);
 #else
     arm_gic_set_cpu(0, vector, (unsigned int) cpu_mask);
 #endif
 #endif
 }
+
+rt_err_t rt_hw_interrupt_set_affinity(int vector, int cpu_index)
+{
+#ifdef SOC_BCM283x
+    RT_UNUSED(vector);
+    RT_UNUSED(cpu_index);
+    return -RT_ENOSYS;
+#elif defined(BSP_USING_GIC) && defined(BSP_USING_GICV3) && defined(RT_USING_SMP)
+    return arm_gic_irq_set_affinity_cpu(0, vector, cpu_index);
+#else
+    RT_UNUSED(vector);
+    RT_UNUSED(cpu_index);
+    return -RT_ENOSYS;
+#endif
+}
+RTM_EXPORT(rt_hw_interrupt_set_affinity);
 
 /**
  * This function get interrupt CPU targets.

@@ -33,6 +33,15 @@ void rt_hw_interrupt_ack(int vector);
 void rt_hw_interrupt_set_target_cpus(int vector, unsigned long cpu_mask);
 unsigned int rt_hw_interrupt_get_target_cpus(int vector);
 
+/**
+ * Bind one SPI to a single CPU (GICv3 IROUTER, SMP only).
+ *
+ * @param vector    Logical IRQ number (same as in driver / rt_hw_interrupt_install).
+ * @param cpu_index RT-Thread CPU index 0 .. RT_CPUS_NR-1.
+ * @return RT_EOK, or -RT_EINVAL / -RT_ENOSYS.
+ */
+rt_err_t rt_hw_interrupt_set_affinity(int vector, int cpu_index);
+
 void rt_hw_interrupt_set_triger_mode(int vector, unsigned int mode);
 unsigned int rt_hw_interrupt_get_triger_mode(int vector);
 

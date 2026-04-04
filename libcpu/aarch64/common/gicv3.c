@@ -45,6 +45,8 @@ extern rt_uint64_t rt_cpu_mpidr_table[];
 static struct arm_gic _gic_table[ARM_GIC_MAX_NR];
 static unsigned int _gic_max_irq;
 
+static int arm_gicv3_wait_rwp(rt_uint64_t index, rt_uint64_t irq);
+
 int arm_gic_get_active_irq(rt_uint64_t index)
 {
     rt_base_t irq;
@@ -238,6 +240,48 @@ rt_uint64_t arm_gic_get_router_cpu(rt_uint64_t index, int irq)
     RT_ASSERT(irq >= 32);
 
     return GIC_DIST_IROUTER(_gic_table[index].dist_hw_base, irq);
+}
+
+/**
+ * Route a shared peripheral interrupt (SPI, hw irq >= 32) to one PE.
+ *
+ * @param vector  Logical IRQ number (same as passed to rt_hw_interrupt_install).
+ * @param cpu_index  0 .. RT_CPUS_NR-1 (RT-Thread logical CPU index).
+ *
+ * @return RT_EOK, or -RT_EINVAL for PPI/SGI or bad cpu_index / vector.
+ *
+ * @note Uses GICD_IROUTER (affinity routing). Not applicable to irq < 32.
+ */
+rt_err_t arm_gic_irq_set_affinity_cpu(rt_uint64_t index, int vector, int cpu_index)
+{
+    rt_uint64_t aff;
+    int hw_irq;
+
+    RT_ASSERT(index < ARM_GIC_MAX_NR);
+
+    hw_irq = vector - _gic_table[index].offset;
+    if (hw_irq < 32 || hw_irq >= (int)_gic_max_irq)
+    {
+        return -RT_EINVAL;
+    }
+
+#if defined(RT_USING_SMP)
+    if (cpu_index < 0 || cpu_index >= RT_CPUS_NR)
+    {
+        return -RT_EINVAL;
+    }
+    aff = rt_cpu_mpidr_table[cpu_index];
+#else
+    if (cpu_index != 0)
+    {
+        return -RT_EINVAL;
+    }
+    __asm__ volatile ("mrs %0, mpidr_el1" : "=r"(aff));
+#endif
+    aff &= 0xff00ffffffULL;
+    arm_gic_set_router_cpu(index, vector, aff);
+    arm_gicv3_wait_rwp(index, 32);
+    return RT_EOK;
 }
 
 /* Set up the cpu mask for the specific interrupt */

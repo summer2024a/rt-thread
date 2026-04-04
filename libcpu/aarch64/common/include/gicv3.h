@@ -156,6 +156,7 @@ rt_uint64_t arm_gic_get_configuration(rt_uint64_t index, int irq);
 void arm_gic_clear_active(rt_uint64_t index, int irq);
 
 void arm_gic_set_router_cpu(rt_uint64_t index, int irq, rt_uint64_t aff);
+rt_err_t arm_gic_irq_set_affinity_cpu(rt_uint64_t index, int vector, int cpu_index);
 void arm_gic_set_cpu(rt_uint64_t index, int irq, unsigned int cpumask);
 rt_uint64_t arm_gic_get_target_cpu(rt_uint64_t index, int irq);
 

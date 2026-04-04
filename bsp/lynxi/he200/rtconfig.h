@@ -619,6 +619,8 @@
 #define BSP_USING_PCIE_EP
 #define BSP_USING_CORETIMER
 #define BSP_USING_RPMSG_NET
+#define BSP_RPMSG_NET_BIND_CPU0
+#define BSP_USING_RPSH
 /* end of BCM Peripheral Drivers */
 /* end of Hardware Drivers Config */
 

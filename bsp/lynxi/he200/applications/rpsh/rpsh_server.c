@@ -2,6 +2,7 @@
 #include <rtdevice.h>
 #include <lwip/ip_addr.h>
 #include <lwip/netif.h>
+#include <lwip/pbuf.h>
 #include <lwip/prot/ethernet.h>
 #include <lwip/inet.h>
 #include <netif/ethernetif.h>
@@ -34,6 +35,7 @@
 #endif
 
 extern void *rpmsg_net_eth_device_get(void);
+extern struct pbuf *rpmsg_net_shell_rx_try(struct eth_device *edev);
 /* Optional symbol: may be absent in some FINSH/POSIX stdio configs. */
 extern void finsh_set_device(const char *device_name) __attribute__((weak));
 extern const char *finsh_get_device(void) __attribute__((weak));
@@ -278,11 +280,22 @@ static void ensure_console_restored(void)
         return;
 
     rt_device_t cur = rt_console_get_device();
-    if (cur == RT_NULL || cur->parent.name == RT_NULL ||
-        rt_strcmp(cur->parent.name, g_default_console_name) != 0)
+    if (cur != RT_NULL && cur->parent.name != RT_NULL &&
+        rt_strcmp(cur->parent.name, g_default_console_name) == 0)
+        return;
+
+    /* With RT_USING_POSIX_STDIO, repeated rt_console_set_device/rt_posix_stdio_init
+     * from a tight loop breaks serial input. Throttle restores when console drifts. */
     {
-        restore_console_paths(g_default_console_name);
+        static rt_tick_t last_restore;
+        rt_tick_t now = rt_tick_get();
+
+        if ((rt_tick_t)(now - last_restore) < rt_tick_from_millisecond(500))
+            return;
+        last_restore = now;
     }
+
+    restore_console_paths(g_default_console_name);
 }
 
 static void restore_console_paths_strong(const char *name)
@@ -301,16 +314,6 @@ static rt_bool_t has_active_session(void)
             return RT_TRUE;
     }
     return RT_FALSE;
-}
-
-static void apply_local_shell_policy(void)
-{
-    /* Non-blocking policy: never suspend local shell thread.
-     * Keep console path healthy when no remote session is active. */
-    if (!has_active_session() && g_default_console_name)
-    {
-        restore_console_paths(g_default_console_name);
-    }
 }
 
 static rt_bool_t is_pull_cmd(const char *cmd)
@@ -589,7 +592,6 @@ static void timeout_check(void) {
         }
     }
     ensure_console_restored();
-    apply_local_shell_policy();
 }
 
 static void shell_server_entry(void *arg) {
@@ -609,7 +611,6 @@ static void shell_server_entry(void *arg) {
     LOG_I("rpsh server started");
 
     while (1) {
-        ensure_console_restored();
         timeout_check();
         if (!g_exec_in_progress && g_log_backlog_len > 0)
         {
@@ -628,12 +629,15 @@ static void shell_server_entry(void *arg) {
         }
         int rx = 0;
 
-        /* Use eth_rx callback if available */
-        if (s_edev->eth_rx) {
-            struct pbuf *p = s_edev->eth_rx((rt_device_t)s_edev);
+        /* RPSH frames use shell_mq only; never steal ICMP/ARP from lwIP rx_mq. */
+        if (s_edev) {
+            struct pbuf *p = rpmsg_net_shell_rx_try(s_edev);
             if (p) {
-                pbuf_copy_partial(p, pkt, p->len, 0);
-                rx = p->len;
+                rt_uint16_t copy_len = (p->tot_len > (int)sizeof(g_shell_pkt)) ?
+                    (rt_uint16_t)sizeof(g_shell_pkt) : (rt_uint16_t)p->tot_len;
+
+                pbuf_copy_partial(p, pkt, copy_len, 0);
+                rx = copy_len;
                 pbuf_free(p);
             }
         }
@@ -667,13 +671,22 @@ static void shell_server_entry(void *arg) {
             if (!(s && s->used))
             {
                 s = alloc_sess((uint8_t*)&eh->src);
-                if (!s) return;
+                if (!s)
+                {
+                    shell_session_t tmp;
+
+                    rt_memset(&tmp, 0, sizeof(tmp));
+                    tmp.used = RT_TRUE;
+                    rt_memcpy(tmp.mac, &eh->src, 6);
+                    send_frame(&tmp, FRAME_TYPE_ACK, 0, sf->seq,
+                               (uint8_t *)"sess full", 9, 9);
+                    continue;
+                }
             }
             s->auth = auth;
             s->last_hb = rt_tick_get();
             g_log_capture_enabled = RT_TRUE;
             g_log_backlog_len = 0;
-            apply_local_shell_policy();
             char msg[16];
             rt_snprintf(msg, sizeof(msg), "ok sid=%d", s->id);
             send_frame(s, FRAME_TYPE_ACK, 0, sf->seq, (uint8_t*)msg, strlen(msg), strlen(msg));
@@ -699,7 +712,6 @@ static void shell_server_entry(void *arg) {
                 g_exec_in_progress = RT_FALSE;
                 restore_console_paths_strong(g_default_console_name);
             }
-            apply_local_shell_policy();
         } else if (sf->type == FRAME_TYPE_CMD) {
             uint32_t cmd_len;
             if (sf->flags & PACKET_FLAG_MORE) {
@@ -780,11 +792,19 @@ int rpmsg_shell_server_init(void) {
 #ifdef RT_CONSOLE_DEVICE_NAME
     g_default_console_name = RT_CONSOLE_DEVICE_NAME;
 #endif
-    apply_local_shell_policy();
+    /* Do not touch rt_console / posix stdio here: INIT_APP_EXPORT may run
+     * before or in parallel with tshell; restore_console_paths breaks serial. */
 
     /* Run below tshell priority to avoid starving UART shell input. */
     rt_thread_t t = rt_thread_create("sh_srv", shell_server_entry, NULL, 8192, 24, 20);
-    if (t) rt_thread_startup(t);
+    if (t)
+    {
+#if defined(RT_USING_SMP) && defined(BSP_RPMSG_NET_BIND_CPU0)
+        /* Same core as rpmsg-net / lwIP; avoids migration when RT_CPUS_NR>1. */
+        (void)rt_thread_control(t, RT_THREAD_CTRL_BIND_CPU, (void *)(rt_size_t)0);
+#endif
+        rt_thread_startup(t);
+    }
     return 0;
 }
 INIT_APP_EXPORT(rpmsg_shell_server_init);

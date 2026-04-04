@@ -9,6 +9,8 @@ group = DefineGroup('Applications', src, depend = [''], CPPPATH = CPPPATH)
 list = os.listdir(cwd)
 for item in list:
     if os.path.isfile(os.path.join(cwd, item, 'SConscript')):
+        if item == 'rpsh' and not GetDepend('BSP_USING_RPSH'):
+            continue
         group = group + SConscript(os.path.join(item, 'SConscript'))
 
 Return('group')

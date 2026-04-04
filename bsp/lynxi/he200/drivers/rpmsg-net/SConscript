@@ -6,7 +6,7 @@ src = Glob('*.c')
 CPPPATH = [cwd,
            cwd + r'/../../packages/rpmsg-lite-latest/lib/include']
 
-group = DefineGroup('rpmsg-net', src, depend = ['PKG_USING_RPMSG_LITE', 'RT_USING_LWIP'], CPPPATH = CPPPATH)
+group = DefineGroup('rpmsg-net', src, depend = ['PKG_USING_RPMSG_LITE', 'RT_USING_LWIP', 'BSP_USING_RPMSG_NET'], CPPPATH = CPPPATH)
 
 list = os.listdir(cwd)
 for item in list:

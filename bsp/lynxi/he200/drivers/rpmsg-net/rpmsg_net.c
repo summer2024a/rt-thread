@@ -95,6 +95,13 @@ typedef struct rpsh_shell_frame_diag {
 #define RPMSG_NET_RX_MQ_ENTRIES 64  /* 增加邮箱条目数，从 32 到 64 */
 #define RPMSG_NET_RX_MQ_POOL_SIZE (RPMSG_NET_RX_MQ_MSGSZ * RPMSG_NET_RX_MQ_ENTRIES)
 
+/* RPSH (0x88B6) must not share rx_mq with lwIP: sh_srv and erx both poll eth_rx and
+ * rpsh used to free non-shell pbufs, dropping ICMP/ARP (host ping device). */
+#define RPMSG_NET_SHELL_MQ_NAME    "rpnet_sh_mq"
+#define RPMSG_NET_SHELL_MQ_MSGSZ   sizeof(void *)
+#define RPMSG_NET_SHELL_MQ_ENTRIES 32
+#define RPMSG_NET_SHELL_MQ_POOL_SIZE (RPMSG_NET_SHELL_MQ_MSGSZ * RPMSG_NET_SHELL_MQ_ENTRIES)
+
 #define MAX_PKT_SIZE                 1536
 #define RPMSG_NET_EPT_NAME           "rpmsg-net"
 
@@ -117,6 +124,8 @@ struct rpmsg_net_device
     rt_bool_t rx_thread_running;
     struct rt_messagequeue rx_mq;
     char rx_mq_pool[RPMSG_NET_RX_MQ_POOL_SIZE];
+    struct rt_messagequeue shell_mq;
+    char shell_mq_pool[RPMSG_NET_SHELL_MQ_POOL_SIZE];
     char name[RT_NAME_MAX];
     rt_bool_t remote_ready;
     rt_bool_t local_link_up;
@@ -197,6 +206,43 @@ static void rpmsg_net_stop_rx_path(struct rpmsg_net_device *rdev);
 static void rpmsg_net_reset_context(void);
 static void rpmsg_net_free_device(struct rpmsg_net_device *rdev, rt_bool_t detach_mq);
 static void rpmsg_net_cleanup_unregistered_device(struct rpmsg_net_device *rdev, rt_bool_t mq_inited);
+
+#if defined(RT_USING_SMP) && defined(BSP_RPMSG_NET_BIND_CPU0)
+
+static void rpmsg_net_thread_bind_cpu0(rt_thread_t tid)
+{
+    if (tid == RT_NULL)
+        return;
+    if (rt_thread_control(tid, RT_THREAD_CTRL_BIND_CPU, (void *)(rt_size_t)0) != RT_EOK)
+        LOG_W("bind thread to cpu0 failed");
+}
+
+/* Names: TCPIP_THREAD_NAME "tcpip", ethernetif.c "erx" / "etx". */
+static void rpmsg_net_bind_lwip_worker_threads_cpu0(void)
+{
+    static const char *const names[] = { "tcpip", "erx", "etx" };
+    rt_size_t i;
+
+    for (i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+    {
+        rt_thread_t th = rt_thread_find(names[i]);
+
+        rpmsg_net_thread_bind_cpu0(th);
+    }
+}
+
+#else
+
+static void rpmsg_net_thread_bind_cpu0(rt_thread_t tid)
+{
+    RT_UNUSED(tid);
+}
+
+static void rpmsg_net_bind_lwip_worker_threads_cpu0(void)
+{
+}
+
+#endif /* RT_USING_SMP && BSP_RPMSG_NET_BIND_CPU0 */
 
 static rt_bool_t rpmsg_net_is_valid_mac(const rt_uint8_t *mac)
 {
@@ -913,20 +959,16 @@ static void rpmsg_net_dispatch_rx(struct rpmsg_net_device *rdev, void *payload, 
         }
     }
 
-    /* send pbuf pointer to mailbox */
+    /* Split queues: RPSH (0x88B6) vs lwIP. sh_srv must not dequeue ICMP/ARP from rx_mq. */
     ptr = p;
-    if (rt_mq_send(&rdev->rx_mq, &ptr, sizeof(ptr)) != RT_EOK)
-    {
-        LOG_E("Failed to send pbuf to mailbox (MQ full?)");
-        pbuf_free(p);  /* ✅ 确保释放 pbuf */
-        return;
-    }
-
-    /* Lightweight frame sanity log: first bytes + ethertype */
-    if (p->tot_len >= 14)
+    if (p->tot_len >= 14U)
     {
         rt_uint8_t hdr[14];
+        rt_bool_t is_shell;
+
         pbuf_copy_partial(p, hdr, sizeof(hdr), 0);
+        is_shell = (hdr[12] == 0x88U && hdr[13] == 0xB6U);
+
         LOG_D("RX frame: dst=%02x:%02x:%02x:%02x:%02x:%02x src=%02x:%02x:%02x:%02x:%02x:%02x type=0x%02x%02x len=%u",
               hdr[0], hdr[1], hdr[2], hdr[3], hdr[4], hdr[5],
               hdr[6], hdr[7], hdr[8], hdr[9], hdr[10], hdr[11],
@@ -950,81 +992,65 @@ static void rpmsg_net_dispatch_rx(struct rpmsg_net_device *rdev, void *payload, 
                   arphdr[24], arphdr[25], arphdr[26], arphdr[27],
                   arphdr[14], arphdr[15], arphdr[16], arphdr[17]);
         }
+
+        if (is_shell)
+        {
+            LOG_D("Shell frame -> shell_mq (not lwIP)");
+#if RPMSG_NET_RPSH_DIAG
+            if (p->tot_len >= (14U + sizeof(rpsh_shell_frame_diag_t)))
+            {
+                uint8_t frame_buf[14U + sizeof(rpsh_shell_frame_diag_t)];
+                pbuf_copy_partial(p, frame_buf, sizeof(frame_buf), 0);
+                {
+                    rpsh_shell_frame_diag_t *sf = (rpsh_shell_frame_diag_t *)(frame_buf + 14U);
+                    uint16_t rx_crc = sf->crc;
+                    uint16_t c = 0xFFFF;
+                    const uint8_t *crc_begin = (const uint8_t *)sf;
+                    int crc_len = (int)sizeof(*sf);
+                    int i, j;
+
+                    sf->crc = 0;
+                    for (i = 0; i < crc_len; i++)
+                    {
+                        c ^= crc_begin[i];
+                        for (j = 0; j < 8; j++)
+                            c = (c & 1) ? (c >> 1) ^ 0xA001 : c >> 1;
+                    }
+                    sf->crc = rx_crc;
+                    LOG_W("SHELL RX DIAG: type=%u seq=%u sid=%u flags=%u dlen=%u total=%u crc_calc=0x%04x crc_rx=0x%04x%s",
+                          sf->type, sf->seq, sf->session_id, sf->flags, sf->data_len, sf->total_len,
+                          c, rx_crc, (c == rx_crc) ? "" : " CRC_MISMATCH");
+                }
+            }
+#endif
+            if (rt_mq_send(&rdev->shell_mq, &ptr, sizeof(ptr)) != RT_EOK)
+            {
+                LOG_E("shell_mq full, drop RPSH frame");
+                pbuf_free(p);
+            }
+            return;
+        }
     }
     else
     {
         LOG_D("RX payload too short for ethernet header: len=%u", p->tot_len);
     }
 
-    /* notify net stack that device has packet */
-    /* Shell frames (ethertype 0x88B6) should not be forwarded to lwIP RX thread.
-     * Otherwise `ethernetif.c` will dequeue and drop them, and `rpsh_server`
-     * (which also reads from eth_rx) may never see the LOGIN/RESP packets. */
+    if (rt_mq_send(&rdev->rx_mq, &ptr, sizeof(ptr)) != RT_EOK)
     {
-        rt_bool_t is_shell_frame = RT_FALSE;
-        rt_uint8_t hdr[14];
+        LOG_E("Failed to send pbuf to rx_mq (MQ full?)");
+        pbuf_free(p);
+        return;
+    }
 
-        if (p->tot_len >= sizeof(hdr))
-        {
-            pbuf_copy_partial(p, hdr, sizeof(hdr), 0);
-            if (hdr[12] == 0x88 && hdr[13] == 0xB6) {
-                /* 0x88B6 in network byte order */
-                is_shell_frame = RT_TRUE;
-                LOG_D("Shell frame: dst=%02x:%02x:%02x:%02x:%02x:%02x src=%02x:%02x:%02x:%02x:%02x:%02x type=0x%02x%02x len=%u",
-                      hdr[0], hdr[1], hdr[2], hdr[3], hdr[4], hdr[5],
-                      hdr[6], hdr[7], hdr[8], hdr[9], hdr[10], hdr[11],
-                      hdr[12], hdr[13], p->tot_len);
-
-                /* Optional deep shell diag for troubleshooting only. */
-#if RPMSG_NET_RPSH_DIAG
-                if (p->tot_len >= (14U + sizeof(rpsh_shell_frame_diag_t)))
-                {
-                    uint8_t frame_buf[14U + sizeof(rpsh_shell_frame_diag_t)];
-                    pbuf_copy_partial(p, frame_buf, sizeof(frame_buf), 0);
-
-                    rpsh_shell_frame_diag_t *sf = (rpsh_shell_frame_diag_t *)(frame_buf + 14U);
-
-            /* CRC is computed with crc field forced to 0 */
-            uint16_t rx_crc = sf->crc;
-            sf->crc = 0;
-
-            uint16_t c = 0xFFFF;
-            const uint8_t *crc_begin = (const uint8_t *)sf;
-            int crc_len = (int)sizeof(*sf);
-                    for (int i = 0; i < crc_len; i++)
-                    {
-                        c ^= crc_begin[i];
-                        for (int j = 0; j < 8; j++)
-                            c = (c & 1) ? (c >> 1) ^ 0xA001 : c >> 1;
-                    }
-
-            sf->crc = rx_crc;
-
-            LOG_W("SHELL RX DIAG: type=%u seq=%u sid=%u flags=%u dlen=%u total=%u crc_calc=0x%04x crc_rx=0x%04x%s",
-                  sf->type, sf->seq, sf->session_id, sf->flags, sf->data_len, sf->total_len,
-                  c, rx_crc, (c == rx_crc) ? "" : " CRC_MISMATCH");
-                }
-#endif
-            }
-
-        }
-
-        if (!is_shell_frame)
-        {
-            ready_ret = eth_device_ready(&rdev->parent);
-            if (ready_ret != RT_EOK)
-            {
-                LOG_W("eth_device_ready failed: %d", ready_ret);
-            }
-            else
-            {
-                LOG_D("Packet forwarded to network stack");
-            }
-        }
-        else
-        {
-            LOG_D("Shell frame: skip eth_device_ready (keep for rpsh_server)");
-        }
+    ready_ret = eth_device_ready(&rdev->parent);
+    if (ready_ret != RT_EOK)
+    {
+        LOG_W("eth_device_ready failed: %d", ready_ret);
+    }
+    else
+    {
+        LOG_D("Packet forwarded to network stack");
     }
 }
 
@@ -1102,6 +1128,10 @@ static void rpmsg_net_stop_rx_path(struct rpmsg_net_device *rdev)
         {
             pbuf_free((struct pbuf *)purge_ptr);
         }
+        while (rt_mq_recv(&rdev->shell_mq, &purge_ptr, sizeof(purge_ptr), 0) > 0)
+        {
+            pbuf_free((struct pbuf *)purge_ptr);
+        }
     }
 
     if (rdev->rpmsg_ept != RT_NULL)
@@ -1147,6 +1177,7 @@ static void rpmsg_net_free_device(struct rpmsg_net_device *rdev, rt_bool_t detac
     if (detach_mq)
     {
         rt_mq_detach(&rdev->rx_mq);
+        rt_mq_detach(&rdev->shell_mq);
     }
 
     rt_free(rdev);
@@ -1162,6 +1193,7 @@ static void rpmsg_net_cleanup_unregistered_device(struct rpmsg_net_device *rdev,
     if (mq_inited)
     {
         rt_mq_detach(&rdev->rx_mq);
+        rt_mq_detach(&rdev->shell_mq);
     }
 
     rpmsg_net_free_device(rdev, RT_FALSE);
@@ -1496,6 +1528,16 @@ int rpmsg_net_device_register(struct rpmsg_lite_instance *inst, void *ept, rpmsg
         return -RT_ERROR;
     }
 
+    err = rt_mq_init(&rdev->shell_mq, RPMSG_NET_SHELL_MQ_NAME, rdev->shell_mq_pool,
+                     RPMSG_NET_SHELL_MQ_MSGSZ, RPMSG_NET_SHELL_MQ_POOL_SIZE, RT_IPC_FLAG_FIFO);
+    if (err != RT_EOK)
+    {
+        LOG_E("Failed to initialize shell mailbox");
+        rt_mq_detach(&rdev->rx_mq);
+        rpmsg_net_cleanup_unregistered_device(rdev, RT_FALSE);
+        return -RT_ERROR;
+    }
+
     rdev->rx_thread_running = RT_TRUE;
     rdev->rx_thread = rt_thread_create("rpnet_rx",
                                        rpmsg_net_rx_thread_entry,
@@ -1511,6 +1553,7 @@ int rpmsg_net_device_register(struct rpmsg_lite_instance *inst, void *ept, rpmsg
     }
 
     rt_thread_startup(rdev->rx_thread);
+    rpmsg_net_thread_bind_cpu0(rdev->rx_thread);
 
     /* setup eth_device */
     rdev->parent.parent.type = RT_Device_Class_NetIf;
@@ -1532,6 +1575,8 @@ int rpmsg_net_device_register(struct rpmsg_lite_instance *inst, void *ept, rpmsg
         rpmsg_net_free_device(rdev, RT_TRUE);
         return -RT_ERROR;
     }
+
+    rpmsg_net_bind_lwip_worker_threads_cpu0();
 
     if (rdev->parent.netif)
     {
@@ -1565,7 +1610,25 @@ void rpmsg_net_device_unregister(void)
 
 void *rpmsg_net_eth_device_get(void)
 {
+    if (g_rpmsg_net_ctx.device == RT_NULL)
+        return RT_NULL;
     return &g_rpmsg_net_ctx.device->parent;
+}
+
+/*
+ * Non-blocking dequeue of RPSH (0x88B6) frames only. lwIP traffic stays on rx_mq / eth_rx.
+ */
+struct pbuf *rpmsg_net_shell_rx_try(struct eth_device *edev)
+{
+    struct rpmsg_net_device *rdev;
+    void *ptr;
+
+    if (edev == RT_NULL)
+        return RT_NULL;
+    rdev = rt_container_of(edev, struct rpmsg_net_device, parent);
+    if (rt_mq_recv(&rdev->shell_mq, &ptr, sizeof(ptr), 0) > 0)
+        return (struct pbuf *)ptr;
+    return RT_NULL;
 }
 
 /* Example entry: create endpoint and register device
@@ -1715,6 +1778,7 @@ static rt_err_t rpmsg_link_wait_thread_init(struct rpmsg_lite_instance *inst)
 
     /* 启动线程 */
     rt_thread_startup(g_rpmsg_net_ctx.link_wait_thread);
+    rpmsg_net_thread_bind_cpu0(g_rpmsg_net_ctx.link_wait_thread);
 
     LOG_I("rpmsg link wait thread created");
     return RT_EOK;
@@ -1795,7 +1859,8 @@ static void rpmsg_net_stats(void)
     LOG_I("Remote ready: %d", g_rpmsg_net_ctx.device->remote_ready);
     LOG_I("Remote link up: %d", g_rpmsg_net_ctx.device->remote_link_up);
     LOG_I("Local link up: %d", g_rpmsg_net_ctx.device->local_link_up);
-    LOG_I("RX MQ max entries: %d", RPMSG_NET_RX_MQ_ENTRIES);
+    LOG_I("RX MQ max entries: %d (lwIP)", RPMSG_NET_RX_MQ_ENTRIES);
+    LOG_I("Shell MQ max entries: %d (RPSH)", RPMSG_NET_SHELL_MQ_ENTRIES);
 
 #if RPMSG_NET_ZERO_COPY_RX && LWIP_SUPPORT_CUSTOM_PBUF
     LOG_I("Zero-copy RX: Enabled (Pool size=%u)", RPMSG_NET_RX_POOL_SIZE);

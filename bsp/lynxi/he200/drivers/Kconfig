@@ -136,6 +136,23 @@ menu "Hardware Drivers Config"
                 select RT_USING_LWIP
                 select RT_USING_MUTEX
                 default n
+
+            if BSP_USING_RPMSG_NET
+                config BSP_USING_RPSH
+                    bool "Enable RPSH remote shell server"
+                    default n
+                    help
+                        Remote MSH over rpmsg-net (EtherType 0x88B6). Depends on rpmsg-net.
+
+                config BSP_RPMSG_NET_BIND_CPU0
+                    bool "Pin rpmsg-net, lwIP, and RPSH (sh_srv) to CPU0 (SMP)"
+                    depends on RT_USING_SMP
+                    default y
+                    help
+                        When RT_CPUS_NR>1, packet loss often appears while single-core is fine.
+                        This pins tcpip, erx, etx, rpnet_rx, rpmsg_wait, and sh_srv to CPU0 to
+                        limit cross-core races with rpmsg shared memory and lwIP.
+            endif
         endif
     endmenu
 endmenu

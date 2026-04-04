@@ -268,11 +268,13 @@ int32_t rpmsg_timer_prepare(timer_handle_t handle)
     return 0;
 }
 
-void rpmsg_timer_irqhandler(int idx)
+void rpmsg_timer_irqhandler(timer_handle_t priv)
 {
-    dw_timer_priv_t *timer_priv = &timer_instance[idx];
-    timer_priv->timeout_flag = 1;
+    if (!priv) {
+        return;
+    }
 
+    dw_timer_priv_t *timer_priv = priv;
     dw_timer_reg_t *addr = (dw_timer_reg_t *)(timer_priv->base);
 
     addr->TxControl &= ~DW_TIMER_TXCONTROL_ENABLE;      /* disable the timer */

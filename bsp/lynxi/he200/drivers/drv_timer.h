@@ -99,7 +99,7 @@ int32_t dw_timer_config(timer_handle_t handle, timer_mode_e mode);
 
 int32_t rpmsg_timer_prepare(timer_handle_t handle);
 
-void rpmsg_timer_irqhandler(int idx);
+void rpmsg_timer_irqhandler(timer_handle_t priv);
 
 #endif /* __DRV_TIMER_H */
 

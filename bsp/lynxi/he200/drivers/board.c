@@ -54,11 +54,6 @@ size_t wdt_base_addr = WDT_BASE;
 
 size_t pcie_ep_base_addr = PCIE_EP_BASE;
 
-uint8_t *mac_reg_base_addr = (uint8_t *)MAC_REG;
-
-uint8_t *eth_send_no_cache = (uint8_t *)SEND_DATA_NO_CACHE;
-uint8_t *eth_recv_no_cache = (uint8_t *)RECV_DATA_NO_CACHE;
-
 #ifdef RT_USING_SMART
 struct mem_desc platform_mem_desc[] = {
     {KERNEL_VADDR_START, KERNEL_VADDR_START + 0x0fffffff, (rt_size_t)ARCH_MAP_FAILED, NORMAL_MEM}
@@ -69,10 +64,9 @@ struct mem_desc platform_mem_desc[] = {
     {0x04000000UL, 0x040FFFFFUL, 0x04000000UL, NORMAL_MEM},
     /*CPU_SUB_SLV + PERIPH_SLV + SYS_CTRL_SLV + DDR_CFG_SLV + \
             VPU_CFG_SLV + V52_CFG_SLV + PCIE_DBI_SLV + PCIE_X2_SLV 224MB*/
-    {0x08000000UL, 0x08000000UL + 0x14000000UL - 1, 0x08000000UL, DEVICE_MEM},
+    // {0x08000000UL, 0x08000000UL + 0x14000000UL - 1, 0x08000000UL, DEVICE_MEM},
+    {INTC_BASE, INTC_BASE + 0x14000000UL - 1, INTC_BASE, DEVICE_MEM},
     // {INTC_BASE, INTC_BASE + 0x200000 - 1, INTC_BASE, DEVICE_MEM},
-    // {0x10006000, 0x10007FFF, 0x10006000, DEVICE_MEM}, /* uart0,1 */
-    // {0x000800000000ULL, 0x00082FFFFFFFULL, 0x000800000000ULL, NORMAL_MEM},
     /* 0x000800000000 ~ 0x0008FFFFFFFF is for cacheable memory */
     {MEM_PADDR_START, MEM_PADDR_START+MEM_CACHE_SZ - 1, MEM_PADDR_START, NORMAL_MEM},
     /* 0x000900000000 ~ 0x0009FFFFFFFF is for cacheable memory */

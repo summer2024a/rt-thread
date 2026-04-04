@@ -135,18 +135,6 @@ extern size_t mmc0_base_addr;
 #define MMC2_BASE_ADDR    (PER_BASE+0x340000)
 extern size_t mmc2_base_addr;
 
-//mac
-#define MAC_REG                 (void *)(0xfd580000)
-extern uint8_t *                mac_reg_base_addr;
-
-#define ETH_IRQ                 (160+29)
-
-#define SEND_DATA_NO_CACHE      (0x08200000)
-extern uint8_t *                eth_send_no_cache;
-
-#define RECV_DATA_NO_CACHE      (0x08400000)
-extern uint8_t *                eth_recv_no_cache;
-
 /* the basic constants and interfaces needed by gic */
 rt_inline rt_ubase_t platform_get_gic_dist_base(void)
 {

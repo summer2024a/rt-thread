@@ -98,7 +98,7 @@ int rt_pci_msix_raise_irq(int vector)
     if (!g_msix_registered[vector])
         return -EINVAL;
 
-    LOG_I("base 0x%x Raise MSI-X IRQ %d", g_pcie_dbi_base, vector);
+    LOG_D("base 0x%x Raise MSI-X IRQ %d", g_pcie_dbi_base, vector);
 
     HWREG32(g_pcie_dbi_base + PCIE_PORT_LOGIC_OFFSET + PCIE_PL_MSIX_DOORBELL_OFF) = vector;
 

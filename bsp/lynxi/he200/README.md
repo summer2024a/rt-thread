@@ -5,6 +5,14 @@
 
 ## 2. 编译说明
 
+### 2.1 更新online-packages
+```
+source ~/.env/env.sh
+pkgs --update
+```
+
+### 2.2 编译
+
 推荐使用[env工具](https://www.rt-thread.org/download.html#download-rt-thread-env-tool)，可以在console下进入到`bsp\raspberry-pi\raspi4-64`目录中，运行以下命令：
 
 ```

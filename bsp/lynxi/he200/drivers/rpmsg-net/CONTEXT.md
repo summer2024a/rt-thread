@@ -149,6 +149,8 @@ RPMsg callback -> `rpmsg_queue_rx_cb()` -> RX thread -> `rpmsg_net_dispatch_rx()
 - 已使用 `rpmsg_lite_alloc_tx_buffer()` + `rpmsg_lite_send_nocopy()`
 - 已将 HELLO/LINK/DATA 三条发送路径统一到同一个 helper 模式
 - 已将大部分全局状态收敛到结构体中
+- **`platform_get_custom_shmem_config()`** 与 Linux bridge 对齐：**4080 / 128 / 16384 / 4096**（修改须双端同步）
+- **`rpmsg_net_ip_mtu_from_buffer_payload()`** 已按 **RL_BUFFER_PAYLOAD** 语义计算（不重复减 `rpmsg_std_hdr`）；**`rpmsg_net_apply_shmem_mtu_cap()`** 在注册与 HELLO 路径限制 **`rdev->mtu` / `netif->mtu`**
 
 ### 8.2 当前仍存在的复制
 
@@ -163,7 +165,8 @@ RPMsg callback -> `rpmsg_queue_rx_cb()` -> RX thread -> `rpmsg_net_dispatch_rx()
 - 如底层支持，可继续评估更好的 TX 失败回收语义；
 - 如网络栈允许，可评估减少 RX 到 `pbuf` 的复制；
 - 可继续压缩初始化/错误路径中的重复状态切换逻辑；
-- 可补充真实硬件或 QEMU 验证说明。
+- 可补充真实硬件或 QEMU 验证说明；
+- **吞吐与 MTU**：已通过 **加大 shmem 槽（4080/128/16384）**、**修正 IP MTU 与 `buffer_payload` 公式**、与 **host TX 路径优化** 一并缓解；回归与剩余项见 **`NEXT_STEPS.md`**。
 
 ## 9. 本次问题排查总结（host ping 设备不回包）
 
@@ -237,3 +240,53 @@ RPMsg callback -> `rpmsg_queue_rx_cb()` -> RX thread -> `rpmsg_net_dispatch_rx()
 8. 清理排障影响  
    - 去除高频 `rt_kprintf` 和信息级临时日志，保留必要的 `LOG_D` 轻量包头日志用于后续联调；
    - 回退 `ethernetif.c` 临时插桩，避免长期污染通用 lwIP 端口层。
+
+## 10. SMP 绑核与中断亲和性（he200）
+
+在 **RT-Thread SMP** 下，rpmsg-net 与 lwIP 工作线程若与 rpmsg 软中断在不同核上迁移，易出现竞态与丢包。当前通过 **menuconfig / `rtconfig.h`** 可配置：
+
+| 宏 / 配置项 | 作用 |
+|-------------|------|
+| `BSP_RPMSG_NET_BIND_CPU0` | 开启后：将 `tcpip`、`erx`、`etx`、`rpnet_rx`、`rpmsg_wait` 等绑到 `BSP_RPMSG_NET_CPU`（名称历史遗留，不限于 CPU0）。 |
+| `BSP_RPMSG_NET_CPU` | 上述线程的目标 CPU 索引（会做 `0 .. RT_CPUS_NR-1` 夹紧）。 |
+| `BSP_RPMSG_NET_IRQ_FOLLOW_WORKER_CPU` | 为 y 时，rpmsg-lite **DW 定时器** IRQ 的 GIC 亲和性与 `BSP_RPMSG_NET_CPU` 一致。 |
+| `BSP_RPMSG_NET_IRQ_CPU` | 在关闭 “IRQ 跟随 worker” 后可见，单独指定定时器 IRQ 所在 CPU。 |
+
+**中断安装与绑核位置**（与 PCIe MSI-X 无直接关系）：
+
+- `packages/rpmsg-lite-latest/.../rpmsg_platform.c` 中 `rpmsg_platform_timer_request_irq()`：在 `rt_hw_interrupt_install` / `umask` 之后调用 `rt_hw_interrupt_set_affinity()`。
+- 定时器下标与 IRQ 号线性关系：`TIMER_IRQ_START + RPMSG_PLATFORM_TIMER_TVQ_IDX(2)` / `+ RVQ_IDX(3)`，需与 `lynxi.h` 中 `TIMER_IRQ_START` 一致。
+- GICv3 单 SPI 绑核 API：`libcpu/aarch64` 中 `rt_hw_interrupt_set_affinity(vector, cpu_index)`（详见 `interrupt.h`）。
+
+**RPSH（`applications/rpsh/rpsh_server.c`）**：`sh_srv` 线程在开启 `BSP_RPMSG_NET_BIND_CPU0` 时与 `BSP_RPMSG_NET_CPU` 对齐，避免与 rpmsg-net 栈跨核迁移。
+
+## 11. RPSH 与 lwIP 接收分队列
+
+RPSH 使用 EtherType **0x88B6**。若与 lwIP 共用同一 `rx_mq`，`sh_srv` 与 `erx` 都会在 `eth_rx` 路径上抢同一邮箱，曾出现 **非 shell 帧被 shell 路径误处理/释放**，导致 **ICMP/ARP 丢失、host ping 不通**。
+
+当前做法：
+
+- **`rx_mq`**：仅投递普通以太网帧给 lwIP（`rpnet_rx_mq`）。
+- **`shell_mq`**：仅投递 RPSH 帧给 `sh_srv`（`rpmsg_net_shell_rx_try()` 等路径）。
+
+实现集中在 `rpmsg_net.c` 与 `rpsh_server.c`，协议仍见 `Protocol.md` / `rpmsg_net_proto.h`。
+
+## 12. 相关文件索引（扩展）
+
+| 路径 | 说明 |
+|------|------|
+| `bsp/lynxi/he200/drivers/Kconfig` | `BSP_USING_RPMSG_NET`、绑核与 IRQ CPU 配置。 |
+| `bsp/lynxi/he200/packages/rpmsg-lite-latest/.../rpmsg_platform.c` | RPMsg 平台：定时器 IRQ、`platform_get_custom_shmem_config()`（`buffer_payload_size` / `buffer_count` / `vring_size` 等，须与 **Linux host** 一致）。 |
+| `libcpu/aarch64/common/interrupt.c` | `rt_hw_interrupt_set_affinity` 实现入口（GICv3）。 |
+| Linux：`tools/drivers_test/rpmsg-net/rpmsg-lite/VRING.md` | vring 与 buffer 池 **详细内存部署**（§1.5）；设备侧无副本时可引用该路径。 |
+| 同目录 **`NEXT_STEPS.md`** | 后续优先级与归档对照。 |
+
+## 13. 与 Linux host 的 shmem 约定与文档
+
+| 项 | 设备（RT-Thread） | Host（drivers_test） |
+|----|-------------------|----------------------|
+| 配置入口 | `packages/rpmsg-lite-latest/.../rpmsg_platform.c` 中 `RPMSG_PLATFORM_*`、`platform_get_custom_shmem_config()` | `rpmsg_net_bridge.c` 中 `RPMSG_NET_*` |
+| 当前典型值 | `buffer_payload_size=4080`，`buffer_count=128`，`vring_size=16384`，`vring_align=4096` | 同上，须逐字段一致 |
+| 布局说明 | — | 同仓库 **`rpmsg-lite/VRING.md`**（§1.5 详细偏移） |
+
+**注意**：修改任一侧后必须 **同步另一侧** 并 **双端重编**，否则 `rpmsg_lite` 初始化或运行期行为异常。

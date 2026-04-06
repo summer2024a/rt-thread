@@ -145,13 +145,32 @@ menu "Hardware Drivers Config"
                         Remote MSH over rpmsg-net (EtherType 0x88B6). Depends on rpmsg-net.
 
                 config BSP_RPMSG_NET_BIND_CPU0
-                    bool "Pin rpmsg-net, lwIP, and RPSH (sh_srv) to CPU0 (SMP)"
+                    bool "Pin rpmsg-net stack to one CPU (SMP)"
                     depends on RT_USING_SMP
                     default y
                     help
-                        When RT_CPUS_NR>1, packet loss often appears while single-core is fine.
-                        This pins tcpip, erx, etx, rpnet_rx, rpmsg_wait, and sh_srv to CPU0 to
-                        limit cross-core races with rpmsg shared memory and lwIP.
+                        Binds tcpip, erx, etx, rpnet_rx, rpmsg_wait, sh_srv to BSP_RPMSG_NET_CPU.
+                        Rpmsg-lite DW timer IRQ affinity is configured separately below (same CPU by default).
+
+                config BSP_RPMSG_NET_CPU
+                    int "Target CPU index for rpmsg-net / RPSH / lwIP workers"
+                    depends on BSP_RPMSG_NET_BIND_CPU0
+                    range 0 15
+                    default 0
+
+                config BSP_RPMSG_NET_IRQ_FOLLOW_WORKER_CPU
+                    bool "Rpmsg timer IRQs use same CPU as workers"
+                    depends on BSP_RPMSG_NET_BIND_CPU0
+                    default y
+                    help
+                        When set, GIC affinity for rpmsg_platform DW timer IRQs (TIMER_IRQ_START+2,+3)
+                        matches BSP_RPMSG_NET_CPU. Clear to set BSP_RPMSG_NET_IRQ_CPU instead.
+
+                config BSP_RPMSG_NET_IRQ_CPU
+                    int "Dedicated CPU for rpmsg-lite DW timer IRQs (GIC)"
+                    depends on BSP_RPMSG_NET_BIND_CPU0 && !BSP_RPMSG_NET_IRQ_FOLLOW_WORKER_CPU
+                    range 0 15
+                    default 0
             endif
         endif
     endmenu

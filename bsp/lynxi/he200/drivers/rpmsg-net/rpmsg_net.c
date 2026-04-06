@@ -148,6 +148,63 @@ struct rpmsg_net_context
     rt_bool_t initialized;
 };
 
+#ifndef RPMSG_NET_ETH_HLEN
+#define RPMSG_NET_ETH_HLEN 14U
+#endif
+
+/*
+ * shmem `buffer_payload_size` matches RL_BUFFER_PAYLOAD_SIZE: bytes available for application
+ * data after rpmsg_std_hdr in each vring buffer — same as *size from
+ * rpmsg_lite_alloc_tx_buffer() after the header is subtracted.
+ * DATA message layout in that region: rpmsg_net_msg_hdr + full Ethernet frame.
+ */
+static rt_uint32_t rpmsg_net_ip_mtu_from_buffer_payload(rt_uint32_t buffer_payload_size)
+{
+    rt_uint32_t max_eth;
+    rt_uint32_t ip_mtu;
+    const rt_uint32_t nh_sz = (rt_uint32_t)sizeof(struct rpmsg_net_msg_hdr);
+
+    if (buffer_payload_size < nh_sz + RPMSG_NET_ETH_HLEN)
+        return 68U;
+
+    max_eth = buffer_payload_size - nh_sz;
+    if (max_eth <= RPMSG_NET_ETH_HLEN)
+        return 68U;
+
+    ip_mtu = max_eth - RPMSG_NET_ETH_HLEN;
+    if (ip_mtu > RPMSG_NET_MTU)
+        ip_mtu = RPMSG_NET_MTU;
+    return ip_mtu;
+}
+
+static void rpmsg_net_apply_shmem_mtu_cap(struct rpmsg_net_device *rdev)
+{
+    rpmsg_platform_shmem_config_t cfg;
+    rt_uint32_t cap;
+    rt_uint32_t bps;
+
+    if (rdev == RT_NULL)
+        return;
+
+    if (platform_get_custom_shmem_config(RPMSG_NET_LINK_ID, &cfg) != 0)
+    {
+        bps = 4080U;
+        cap = rpmsg_net_ip_mtu_from_buffer_payload(bps);
+        LOG_W("platform_get_custom_shmem_config failed, assume buffer_payload_size=%u, IP MTU cap=%u", bps, cap);
+    }
+    else
+    {
+        bps = (cfg.buffer_payload_size != 0U) ? cfg.buffer_payload_size : 4080U;
+        cap = rpmsg_net_ip_mtu_from_buffer_payload(bps);
+        LOG_I("rpmsg shmem buffer_payload_size=%u -> IP MTU cap=%u", bps, cap);
+    }
+
+    if (rdev->mtu > cap)
+        rdev->mtu = cap;
+    if (rdev->parent.netif != RT_NULL && rdev->parent.netif->mtu > cap)
+        rdev->parent.netif->mtu = cap;
+}
+
 /* 🟢 新增：零拷贝 RX 支持 - 自定义 pbuf 结构体 */
 #if RPMSG_NET_ZERO_COPY_RX && LWIP_SUPPORT_CUSTOM_PBUF
 /**
@@ -209,12 +266,40 @@ static void rpmsg_net_cleanup_unregistered_device(struct rpmsg_net_device *rdev,
 
 #if defined(RT_USING_SMP) && defined(BSP_RPMSG_NET_BIND_CPU0)
 
+#ifndef BSP_RPMSG_NET_CPU
+#define BSP_RPMSG_NET_CPU 0
+#endif
+
+static int rpmsg_net_stack_cpu_index(void)
+{
+    int cpu = BSP_RPMSG_NET_CPU;
+
+    if (cpu < 0)
+    {
+        cpu = 0;
+    }
+#if defined(RT_CPUS_NR)
+    if (cpu >= (int)RT_CPUS_NR)
+    {
+        cpu = (int)RT_CPUS_NR - 1;
+    }
+#endif
+    return cpu;
+}
+
 static void rpmsg_net_thread_bind_cpu0(rt_thread_t tid)
 {
+    int cpu;
+
     if (tid == RT_NULL)
+    {
         return;
-    if (rt_thread_control(tid, RT_THREAD_CTRL_BIND_CPU, (void *)(rt_size_t)0) != RT_EOK)
-        LOG_W("bind thread to cpu0 failed");
+    }
+    cpu = rpmsg_net_stack_cpu_index();
+    if (rt_thread_control(tid, RT_THREAD_CTRL_BIND_CPU, (void *)(rt_size_t)cpu) != RT_EOK)
+    {
+        LOG_W("bind thread to cpu%d failed", cpu);
+    }
 }
 
 /* Names: TCPIP_THREAD_NAME "tcpip", ethernetif.c "erx" / "etx". */
@@ -225,7 +310,8 @@ static void rpmsg_net_bind_lwip_worker_threads_cpu0(void)
 
     for (i = 0; i < sizeof(names) / sizeof(names[0]); i++)
     {
-        rt_thread_t th = rt_thread_find(names[i]);
+        /* rt_thread_find takes char * (legacy API); name is not modified. */
+        rt_thread_t th = rt_thread_find((char *)names[i]);
 
         rpmsg_net_thread_bind_cpu0(th);
     }
@@ -462,8 +548,10 @@ static rt_err_t rpmsg_net_send_nocopy_message(struct rpmsg_net_device *rdev,
     if (len > 0)
     {
         rt_uint32_t dump_len = (len > 64U) ? 64U : len;
+
         LOG_D("Sending message len=%u (dump %u bytes)", len, dump_len);
         LOG_HEX("Sending message:", 16, tx_buf, dump_len);
+        RT_UNUSED(dump_len);
     }
 
     /*
@@ -659,12 +747,17 @@ static void rpmsg_net_apply_remote_hello(struct rpmsg_net_device *rdev,
         return;
     }
 
+    rpmsg_net_apply_shmem_mtu_cap(rdev);
+
     rt_memcpy(rdev->remote_mac, msg->mac, sizeof(rdev->remote_mac));
     mtu = rpmsg_net_le16_to_cpu(msg->mtu);
     if (mtu > 0U && mtu <= RPMSG_NET_MTU)
     {
         rdev->mtu = (rdev->mtu < mtu) ? rdev->mtu : mtu;
     }
+
+    if (rdev->parent.netif != RT_NULL)
+        rdev->parent.netif->mtu = rdev->mtu;
 
     rdev->remote_ready = RT_TRUE;
 
@@ -1277,9 +1370,10 @@ static rt_err_t rpmsg_net_tx(rt_device_t dev, struct pbuf *p)
     }
 #endif
 
-    if (total_len == 0 || total_len > MAX_PKT_SIZE)
+    if (total_len == 0U || total_len > (RPMSG_NET_ETH_HLEN + rdev->mtu))
     {
-        LOG_E("Invalid packet length: %u", total_len);
+        LOG_E("Invalid packet length: %u (max %u for mtu %u)", total_len,
+              RPMSG_NET_ETH_HLEN + rdev->mtu, rdev->mtu);
         return -RT_ERROR;
     }
 
@@ -1584,6 +1678,7 @@ int rpmsg_net_device_register(struct rpmsg_lite_instance *inst, void *ept, rpmsg
         rt_memcpy(rdev->parent.netif->hwaddr, rdev->local_mac, ETH_ALEN);
         rdev->parent.netif->hwaddr_len = ETH_ALEN;
         netif_set_link_down(rdev->parent.netif);
+        rpmsg_net_apply_shmem_mtu_cap(rdev);
     }
 
     /* store global pointer for callback access */

@@ -13,7 +13,13 @@ pkgs --update
 
 ### 2.2 编译
 
-推荐使用[env工具](https://www.rt-thread.org/download.html#download-rt-thread-env-tool)，可以在console下进入到`bsp\raspberry-pi\raspi4-64`目录中，运行以下命令：
+**编译前**须导出交叉编译器前缀（末尾保留 `-`），否则 `scons` 会找不到 `aarch64-none-elf-gcc`：
+
+```bash
+export RTT_CC_PREFIX=/work/tools/cross-compiler/gcc-arm-10.2-2020.11-x86_64-aarch64-none-elf/bin/aarch64-none-elf-
+```
+
+推荐使用[env工具](https://www.rt-thread.org/download.html#download-rt-thread-env-tool)，在 console 下进入本 BSP 目录后执行：
 
 ```
 宿主机运行以下命令：
@@ -31,7 +37,7 @@ scons --menuconfig
 scons -j8
 ```
 
-来编译这个板级支持包。如果编译正确无误，会产生 `rtthread.elf`, `rtthread.bin` 文件。
+来编译本板级支持包（`bsp/lynxi/he200`）。若成功，会生成 `rtthread.elf`、`rtthread.bin`。
 
 ```
  \ | /

@@ -239,7 +239,7 @@ aarch64-none-elf-nm rtthread.elf | grep g_timer_config
 ---
 
 ## 相关文件
-- `/data/biao.xia/rt-thread/bsp/lynxi/he200/packages/rpmsg-lite-latest/lib/rpmsg_lite/porting/platform/rpmsg_platform.c`
+- `bsp/lynxi/he200/board_pkgs/rpmsg-lite/lib/rpmsg_lite/porting/platform/rpmsg_platform.c`
   - `rpmsg_platform_vq_isr()` - Virtqueue 中断处理
   - `rpmsg_platform_timer_irq()` - 定时器中断处理
   - `rpmsg_platform_timer_cb()` - 定时器回调

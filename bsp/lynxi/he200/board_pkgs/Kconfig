@@ -1,0 +1,23 @@
+menu "Board local packages (lwext4, rpmsg-lite)"
+
+config BOARD_PKG_USING_LWEXT4
+    bool "lwext4 filesystem (board_pkgs/lwext4)"
+    default y
+    select RT_USING_DFS
+    select RT_USING_DFS_LWEXT4
+
+config BOARD_PKG_USING_LWEXT4_LATEST_VERSION
+    bool
+    default y
+    depends on BOARD_PKG_USING_LWEXT4
+
+config BOARD_PKG_USING_RPMSG_LITE
+    bool "RPMsg-Lite (board_pkgs/rpmsg-lite)"
+    default y
+
+config BOARD_PKG_USING_RPMSG_LITE_LATEST_VERSION
+    bool
+    default y
+    depends on BOARD_PKG_USING_RPMSG_LITE
+
+endmenu

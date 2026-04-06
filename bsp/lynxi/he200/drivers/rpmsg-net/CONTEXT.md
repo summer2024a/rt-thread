@@ -254,7 +254,7 @@ RPMsg callback -> `rpmsg_queue_rx_cb()` -> RX thread -> `rpmsg_net_dispatch_rx()
 
 **中断安装与绑核位置**（与 PCIe MSI-X 无直接关系）：
 
-- `packages/rpmsg-lite-latest/.../rpmsg_platform.c` 中 `rpmsg_platform_timer_request_irq()`：在 `rt_hw_interrupt_install` / `umask` 之后调用 `rt_hw_interrupt_set_affinity()`。
+- `board_pkgs/rpmsg-lite/.../rpmsg_platform.c` 中 `rpmsg_platform_timer_request_irq()`：在 `rt_hw_interrupt_install` / `umask` 之后调用 `rt_hw_interrupt_set_affinity()`。
 - 定时器下标与 IRQ 号线性关系：`TIMER_IRQ_START + RPMSG_PLATFORM_TIMER_TVQ_IDX(2)` / `+ RVQ_IDX(3)`，需与 `lynxi.h` 中 `TIMER_IRQ_START` 一致。
 - GICv3 单 SPI 绑核 API：`libcpu/aarch64` 中 `rt_hw_interrupt_set_affinity(vector, cpu_index)`（详见 `interrupt.h`）。
 
@@ -276,7 +276,7 @@ RPSH 使用 EtherType **0x88B6**。若与 lwIP 共用同一 `rx_mq`，`sh_srv` �
 | 路径 | 说明 |
 |------|------|
 | `bsp/lynxi/he200/drivers/Kconfig` | `BSP_USING_RPMSG_NET`、绑核与 IRQ CPU 配置。 |
-| `bsp/lynxi/he200/packages/rpmsg-lite-latest/.../rpmsg_platform.c` | RPMsg 平台：定时器 IRQ、`platform_get_custom_shmem_config()`（`buffer_payload_size` / `buffer_count` / `vring_size` 等，须与 **Linux host** 一致）。 |
+| `bsp/lynxi/he200/board_pkgs/rpmsg-lite/.../rpmsg_platform.c` | RPMsg 平台：定时器 IRQ、`platform_get_custom_shmem_config()`（`buffer_payload_size` / `buffer_count` / `vring_size` 等，须与 **Linux host** 一致）。 |
 | `libcpu/aarch64/common/interrupt.c` | `rt_hw_interrupt_set_affinity` 实现入口（GICv3）。 |
 | Linux：`tools/drivers_test/rpmsg-net/rpmsg-lite/VRING.md` | vring 与 buffer 池 **详细内存部署**（§1.5）；设备侧无副本时可引用该路径。 |
 | 同目录 **`NEXT_STEPS.md`** | 后续优先级与归档对照。 |
@@ -285,7 +285,7 @@ RPSH 使用 EtherType **0x88B6**。若与 lwIP 共用同一 `rx_mq`，`sh_srv` �
 
 | 项 | 设备（RT-Thread） | Host（drivers_test） |
 |----|-------------------|----------------------|
-| 配置入口 | `packages/rpmsg-lite-latest/.../rpmsg_platform.c` 中 `RPMSG_PLATFORM_*`、`platform_get_custom_shmem_config()` | `rpmsg_net_bridge.c` 中 `RPMSG_NET_*` |
+| 配置入口 | `board_pkgs/rpmsg-lite/.../rpmsg_platform.c` 中 `RPMSG_PLATFORM_*`、`platform_get_custom_shmem_config()` | `rpmsg_net_bridge.c` 中 `RPMSG_NET_*` |
 | 当前典型值 | `buffer_payload_size=4080`，`buffer_count=128`，`vring_size=16384`，`vring_align=4096` | 同上，须逐字段一致 |
 | 布局说明 | — | 同仓库 **`rpmsg-lite/VRING.md`**（§1.5 详细偏移） |
 

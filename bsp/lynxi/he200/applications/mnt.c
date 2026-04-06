@@ -15,7 +15,7 @@
 
 int mnt_init(void)
 {
-#ifdef PKG_USING_LWEXT4
+#ifdef BOARD_PKG_USING_LWEXT4
     /* delay 1s */
     rt_thread_delay(RT_TICK_PER_SECOND);
     if (dfs_mount("emmc7", "/", "ext", 0, 0) == 0)

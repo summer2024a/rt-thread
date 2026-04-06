@@ -16,7 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-// #ifdef PKG_USING_RPMSG_LITE /* or PKG_USING_RPMSG depending on your config */
+// #ifdef BOARD_PKG_USING_RPMSG_LITE
 
 #include <rtdevice.h>
 #include <netif/ethernetif.h>

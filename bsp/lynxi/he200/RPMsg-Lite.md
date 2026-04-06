@@ -341,8 +341,8 @@ Function[_rt_mb_recv]: scheduler is not available
 
 ## 参考文献
 
-- [RPMsg-Lite Source Code](./packages/rpmsg-lite-latest/lib/rpmsg_lite/rpmsg_lite.c)
-- [RT-Thread Environment Layer](./packages/rpmsg-lite-latest/lib/rpmsg_lite/porting/environment/rpmsg_env_rt-thread.c)
+- [RPMsg-Lite Source Code](./board_pkgs/rpmsg-lite/lib/rpmsg_lite/rpmsg_lite.c)
+- [RT-Thread Environment Layer](./board_pkgs/rpmsg-lite/lib/rpmsg_lite/porting/environment/rpmsg_env_rt-thread.c)
 - [VirtIO Specification](https://docs.oasis-open.org/virtio/virtio/v1.1/csprd01/virtio-v1.1-csprd01.html)
 
 ## 10. HE200 与 Host 非对称中断通信场景
@@ -1210,7 +1210,7 @@ void test_interrupt_storm(void)
 
 ## 参考文献
 
-- [RPMsg-Lite Source Code](./packages/rpmsg-lite-latest/lib/rpmsg_lite/rpmsg_lite.c)
-- [RT-Thread Environment Layer](./packages/rpmsg-lite-latest/lib/rpmsg_lite/porting/environment/rpmsg_env_rt-thread.c)
+- [RPMsg-Lite Source Code](./board_pkgs/rpmsg-lite/lib/rpmsg_lite/rpmsg_lite.c)
+- [RT-Thread Environment Layer](./board_pkgs/rpmsg-lite/lib/rpmsg_lite/porting/environment/rpmsg_env_rt-thread.c)
 - [VirtIO Specification](https://docs.oasis-open.org/virtio/virtio/v1.1/csprd01/virtio-v1.1-csprd01.html)
 - [PCIe BAR 映射规范](https://pcisig.com/sites/default/files/files/PCIe_Base_Spec_v5.0.pdf)

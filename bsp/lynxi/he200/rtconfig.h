@@ -465,11 +465,11 @@
 /* Micrium: Micrium software products porting for RT-Thread */
 
 /* end of Micrium: Micrium software products porting for RT-Thread */
-#define PKG_USING_LWEXT4
+#define BOARD_PKG_USING_LWEXT4
 #define RT_USING_DFS_LWEXT4
-#define PKG_USING_LWEXT4_LATEST_VERSION
-#define PKG_USING_RPMSG_LITE
-#define PKG_USING_RPMSG_LITE_LATEST_VERSION
+#define BOARD_PKG_USING_LWEXT4_LATEST_VERSION
+#define BOARD_PKG_USING_RPMSG_LITE
+#define BOARD_PKG_USING_RPMSG_LITE_LATEST_VERSION
 /* end of system packages */
 
 /* peripheral libraries and drivers */
@@ -619,8 +619,10 @@
 #define BSP_USING_PCIE_EP
 #define BSP_USING_CORETIMER
 #define BSP_USING_RPMSG_NET
-#define BSP_RPMSG_NET_BIND_CPU0
 #define BSP_USING_RPSH
+#define BSP_RPMSG_NET_BIND_CPU0
+#define BSP_RPMSG_NET_CPU 3
+#define BSP_RPMSG_NET_IRQ_FOLLOW_WORKER_CPU
 /* end of BCM Peripheral Drivers */
 /* end of Hardware Drivers Config */
 

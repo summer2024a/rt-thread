@@ -2,13 +2,22 @@
 
 记录开放项与建议优先级；**任何 shmem / 协议变更须与 Linux host `drivers_test/rpmsg-net` 同步**。
 
+## 结项摘要（最近一轮）
+
+- **阶段结论**：设备->Host 吞吐长期稳定在 `~11 Mbps / ~930 pps`，设备侧长期观测到 `TX alloc_wait avg=1ms`。
+- **已做但未提升**：日志开关、异步 TX、`iperf` 快路径/`udpblast`、通知合并、等待策略微调等。
+- **通信异常新发现（高优先级）**：双端 `buffer_count` 不一致  
+  - Host：`RPMSG_NET_BUFFER_COUNT = 256`  
+  - Device：`RPMSG_PLATFORM_BUFFER_COUNT = 128`
+- **建议先做**：先把 `buffer_count` 双端统一后再做通信回归；否则后续性能与稳定性结论不可靠。
+
 ---
 
 ## P0 — 联调回归与吞吐基线（在槽位已放大之后）
 
 **已落实（需回归验证）**：
 
-- `platform_get_custom_shmem_config()`：**`buffer_payload_size=4080`**、**`buffer_count=128`**、**`vring_size=16384`**、**`vring_align=4096`**（与 host `rpmsg_net_bridge.c` 一致）。
+- **`board_pkgs/rpmsg-lite/.../rpmsg_platform.c`** 中 `platform_get_custom_shmem_config()`：**`buffer_payload_size=4080`**、**`buffer_count=128`**、**`vring_size=16384`**、**`vring_align=4096`**（与 host `rpmsg_net_bridge.c` 一致）。
 - **`rpmsg_net_ip_mtu_from_buffer_payload()`** 按 **RL_BUFFER_PAYLOAD（已不含 std_hdr）** 计算，不再重复减 16。
 - 注册后 **`rpmsg_net_apply_shmem_mtu_cap()`** + HELLO 协商 **`netif->mtu`**。
 
@@ -42,8 +51,9 @@
 
 ## P2 — 构建与仓库卫生
 
-- **`bsp/lynxi/he200/.config`** / **`rtconfig.h`** / Kconfig 同步；合入前 **`scons`** 全量编译。
-- 跨包修改在提交信息中分项说明（`rpmsg_platform.c`、`rpmsg_net.c` 等）。
+- **`bsp/lynxi/he200/.config`** / **`rtconfig.h`** / **`board_pkgs/Kconfig`** / 顶层 **`Kconfig`** 同步；合入前 **`scons`** 全量编译（需设置 **`RTT_CC_PREFIX`**，见 **`README.md`**）。
+- 跨目录修改在提交信息中分项说明（**`board_pkgs/rpmsg-lite/.../rpmsg_platform.c`**、`rpmsg_net.c` 等）。
+- **`packages/pkgs.json`** 通常不入库：新增协作者时说明 **board 定制在 `board_pkgs`**，在线包仅 **`packages/`** 本地 Env 拉取；避免误以为 `PKG_USING_*` 仍指向 `packages/rpmsg-lite-latest`。
 
 ---
 

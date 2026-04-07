@@ -34,6 +34,12 @@
 #define RPSH_DBG(...)
 #endif
 
+#if defined(RT_USING_SMP) && defined(BSP_RPMSG_NET_BIND_CPU0)
+#ifndef BSP_RPMSG_NET_CPU
+#define BSP_RPMSG_NET_CPU 0
+#endif
+#endif
+
 extern void *rpmsg_net_eth_device_get(void);
 extern struct pbuf *rpmsg_net_shell_rx_try(struct eth_device *edev);
 /* Optional symbol: may be absent in some FINSH/POSIX stdio configs. */
@@ -796,12 +802,25 @@ int rpmsg_shell_server_init(void) {
      * before or in parallel with tshell; restore_console_paths breaks serial. */
 
     /* Run below tshell priority to avoid starving UART shell input. */
-    rt_thread_t t = rt_thread_create("sh_srv", shell_server_entry, NULL, 8192, 24, 20);
+    rt_thread_t t = rt_thread_create("sh_srv", shell_server_entry, NULL, 12288, 24, 20);
     if (t)
     {
 #if defined(RT_USING_SMP) && defined(BSP_RPMSG_NET_BIND_CPU0)
-        /* Same core as rpmsg-net / lwIP; avoids migration when RT_CPUS_NR>1. */
-        (void)rt_thread_control(t, RT_THREAD_CTRL_BIND_CPU, (void *)(rt_size_t)0);
+        {
+            int cpu = BSP_RPMSG_NET_CPU;
+
+            if (cpu < 0)
+            {
+                cpu = 0;
+            }
+#if defined(RT_CPUS_NR)
+            if (cpu >= (int)RT_CPUS_NR)
+            {
+                cpu = (int)RT_CPUS_NR - 1;
+            }
+#endif
+            (void)rt_thread_control(t, RT_THREAD_CTRL_BIND_CPU, (void *)(rt_size_t)cpu);
+        }
 #endif
         rt_thread_startup(t);
     }

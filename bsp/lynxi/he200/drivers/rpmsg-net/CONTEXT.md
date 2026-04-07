@@ -7,6 +7,13 @@
 - 协议定义：`rpmsg_net_proto.h`
 - 协议说明：`Protocol.md`
 
+### 1.1 Board packages（`board_pkgs`）与 Kconfig
+
+- **RPMsg-Lite / lwext4** 已收到板级目录 **`bsp/lynxi/he200/board_pkgs/{rpmsg-lite,lwext4}/`**，便于与上游在线包脱钩、做长期定制；**不再**依赖 `bsp/lynxi/he200/packages/*-latest` 参与编译。
+- **Kconfig**：`bsp/lynxi/he200/board_pkgs/Kconfig`，由顶层 `Kconfig` 通过 `rsource "board_pkgs/Kconfig"` 引入。开关宏为 **`BOARD_PKG_USING_RPMSG_LITE`**、**`BOARD_PKG_USING_LWEXT4`**（及对应的 `*_LATEST_VERSION`），**刻意不用**在线包常用的 `PKG_USING_RPMSG_LITE` / `PKG_USING_LWEXT4`，以免与 Env 生成的 `packages/Kconfig` 里同名符号冲突。
+- **SCons**：`board_pkgs/SConscript` 与根目录 `SConscript` 联动；`drivers/rpmsg-net/SConscript` 的 **`CPPPATH`** 指向 **`board_pkgs/rpmsg-lite/lib/include`**。
+- **Env / Git**：仓库根 `.gitignore` 含 **`packages`**，一般 **`bsp/lynxi/he200/packages/`（含 `pkgs.json`）不会进版本库**；协作者需在本地用 Env 维护仍走在线源的包（如 netutils），并与团队约定 `pkgs.json` 内容（例如仅保留 NETUTILS）。
+
 ## 2. 当前实现目标
 
 当前版本围绕以下目标进行了重构：
@@ -275,7 +282,8 @@ RPSH 使用 EtherType **0x88B6**。若与 lwIP 共用同一 `rx_mq`，`sh_srv` �
 
 | 路径 | 说明 |
 |------|------|
-| `bsp/lynxi/he200/drivers/Kconfig` | `BSP_USING_RPMSG_NET`、绑核与 IRQ CPU 配置。 |
+| `bsp/lynxi/he200/board_pkgs/Kconfig` | `BOARD_PKG_USING_RPMSG_LITE` / `BOARD_PKG_USING_LWEXT4` 等板级包开关（与在线 `PKG_USING_*` 区分）。 |
+| `bsp/lynxi/he200/drivers/Kconfig` | `BSP_USING_RPMSG_NET`（在 `BOARD_PKG_USING_RPMSG_LITE` 下）、绑核与 IRQ CPU 配置。 |
 | `bsp/lynxi/he200/board_pkgs/rpmsg-lite/.../rpmsg_platform.c` | RPMsg 平台：定时器 IRQ、`platform_get_custom_shmem_config()`（`buffer_payload_size` / `buffer_count` / `vring_size` 等，须与 **Linux host** 一致）。 |
 | `libcpu/aarch64/common/interrupt.c` | `rt_hw_interrupt_set_affinity` 实现入口（GICv3）。 |
 | Linux：`tools/drivers_test/rpmsg-net/rpmsg-lite/VRING.md` | vring 与 buffer 池 **详细内存部署**（§1.5）；设备侧无副本时可引用该路径。 |
@@ -290,3 +298,36 @@ RPSH 使用 EtherType **0x88B6**。若与 lwIP 共用同一 `rx_mq`，`sh_srv` �
 | 布局说明 | — | 同仓库 **`rpmsg-lite/VRING.md`**（§1.5 详细偏移） |
 
 **注意**：修改任一侧后必须 **同步另一侧** 并 **双端重编**，否则 `rpmsg_lite` 初始化或运行期行为异常。
+
+## 14. 结项记录（本轮带宽与通信异常排查）
+
+### 14.1 排查进展
+
+- 已完成设备侧与 Host 侧带宽瓶颈联调，现象稳定为设备->Host 约 `~11 Mbps / ~930 pps`。
+- 多项尝试已验证但未实质提升：热点日志开关、设备侧异步 TX、`iperf` 快路径与 `udpblast`、通知合并等。
+- 已增加并验证双端统计（设备 irq-rate、Host raise_ipi/rx-recycle），用于定位节拍瓶颈。
+
+### 14.2 当前结论
+
+- 设备侧长期出现 `TX alloc_wait avg=1ms`，与 `~930 pps` 上限一致，表现为 TX buffer 回补节拍接近 1kHz。
+- Host 侧新统计出现 `raise_ipi attempt=0` 且仍有 `rx-recycle ~931 pps`，说明当前路径可能并非主要依赖 Host `raise_ipi` 推进。
+- 本轮结束时，带宽瓶颈仍未根治，暂归类为“通知/回补节拍上限或底层轮询节拍上限”问题。
+
+### 14.3 遗留问题
+
+- 需要进一步确认 TX 可用 buffer 回补的“真实触发源”（硬件 timer/doorbell 中断 vs 软件轮询）。
+- 需在更底层（timer/doorbell 寄存器与中断链路）补证据，排除统计口径偏差。
+- `rx-recycle` 的 batch 统计口径应继续规范，避免窗口内单次突发导致误读。
+
+### 14.4 本轮结项前新发现（通信异常）
+
+- 已核对 `drivers_test` 与 `rt-thread` 参数，一项关键不一致：
+  - Host `rpmsg_net_bridge.c`：`RPMSG_NET_BUFFER_COUNT = 256`
+  - Device `rpmsg_platform.c`：`RPMSG_PLATFORM_BUFFER_COUNT = 128`
+- `buffer_count` 双端不一致会导致 vring/descriptor 认知不一致，可能直接引发“通信不正常”。
+- 其余关键参数当前一致：`buffer_payload_size=4080`、`vring_size=16384`、`vring_align=4096`、`link_id=0`、`proto_ver=0x0001`；endpoint 地址为互补关系（符合预期）。
+
+### 14.5 代码状态说明（结项动作）
+
+- 已按要求回退本轮在 `rt-thread` 中的排查代码改动。
+- `drivers_test` 由于未完整归档，未执行整仓回退；仅保留文档与现状用于后续继续排查。

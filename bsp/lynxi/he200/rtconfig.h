@@ -409,7 +409,6 @@
 #define PKG_USING_NETUTILS
 #define PKG_NETUTILS_IPERF
 #define IPERF_THREAD_STACK_SIZE 16384
-#define PKG_NETUTILS_TELNET
 #define PKG_USING_NETUTILS_LATEST_VERSION
 #define PKG_NETUTILS_VER_NUM 0x99999
 
@@ -465,11 +464,7 @@
 /* Micrium: Micrium software products porting for RT-Thread */
 
 /* end of Micrium: Micrium software products porting for RT-Thread */
-#define BOARD_PKG_USING_LWEXT4
 #define RT_USING_DFS_LWEXT4
-#define BOARD_PKG_USING_LWEXT4_LATEST_VERSION
-#define BOARD_PKG_USING_RPMSG_LITE
-#define BOARD_PKG_USING_RPMSG_LITE_LATEST_VERSION
 /* end of system packages */
 
 /* peripheral libraries and drivers */
@@ -599,6 +594,14 @@
 /* end of Arduino libraries */
 /* end of RT-Thread online packages */
 #define KA200_SOC
+
+/* Board local packages (lwext4, rpmsg-lite) */
+
+#define BOARD_PKG_USING_LWEXT4
+#define BOARD_PKG_USING_LWEXT4_LATEST_VERSION
+#define BOARD_PKG_USING_RPMSG_LITE
+#define BOARD_PKG_USING_RPMSG_LITE_LATEST_VERSION
+/* end of Board local packages (lwext4, rpmsg-lite) */
 #define BSP_SUPPORT_FPU
 
 /* Hardware Drivers Config */

@@ -29,6 +29,7 @@
 #include "platform/rpmsg_platform.h"
 #include "rpmsg_net_proto.h"
 #include "lynxi.h"
+#include "drv_pcie.h"
 
 /* rpsh shell diag (for TX visibility) */
 #ifndef SHELL_ETH_TYPE
@@ -111,7 +112,7 @@ typedef struct rpsh_shell_frame_diag {
 #endif
 
 #define DBG_TAG "rpmsg-net"
-#define DBG_LVL DBG_WARNING
+#define DBG_LVL DBG_LOG
 #include <rtdbg.h>
 
 struct rpmsg_net_device
@@ -529,11 +530,15 @@ static rt_err_t rpmsg_net_send_nocopy_message(struct rpmsg_net_device *rdev,
         return -RT_ERROR;
     }
 
-    tx_buf = rpmsg_lite_alloc_tx_buffer(rdev->rpmsg_inst, &tx_buf_size, RL_BLOCK);
+    /*
+     * Never block tcpip thread here.
+     * If TX vring has no free buffer, fail fast and let upper layer retry.
+     */
+    tx_buf = rpmsg_lite_alloc_tx_buffer(rdev->rpmsg_inst, &tx_buf_size, RL_DONT_BLOCK);
     if (tx_buf == RT_NULL)
     {
-        LOG_E("rpmsg_lite_alloc_tx_buffer failed");
-        return -RT_ERROR;
+        LOG_D("rpmsg_lite_alloc_tx_buffer no buffer");
+        return -RT_EBUSY;
     }
 
     if (len > tx_buf_size)
@@ -761,7 +766,7 @@ static void rpmsg_net_apply_remote_hello(struct rpmsg_net_device *rdev,
 
     rdev->remote_ready = RT_TRUE;
 
-    LOG_D("remote hello: mtu = %d", mtu);
+    LOG_I("remote hello: mtu = %d", mtu);
 
     /* ✨ 收到 HELLO 后才回复 HELLO（如果还没发送过） */
     if (!rdev->hello_sent)
@@ -1379,7 +1384,10 @@ static rt_err_t rpmsg_net_tx(rt_device_t dev, struct pbuf *p)
 
     msg_len = sizeof(struct rpmsg_net_data_msg) + total_len;
 
-    /* 🟡 优化：添加重试机制，处理临时性发送失败 */
+    /*
+     * Keep eth_tx path non-blocking.
+     * Do not sleep/retry in tcpip thread, otherwise netconn write can stall.
+     */
     do {
         ret = rpmsg_net_send_nocopy_message(rdev,
                                            msg_len,
@@ -1398,11 +1406,9 @@ static rt_err_t rpmsg_net_tx(rt_device_t dev, struct pbuf *p)
         LOG_W("TX attempt %d failed, total failures: %u, successes: %u", 
               retry_count, tx_fail_cnt, tx_success_cnt);
 
-        /* 根据失败次数决定重试策略，使用指数退避算法 */
-        if (retry_count < max_retries)
+        if (ret == -RT_EBUSY)
         {
-            /* 指数退避：1ms, 2ms, 4ms, 8ms, ... */
-            rt_thread_mdelay(1 << (retry_count - 1));
+            break;
         }
 
     } while (retry_count < max_retries);
@@ -1862,7 +1868,7 @@ static rt_err_t rpmsg_link_wait_thread_init(struct rpmsg_lite_instance *inst)
     g_rpmsg_net_ctx.link_wait_thread = rt_thread_create("rpmsg_wait",
                                                         rpmsg_link_wait_thread_entry,
                                                         inst,
-                                                        4 * 1024,
+                                                        8 * 1024,
                                                         20,
                                                         10);
     if (g_rpmsg_net_ctx.link_wait_thread == RT_NULL)
@@ -1924,11 +1930,16 @@ rt_int32_t rt_rpmsg_net_init(void)
         return -RT_ERROR;
     }
 
+    LOG_I("Wake up host ipc thread to trigger link detection");
+
+    wakeup_host_ipc();
+
     return RT_EOK;
 }
 
 /* 修改为 INIT_COMPONENT_EXPORT，确保调度器已就绪 */
-INIT_COMPONENT_EXPORT(rt_rpmsg_net_init);
+// INIT_COMPONENT_EXPORT(rt_rpmsg_net_init);
+INIT_FS_EXPORT(rt_rpmsg_net_init);
 
 #ifdef RT_USING_FINSH
 #include <finsh.h>
@@ -1986,6 +1997,4 @@ static void rpmsg_net_stats(void)
     }
 }
 MSH_CMD_EXPORT(rpmsg_net_stats, "Show rpmsg-net and pbuf statistics");
-
-
 #endif /* RT_USING_FINSH */

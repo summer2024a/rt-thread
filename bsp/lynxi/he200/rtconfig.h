@@ -75,7 +75,7 @@
 /* end of klibc options */
 #define RT_NAME_MAX 24
 #define RT_USING_SMP
-#define RT_CPUS_NR 4
+#define RT_CPUS_NR 8
 #define RT_ALIGN_SIZE 8
 #define RT_THREAD_PRIORITY_32
 #define RT_THREAD_PRIORITY_MAX 32
@@ -451,6 +451,8 @@
 
 /* enhanced kernel services */
 
+#define PKG_USING_RT_KPRINTF_THREADSAFE
+#define PKG_USING_RT_KPRINTF_THREADSAFE_LATEST_VERSION
 /* end of enhanced kernel services */
 
 /* acceleration: Assembly language or algorithmic acceleration packages */

@@ -459,12 +459,15 @@ static rt_uint64_t gicv3_sgi_init(void)
 {
     rt_uint64_t i, icc_sgi1r_value;
 
+    /*
+     * ICC_SGI1R_EL1: Aff1[23:16], Aff2[39:32], Aff3[55:48]; RS[47:44] RES0 when RSS==0;
+     * TargetList[15:0] filled per-send. Do not put MPIDR[7:4] into RS — not Aff0.
+     */
     for (i = 0; i < RT_CPUS_NR; i++)
     {
         icc_sgi1r_value =  (rt_uint64_t)((rt_cpu_mpidr_table[i] >> 8)  & 0xFF) << 16;
         icc_sgi1r_value |= (rt_uint64_t)((rt_cpu_mpidr_table[i] >> 16) & 0xFF) << 32;
         icc_sgi1r_value |= (rt_uint64_t)((rt_cpu_mpidr_table[i] >> 32) & 0xFF) << 48;
-        icc_sgi1r_value |= (rt_uint64_t)((rt_cpu_mpidr_table[i] >> 4)  & 0xF)  << 44;
         sgi_aff_add_table(icc_sgi1r_value, i);
     }
 
@@ -490,17 +493,17 @@ rt_inline void gicv3_sgi_send(rt_uint64_t int_id)
 rt_inline void gicv3_sgi_target_list_set(rt_uint64_t array, rt_uint32_t cpu_mask)
 {
     rt_uint64_t i, value;
+    rt_uint32_t group_mask;
 
     for (i = 0; i < sgi_aff_table_num; i++)
     {
-        if (sgi_aff_table[i].cpu_mask[array] & cpu_mask)
+        /* Only CPUs that belong to this affinity group; do not consume the global cpu_mask */
+        group_mask = sgi_aff_table[i].cpu_mask[array] & cpu_mask;
+        while (group_mask)
         {
-            while (cpu_mask)
-            {
-                value = __builtin_ctzl(cpu_mask);
-                cpu_mask &= ~(1 << value);
-                sgi_aff_table[i].target_list |= 1 << (rt_cpu_mpidr_table[(array << 5) | value] & 0xF);
-            }
+            value = __builtin_ctzl(group_mask);
+            group_mask &= ~(1u << value);
+            sgi_aff_table[i].target_list |= (rt_uint16_t)(1u << (rt_uint32_t)(rt_cpu_mpidr_table[(array << 5) | value] & 0xF));
         }
     }
 }
@@ -516,6 +519,11 @@ void arm_gic_send_affinity_sgi(rt_uint64_t index, int irq, rt_uint32_t cpu_masks
         if (!masks_nrs)
         {
             masks_nrs = gicv3_sgi_init();
+        }
+
+        for (i = 0; i < sgi_aff_table_num; i++)
+        {
+            sgi_aff_table[i].target_list = 0;
         }
 
         for (i = 0; i < masks_nrs; i++)

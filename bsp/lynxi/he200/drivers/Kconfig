@@ -130,6 +130,11 @@ menu "Hardware Drivers Config"
                 default n
         endif
 
+        config BSP_USING_GMAC
+            bool "Enable Synopsys GMAC driver"
+            depends on RT_USING_LWIP
+            default n
+
         if BOARD_PKG_USING_RPMSG_LITE
             config BSP_USING_RPMSG_NET
                 bool "Using RPMSG-NET"

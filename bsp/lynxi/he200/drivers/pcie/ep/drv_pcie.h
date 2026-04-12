@@ -2,6 +2,8 @@
 #define __DRV_PCIE_H__
 
 /* PCIe MSI-X interfaces */
+
+int wakeup_host_ipc(void);
 int rt_pci_msix_init(void);
 void rt_pci_msix_deinit(void);
 int rt_pci_one_msix_deinit(int vector);

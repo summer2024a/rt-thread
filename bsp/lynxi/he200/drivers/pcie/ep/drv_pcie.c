@@ -42,6 +42,18 @@ int rt_pci_msix_init(void)
     return RT_EOK;
 }
 
+int rt_pci_one_msix_init(void)
+{
+
+    if (!g_pcie_dbi_base || (g_pcie_dbi_base != pcie_ep_base_addr))
+        g_pcie_dbi_base = pcie_ep_base_addr;
+
+    if (!g_pcie_dbi_base)
+        return -EINVAL;
+
+    return RT_EOK;
+}
+
 /**
  * rt_pci_msix_deinit - 反初始化
  */
@@ -107,15 +119,14 @@ int rt_pci_msix_raise_irq(int vector)
 
 int wakeup_host_ipc(void)
 {
-
-    rt_pci_msix_init();
+    rt_pci_one_msix_init();
     rt_pci_msix_register_vector(PCI_MSIX_DRV_BASE);
     rt_pci_msix_raise_irq(PCI_MSIX_DRV_BASE);
     rt_pci_one_msix_deinit(PCI_MSIX_DRV_BASE);
 
     return 0;
 }
-INIT_DEVICE_EXPORT(wakeup_host_ipc);
+// INIT_DEVICE_EXPORT(wakeup_host_ipc);
 
 #ifdef RT_USING_FINSH
 #include <finsh.h>

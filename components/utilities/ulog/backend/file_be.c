@@ -69,7 +69,7 @@ static rt_bool_t ulog_file_rotate(struct ulog_file_be *be)
 
 __exit:
     /* reopen the file */
-    be->cur_log_file_fd = open(be->cur_log_file_path, O_CREAT | O_RDWR | O_APPEND);
+    be->cur_log_file_fd = open(be->cur_log_file_path, O_CREAT | O_RDWR | O_APPEND, 0666);
 
     return result;
 }
@@ -92,7 +92,7 @@ static void ulog_file_backend_flush_with_buf(struct ulog_backend *backend)
         }
         /* open file */
         rt_snprintf(be->cur_log_file_path, ULOG_FILE_PATH_LEN, "%s/%s.log", be->cur_log_dir_path, be->parent.name);
-        be->cur_log_file_fd = open(be->cur_log_file_path, O_CREAT | O_RDWR | O_APPEND);
+        be->cur_log_file_fd = open(be->cur_log_file_path, O_CREAT | O_RDWR | O_APPEND, 0666);
         if (be->cur_log_file_fd < 0)
         {
             rt_kprintf("ulog file(%s) open failed.", be->cur_log_file_path);

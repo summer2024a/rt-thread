@@ -210,9 +210,13 @@
 #define RT_SERIAL_USING_DMA
 #define RT_SERIAL_RB_BUFSZ 256
 #define RT_USING_CLOCK_TIME
+#define RT_USING_I2C
+#define RT_USING_I2C_BITOPS
 #define RT_USING_NULL
 #define RT_USING_ZERO
 #define RT_USING_RANDOM
+#define RT_USING_RTC
+#define RT_USING_SOFT_RTC
 #define RT_USING_SDIO
 #define RT_SDIO_STACK_SIZE 8192
 #define RT_SDIO_THREAD_PRIORITY 15
@@ -226,6 +230,7 @@
 #define RT_BLK_PARTITION_DFS
 #define RT_BLK_PARTITION_EFI
 /* end of Partition Types */
+#define RT_USING_PIN
 /* end of Device Drivers */
 
 /* C/C++ and POSIX layer */
@@ -291,8 +296,8 @@
 
 /* Static IPv4 Address */
 
-#define RT_LWIP_IPADDR "1.1.1.2"
-#define RT_LWIP_GWADDR "1.1.1.1"
+#define RT_LWIP_IPADDR "192.168.1.2"
+#define RT_LWIP_GWADDR "192.168.1.1"
 #define RT_LWIP_MSKADDR "255.255.255.0"
 /* end of Static IPv4 Address */
 #define RT_LWIP_UDP
@@ -309,7 +314,7 @@
 #define RT_LWIP_TCPTHREAD_PRIORITY 10
 #define RT_LWIP_TCPTHREAD_MBOX_SIZE 8
 #define RT_LWIP_TCPTHREAD_STACKSIZE 4096
-#define RT_LWIP_ETHTHREAD_PRIORITY 12
+#define RT_LWIP_ETHTHREAD_PRIORITY 24
 #define RT_LWIP_ETHTHREAD_STACKSIZE 4096
 #define RT_LWIP_ETHTHREAD_MBOX_SIZE 8
 #define LWIP_NETIF_STATUS_CALLBACK 1
@@ -620,14 +625,23 @@
 #define BSP_USING_GIC
 #define BSP_USING_GICV3
 #define KERNEL_ASPACE_START 0x1000000
+#define BSP_USING_PIN
+#define BSP_USING_GMAC
+#define RT_USING_GMAC_INT_MODE
+#define BSP_GMAC_INIT_PINMUX
+#define BSP_USING_SYSCTL_CLK
+#define BSP_USING_RESET
+#define BSP_USING_RESET_CTRL
+#define BSP_USING_I2C
+#define BSP_USING_I2C0
+#define BSP_USING_I2C1
 #define BSP_USING_PCIE
 #define BSP_USING_PCIE_EP
 #define BSP_USING_CORETIMER
-#define BSP_USING_RPMSG_NET
-#define BSP_USING_RPSH
-#define BSP_RPMSG_NET_BIND_CPU0
-#define BSP_RPMSG_NET_CPU 3
-#define BSP_RPMSG_NET_IRQ_FOLLOW_WORKER_CPU
+#define BSP_USING_DW_AXI_DMA
+
+/* GMAC+e0: set RT_LWIP_IPADDR to e0 subnet (e.g. 192.168.1.x); rpnet0 uses BSP_RPMSG_NET_* in rtconfig.h */
+
 /* end of BCM Peripheral Drivers */
 /* end of Hardware Drivers Config */
 

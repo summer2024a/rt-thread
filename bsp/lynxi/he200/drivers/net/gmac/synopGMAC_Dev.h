@@ -292,8 +292,9 @@ enum GmacRegisters
   GmacFrameFilter     = 0x0004,    /* Mac frame filtering controls              */
   GmacHashHigh        = 0x0008,    /* Multi-cast hash table high                */
   GmacHashLow         = 0x000C,    /* Multi-cast hash table low                 */
-  GmacGmiiAddr        = 0x0010,    /* GMII address Register(ext. Phy)           */
-  GmacGmiiData        = 0x0014,    /* GMII data Register(ext. Phy)              */
+  /* HE200: snps,dwmac-4.20a — MDIO 与 Linux dwmac4.h GMAC_MDIO_ADDR/DATA 一致 */
+  GmacGmiiAddr        = 0x0200,    /* GMII address Register(ext. Phy)           */
+  GmacGmiiData        = 0x0204,    /* GMII data Register(ext. Phy)              */
   GmacFlowControl     = 0x0018,    /* Flow control Register                     */
   GmacVlan            = 0x001C,    /* VLAN tag Register (IEEE 802.1Q)           */
 
@@ -501,28 +502,31 @@ enum GmacFrameFilterReg
 };
 
 
-/*GmacGmiiAddr             = 0x0010,    GMII address Register(ext. Phy) Layout          */
+/* GmacGmiiAddr layout: DWMAC4 (Linux stmmac_mdio.c / dwmac4_core.c), not legacy GMAC */
 enum GmacGmiiAddrReg
 {
-  GmiiDevMask              = 0x0000F800,     /* (PA)GMII device address                 15:11     RW         0x00    */
-  GmiiDevShift             = 11,
+  GmiiDevMask              = 0x03E00000u,    /* (PA) PHY address 25:21 */
+  GmiiDevShift             = 21,
 
-  GmiiRegMask              = 0x000007C0,     /* (GR)GMII register in selected Phy       10:6      RW         0x00    */
-  GmiiRegShift             = 6,
+  GmiiRegMask              = 0x001F0000u,    /* (GR) register 20:16 */
+  GmiiRegShift             = 16,
 
-  GmiiCsrClkMask       = 0x0000001C,     /*CSR Clock bit Mask            4:2                 */
-  GmiiCsrClk5              = 0x00000014,     /* (CR)CSR Clock Range     250-300 MHz      4:2      RW         000     */
-  GmiiCsrClk4              = 0x00000010,     /*                         150-250 MHz                                  */
-  GmiiCsrClk3              = 0x0000000C,     /*                         35-60 MHz                                    */
-  GmiiCsrClk2              = 0x00000008,     /*                         20-35 MHz                                    */
-  GmiiCsrClk1              = 0x00000004,     /*                         100-150 MHz                                  */
-  GmiiCsrClk0              = 0x00000000,     /*                         60-100 MHz                                   */
+  GmiiCsrClkMask           = 0x00000F00u,    /* CSR clk range for MDC 11:8 */
+  GmiiCsrClk5              = 0x00000500u,    /* 250-300 MHz */
+  GmiiCsrClk4              = 0x00000400u,    /* 150-250 MHz */
+  GmiiCsrClk3              = 0x00000300u,    /* 35-60 MHz (Linux STMMAC_CSR_35_60M) */
+  GmiiCsrClk2              = 0x00000200u,    /* 20-35 MHz */
+  GmiiCsrClk1              = 0x00000100u,    /* 100-150 MHz */
+  GmiiCsrClk0              = 0x00000000u,    /* 60-100 MHz */
 
-  GmiiWrite                = 0x00000002,     /* (GW)Write to register                      1      RW                 */
-  GmiiRead                 = 0x00000000,     /* Read from register                                            0      */
+  GmiiGmac4Write           = 0x00000004u,    /* GOC 3:2 = 01, MII_GMAC4_WRITE */
+  GmiiGmac4Read            = 0x0000000Cu,    /* GOC 3:2 = 11, MII_GMAC4_READ */
 
-  GmiiBusy                 = 0x00000001,     /* (GB)GMII interface is busy                 0      RW          0      */
+  GmiiBusy                 = 0x00000001u,
 };
+
+/* 传给 synopGMAC_set_mdc_clk_div 的 CSR 编码值 0x0..0xF（写入 bits 11:8），与 Linux clk_csr 一致 */
+#define LYNXI_GMAC4_MDC_CSR_DEFAULT  0x3u
 
 /* GmacGmiiData            = 0x0014,    GMII data Register(ext. Phy) Layout             */
 enum GmacGmiiDataReg

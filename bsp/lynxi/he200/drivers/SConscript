@@ -7,8 +7,8 @@ CPPPATH = [cwd, str(Dir('#'))]
 if GetDepend('BSP_USING_SDIO') == False:
     SrcRemove(src, ['drv_sdhci.c'])
 
-if GetDepend('BSP_USING_CLK'):
-    src += ['clock/drv_clock.c']
+if GetDepend('BSP_USING_SYSCTL_CLK'):
+    src += ['clock/drv_sysctl_lite.c']
 
 if GetDepend('BSP_USING_PCIE'):
     if GetDepend('BSP_USING_PCIE_EP'):

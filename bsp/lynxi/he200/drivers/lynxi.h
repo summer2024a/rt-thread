@@ -32,6 +32,19 @@
 //sdio offset
 #define SDIO_BASE_OFFSET            (0x10040000)
 
+//reset controller offset
+#define RST_CTRL_BASE_OFFSET        (0x12500000)
+#define I2C0_BASE_OFFSET            (0x10002000)
+#define I2C1_BASE_OFFSET            (0x10003000)
+#define I2C2_BASE_OFFSET            (0x10004000)
+#define I2C3_BASE_OFFSET            (0x10005000)
+#define RTC_BASE_OFFSET             (0x10014000)
+#define DW_AXI_DMA_BASE_OFFSET      (0x1001A000)
+/* Synopsys GMAC / dwmac — same PA as Linux lynchip-lite-base.dtsi ethernet@10020000 */
+#define GMAC_BASE_OFFSET            (0x10020000)
+#define CPR_BASE_OFFSET             (0x12500000)
+#define EFUSE_BASE_OFFSET           (0x12300000)
+
 /* GPIO */
 #define GPIO_BASE_ADDR              (PER_BASE + GPIO_BASE_OFFSET)
 extern size_t gpio_base_addr;
@@ -64,8 +77,32 @@ extern size_t arm_timer_base;
 #define IRQ_UART0                   (32 + 25)
 #define IRQ_UART1                   (32 + 26)
 
+/* Linux lynchip-lite-base.dtsi ethernet@10020000: interrupts = <0 78 4> */
+#define IRQ_GMAC                    78
+
+/* I2C */
+#define I2C0_BASE                   (PER_BASE + I2C0_BASE_OFFSET)
+#define I2C1_BASE                   (PER_BASE + I2C1_BASE_OFFSET)
+#define IRQ_I2C0                    (32 + 31)
+#define IRQ_I2C1                    (32 + 28)
+
+/* Reset controller */
+#define RST_CTRL_BASE               (PER_BASE + RST_CTRL_BASE_OFFSET)
+
 /* SDIO */
 #define SDIO_BASE                   (PER_BASE + SDIO_BASE_OFFSET)
+
+#define I2C2_BASE                   (PER_BASE + I2C2_BASE_OFFSET)
+#define I2C3_BASE                   (PER_BASE + I2C3_BASE_OFFSET)
+
+/* RTC */
+#define RTC_BASE                    (PER_BASE + RTC_BASE_OFFSET)
+
+/* CPR / EFUSE / DMA */
+#define CPR_BASE                    (PER_BASE + CPR_BASE_OFFSET)
+#define EFUSE_BASE                  (PER_BASE + EFUSE_BASE_OFFSET)
+#define DW_AXI_DMA_BASE             (PER_BASE + DW_AXI_DMA_BASE_OFFSET)
+#define GMAC_BASE                   (PER_BASE + GMAC_BASE_OFFSET)
 
 // 0x40, 0x44, 0x48, 0x4c: Core 0~3 Timers interrupt control
 #define CORE0_TIMER_IRQ_CTRL        HWREG32(0x08600000)

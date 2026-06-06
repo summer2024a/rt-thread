@@ -14,6 +14,8 @@
 #include <rtthread.h>
 
 #define UNUSED  1
+#define DESC_DATA_TO_PTR(data) ((DmaDesc *)(rt_ubase_t)(data))
+#define PTR_TO_DESC_DATA(ptr)  ((u32)(rt_ubase_t)(ptr))
 
 /**
   * Function to set the MDC clock for mdio transactiona
@@ -25,10 +27,11 @@
 s32 synopGMAC_set_mdc_clk_div(synopGMACdevice *gmacdev,u32 clk_div_val)
 {
     u32 orig_data;
-    orig_data = synopGMACReadReg(gmacdev->MacBase,GmacGmiiAddr); //set the mdc clock to the user defined value
-    orig_data &= (~ GmiiCsrClkMask);
-    orig_data |= clk_div_val;
-    synopGMACWriteReg(gmacdev->MacBase, GmacGmiiAddr ,orig_data);
+    /* DWMAC4: CSR 在 bits 11:8，clk_div_val 为 Linux stmmac clk_csr 编码 0x0..0xF */
+    orig_data = synopGMACReadReg(gmacdev->MacBase, GmacGmiiAddr);
+    orig_data &= ~GmiiCsrClkMask;
+    orig_data |= ((clk_div_val & 0xFu) << 8);
+    synopGMACWriteReg(gmacdev->MacBase, GmacGmiiAddr, orig_data);
     return 0;
 }
 
@@ -42,9 +45,8 @@ s32 synopGMAC_set_mdc_clk_div(synopGMACdevice *gmacdev,u32 clk_div_val)
 u32 synopGMAC_get_mdc_clk_div(synopGMACdevice *gmacdev)
 {
     u32 data;
-    data = synopGMACReadReg(gmacdev->MacBase,GmacGmiiAddr);
-    data &= GmiiCsrClkMask;
-    return data;
+    data = synopGMACReadReg(gmacdev->MacBase, GmacGmiiAddr);
+    return (data >> 8) & 0xFu;
 }
 
 
@@ -61,15 +63,27 @@ s32 synopGMAC_read_phy_reg(u32 RegBase,u32 PhyBase, u32 RegOffset, u16 * data )
 {
     u32 addr;
     u32 loop_variable;
-    addr = ((PhyBase << GmiiDevShift) & GmiiDevMask) | ((RegOffset << GmiiRegShift) & GmiiRegMask)
-                                                     | GmiiCsrClk3; //sw: add GmiiCsrClk
-    addr = addr | GmiiBusy ; //Gmii busy bit
 
-    synopGMACWriteReg(RegBase,GmacGmiiAddr,addr);
-    //write the address from where the data to be read in GmiiGmiiAddr register of synopGMAC ip
+    /* DWMAC4: 与 Linux stmmac_mdio_read(has_gmac4) 一致 — PA 25:21, GR 20:16, CSR 11:8, GOC read 3:2 */
+    for (loop_variable = 0; loop_variable < DEFAULT_LOOP_VARIABLE; loop_variable++) {
+        if (!(synopGMACReadReg(RegBase, GmacGmiiAddr) & GmiiBusy))
+            break;
+        plat_delay(DEFAULT_DELAY_VARIABLE);
+    }
+    if (loop_variable >= DEFAULT_LOOP_VARIABLE) {
+        TR("Error::: PHY MDIO busy before read\n");
+        return -ESYNOPGMACPHYERR;
+    }
+
+    addr = GmiiBusy;
+    addr |= ((PhyBase << GmiiDevShift) & GmiiDevMask);
+    addr |= ((RegOffset << GmiiRegShift) & GmiiRegMask);
+    addr |= GmiiCsrClk3;
+    addr |= GmiiGmac4Read;
+
+    synopGMACWriteReg(RegBase, GmacGmiiAddr, addr);
 
     for(loop_variable = 0; loop_variable < DEFAULT_LOOP_VARIABLE; loop_variable++){
-        //Wait till the busy bit gets cleared within a certain amount of time
         if (!(synopGMACReadReg(RegBase,GmacGmiiAddr) & GmiiBusy)){
             break;
         }
@@ -103,11 +117,23 @@ s32 synopGMAC_write_phy_reg(u32 RegBase, u32 PhyBase, u32 RegOffset, u16 data)
     u32 addr;
     u32 loop_variable;
 
-    synopGMACWriteReg(RegBase,GmacGmiiData,data); // write the data in to GmacGmiiData register of synopGMAC ip
+    for (loop_variable = 0; loop_variable < DEFAULT_LOOP_VARIABLE; loop_variable++) {
+        if (!(synopGMACReadReg(RegBase, GmacGmiiAddr) & GmiiBusy))
+            break;
+        plat_delay(DEFAULT_DELAY_VARIABLE);
+    }
+    if (loop_variable >= DEFAULT_LOOP_VARIABLE) {
+        TR("Error::: PHY MDIO busy before write\n");
+        return -ESYNOPGMACPHYERR;
+    }
 
-    addr = ((PhyBase << GmiiDevShift) & GmiiDevMask) | ((RegOffset << GmiiRegShift) & GmiiRegMask) | GmiiWrite | GmiiCsrClk3;   //sw: add GmiiCsrclk
+    synopGMACWriteReg(RegBase, GmacGmiiData, data);
 
-    addr = addr | GmiiBusy ; //set Gmii clk to 20-35 Mhz and Gmii busy bit
+    addr = GmiiBusy;
+    addr |= ((PhyBase << GmiiDevShift) & GmiiDevMask);
+    addr |= ((RegOffset << GmiiRegShift) & GmiiRegMask);
+    addr |= GmiiCsrClk3;
+    addr |= GmiiGmac4Write;
 
     synopGMACWriteReg(RegBase,GmacGmiiAddr,addr);
     for(loop_variable = 0; loop_variable < DEFAULT_LOOP_VARIABLE; loop_variable++){
@@ -141,16 +167,22 @@ s32 synopGMAC_write_phy_reg(u32 RegBase, u32 PhyBase, u32 RegOffset, u16 data)
 #if UNUSED
 s32 synopGMAC_phy_loopback(synopGMACdevice *gmacdev, bool loopback)
 {
-s32 status = -ESYNOPGMACNOERR;
-u16 *temp;
-    status = synopGMAC_read_phy_reg(gmacdev->MacBase, gmacdev->PhyBase, PHY_CONTROL_REG,temp);
-if(loopback)
-    *temp |= 0x4000;
-else
-    *temp = *temp;
+    s32 status = -ESYNOPGMACNOERR;
+    u16 temp = 0;
 
-    status = synopGMAC_write_phy_reg(gmacdev->MacBase, gmacdev->PhyBase, PHY_CONTROL_REG, *temp);
-return status;
+    status = synopGMAC_read_phy_reg(gmacdev->MacBase, gmacdev->PhyBase, PHY_CONTROL_REG, &temp);
+    if (status < 0)
+    {
+        return status;
+    }
+
+    if (loopback)
+    {
+        temp |= 0x4000;
+    }
+
+    status = synopGMAC_write_phy_reg(gmacdev->MacBase, gmacdev->PhyBase, PHY_CONTROL_REG, temp);
+    return status;
 }
 
 #endif
@@ -164,9 +196,7 @@ return status;
 
 s32 synopGMAC_read_version (synopGMACdevice * gmacdev)
 {
-    u32 data = 0;
-    data = synopGMACReadReg(gmacdev->MacBase, GmacVersion );
-    gmacdev->Version = data;
+    gmacdev->Version = synopGMACReadReg(gmacdev->MacBase, GmacVersion);
     return 0;
 }
 
@@ -179,11 +209,22 @@ s32 synopGMAC_read_version (synopGMACdevice * gmacdev)
   */
 s32 synopGMAC_reset (synopGMACdevice * gmacdev)
 {
-    u32 data = 0;
-    synopGMACWriteReg(gmacdev->DmaBase, DmaBusMode ,DmaResetOn);
-    plat_delay(DEFAULT_LOOP_VARIABLE);
-    data = synopGMACReadReg(gmacdev->DmaBase, DmaBusMode);
-    TR("DATA after Reset = %08x\n",data);
+    u32 mode;
+    int retry;
+
+    synopGMACWriteReg(gmacdev->DmaBase, DmaBusMode, DmaResetOn);
+    /* Linux dwmac4_dma_reset(): 10×mdelay(10ms) */
+    for (retry = 0; retry < 10; retry++)
+    {
+        rt_thread_mdelay(10);
+        mode = synopGMACReadReg(gmacdev->DmaBase, DmaBusMode);
+        if ((mode & DmaResetOn) == 0)
+        {
+            return 0;
+        }
+    }
+    rt_kprintf("gmac: DMA SWR timeout (dwmac4_dma_reset), DMA_MODE=0x%08x\n", mode);
+    TR("DATA after Reset = %08x\n", mode);
 
     return 0;
 }
@@ -491,8 +532,6 @@ void synopGMAC_pad_crc_strip_enable(synopGMACdevice * gmacdev)
 void synopGMAC_pad_crc_strip_disable(synopGMACdevice * gmacdev)
 {
     synopGMACClearBits(gmacdev->MacBase, GmacConfig, GmacPadCrcStrip);
-    u32 status = synopGMACReadReg(gmacdev->MacBase, GmacConfig);
-    DEBUG_MES("strips status : %u\n", status & GmacPadCrcStrip);
     return;
 }
 /**
@@ -1021,8 +1060,6 @@ void synopGMAC_pause_control(synopGMACdevice *gmacdev)
   */
 s32 synopGMAC_mac_init(synopGMACdevice * gmacdev)
 {
-    u32 PHYreg;
-
     if(gmacdev->DuplexMode == FULLDUPLEX){
         TR("\n===phy FULLDUPLEX MODE\n");   //sw:   debug
         synopGMAC_wd_enable(gmacdev);
@@ -1153,14 +1190,34 @@ s32 synopGMAC_mac_init(synopGMACdevice * gmacdev)
   * @param[in] buffer containing mac address to be programmed.
   * \return 0 upon success. Error code upon failure.
   */
+/* HE200 MMIO: board.c maps INTC_BASE .. INTC_BASE+0x14000000-1 as DEVICE (see platform_mem_desc). */
+#define LYNXI_PERIPH_PA_START   0x08000000u
+#define LYNXI_PERIPH_PA_END     (0x08000000u + 0x14000000u - 1u)
+
+static rt_bool_t _lynxi_mac_regbase_valid(u32 mac_base)
+{
+    return (mac_base >= LYNXI_PERIPH_PA_START) && (mac_base <= LYNXI_PERIPH_PA_END);
+}
+
 s32 synopGMAC_set_mac_addr(synopGMACdevice *gmacdev, u32 MacHigh, u32 MacLow, u8 *MacAddr)
 {
     u32 data;
 
-        data = (MacAddr[5] << 8) | MacAddr[4];
-        synopGMACWriteReg(gmacdev->MacBase,MacHigh,data);
-        data = (MacAddr[3] << 24) | (MacAddr[2] << 16) | (MacAddr[1] << 8) | MacAddr[0] ;
-        synopGMACWriteReg(gmacdev->MacBase,MacLow,data);
+    if (gmacdev == RT_NULL || MacAddr == RT_NULL)
+    {
+        return -1;
+    }
+    if (!_lynxi_mac_regbase_valid(gmacdev->MacBase))
+    {
+        rt_kprintf("synopGMAC_set_mac_addr: invalid MacBase 0x%08x (expected device window %08x..%08x)\n",
+                   gmacdev->MacBase, LYNXI_PERIPH_PA_START, LYNXI_PERIPH_PA_END);
+        return -1;
+    }
+
+    data = (MacAddr[5] << 8) | MacAddr[4];
+    synopGMACWriteReg(gmacdev->MacBase, MacHigh, data);
+    data = (MacAddr[3] << 24) | (MacAddr[2] << 16) | (MacAddr[1] << 8) | MacAddr[0];
+    synopGMACWriteReg(gmacdev->MacBase, MacLow, data);
 
     return 0;
 }
@@ -1208,35 +1265,66 @@ s32 synopGMAC_get_mac_addr(synopGMACdevice *gmacdev, u32 MacHigh, u32 MacLow, u8
 
 s32 synopGMAC_attach (synopGMACdevice * gmacdev, u32 macBase, u32 dmaBase, u32 phyBase,u8 *mac_addr)
 {
+    u32 phy_addr;
+    u32 j;
+    u16 data;
+
+    if (gmacdev == RT_NULL || mac_addr == RT_NULL)
+    {
+        return -1;
+    }
+
     /*Make sure the Device data strucure is cleared before we proceed further*/
     rt_memset((void *) gmacdev,0,sizeof(synopGMACdevice));
     /*Populate the mac and dma base addresses*/
     gmacdev->MacBase = macBase;
     gmacdev->DmaBase = dmaBase;
-    gmacdev->PhyBase = phyBase;
+    gmacdev->PhyBase = phyBase & 0x1fu;
+    if (!_lynxi_mac_regbase_valid(macBase) || !_lynxi_mac_regbase_valid(dmaBase))
+    {
+        rt_kprintf("synopGMAC_attach: invalid MacBase/DmaBase 0x%08x / 0x%08x\n", macBase, dmaBase);
+        return -1;
+    }
+    /*
+     * CPR 释放后 GMAC 可能仍处于未定义状态；先 DMA 软复位并固定 MDC 分频再扫 PHY，
+     * 否则 MDIO 可能全 0/0xffff 误报 phy_detect: can't find PHY!
+     */
+    synopGMAC_reset(gmacdev);
+    synopGMAC_set_mdc_clk_div(gmacdev, LYNXI_GMAC4_MDC_CSR_DEFAULT);
 //  rt_kprintf("gmacdev->DmaBase = 0x%x\n", gmacdev->DmaBase);
 //  rt_kprintf("dmaBase = 0x%x\n", dmaBase);
+    for (phy_addr = phyBase & 0x1fu, j = 0; j < 32; phy_addr = (phy_addr + 1u) & 0x1fu, j++)
     {
-        int i,j;
-        u16 data;
-        for (i = phyBase,j=0;j<32;i=(i+1)&0x1f,j++)
+        /* 仅当 MDIO 事务成功时采纳 data（失败时未写入 *data，避免未定义值误判） */
+        if (synopGMAC_read_phy_reg(gmacdev->MacBase, phy_addr, 2, &data) == 0 &&
+            data != 0 && data != 0xffff)
         {
-            synopGMAC_read_phy_reg(gmacdev->MacBase,i,2,&data);
-            if(data != 0 && data != 0xffff) break;
-            synopGMAC_read_phy_reg(gmacdev->MacBase,i,3,&data);
-            if(data != 0 && data != 0xffff) break;
+            break;
         }
+        if (synopGMAC_read_phy_reg(gmacdev->MacBase, phy_addr, 3, &data) == 0 &&
+            data != 0 && data != 0xffff)
+        {
+            break;
+        }
+    }
 
-        if(j==32) {
-            rt_kprintf("phy_detect: can't find PHY!\n");
-        }
-        gmacdev->PhyBase = i;
+    if (j == 32u)
+    {
+        rt_kprintf("phy_detect: can't find PHY!\n");
+        gmacdev->PhyBase = phyBase & 0x1fu;
+    }
+    else
+    {
+        gmacdev->PhyBase = phy_addr;
     }
 
 //  synopGMAC_get_mac_addr(gmacdev, GmacAddr0High, GmacAddr0Low, mac_addr);
 
     /* Program/flash in the station/IP's Mac address */
-    synopGMAC_set_mac_addr(gmacdev,GmacAddr0High,GmacAddr0Low, mac_addr);
+    if (synopGMAC_set_mac_addr(gmacdev, GmacAddr0High, GmacAddr0Low, mac_addr) != 0)
+    {
+        return -1;
+    }
 
     return 0;
 }
@@ -1387,7 +1475,7 @@ s32 synopGMAC_init_tx_rx_desc_queue(synopGMACdevice *gmacdev)
 void synopGMAC_init_rx_desc_base(synopGMACdevice *gmacdev)
 {
     DEBUG_MES("gmacdev->RxDescDma = %08x\n", gmacdev->RxDescDma);
-    synopGMACWriteReg(gmacdev->DmaBase,DmaRxBaseAddr,(u32)gmacdev->RxDescDma );
+    synopGMACWriteReg(gmacdev->DmaBase, DmaRxBaseAddr, (u32)(rt_ubase_t)gmacdev->RxDescDma);
     return;
 }
 
@@ -1400,7 +1488,7 @@ void synopGMAC_init_rx_desc_base(synopGMACdevice *gmacdev)
   */
 void synopGMAC_init_tx_desc_base(synopGMACdevice *gmacdev)
 {
-    synopGMACWriteReg(gmacdev->DmaBase,DmaTxBaseAddr,(u32)gmacdev->TxDescDma);
+    synopGMACWriteReg(gmacdev->DmaBase, DmaTxBaseAddr, (u32)(rt_ubase_t)gmacdev->TxDescDma);
     return;
 }
 
@@ -1662,7 +1750,7 @@ bool synopGMAC_is_rx_frame_length_errors(u32 status)
 bool synopGMAC_is_last_rx_desc(synopGMACdevice * gmacdev,DmaDesc *desc)
 {
 //bool synopGMAC_is_last_desc(DmaDesc *desc)
-return (((desc->length & RxDescEndOfRing) == RxDescEndOfRing) || ((u32)gmacdev->RxDesc == desc->data2));
+return (((desc->length & RxDescEndOfRing) == RxDescEndOfRing) || (PTR_TO_DESC_DATA(gmacdev->RxDesc) == desc->data2));
 }
 
 /**
@@ -1677,9 +1765,9 @@ bool synopGMAC_is_last_tx_desc(synopGMACdevice * gmacdev,DmaDesc *desc)
 {
 //bool synopGMAC_is_last_desc(DmaDesc *desc)
 #ifdef ENH_DESC
-    return (((desc->status & TxDescEndOfRing) == TxDescEndOfRing) || ((u32)gmacdev->TxDesc == desc->data2));
+    return (((desc->status & TxDescEndOfRing) == TxDescEndOfRing) || (PTR_TO_DESC_DATA(gmacdev->TxDesc) == desc->data2));
 #else
-    return (((desc->length & TxDescEndOfRing) == TxDescEndOfRing) || ((u32)gmacdev->TxDesc == desc->data2));
+    return (((desc->length & TxDescEndOfRing) == TxDescEndOfRing) || (PTR_TO_DESC_DATA(gmacdev->TxDesc) == desc->data2));
 #endif
 }
 
@@ -1805,7 +1893,7 @@ s32 synopGMAC_get_tx_qptr(synopGMACdevice * gmacdev, u32 * Status, u32 * Buffer1
     gmacdev->TxBusy     = synopGMAC_is_last_tx_desc(gmacdev,txdesc) ? 0 : txover + 1;
 
     if(synopGMAC_is_tx_desc_chained(txdesc)){
-        gmacdev->TxBusyDesc = (DmaDesc *)txdesc->data2;
+        gmacdev->TxBusyDesc = DESC_DATA_TO_PTR(txdesc->data2);
         synopGMAC_tx_desc_init_chain(txdesc);
     }
     else{
@@ -1838,7 +1926,6 @@ s32 synopGMAC_get_tx_qptr(synopGMACdevice * gmacdev, u32 * Status, u32 * Buffer1
 {
     u32  txover      = gmacdev->TxBusy;
     DmaDesc * txdesc = gmacdev->TxBusyDesc;
-    int i;
 
 //sw: dbg
 
@@ -1881,7 +1968,7 @@ s32 synopGMAC_get_tx_qptr(synopGMACdevice * gmacdev, u32 * Status, u32 * Buffer1
     gmacdev->TxBusy     = synopGMAC_is_last_tx_desc(gmacdev,txdesc) ? 0 : txover + 1;
 
     if(synopGMAC_is_tx_desc_chained(txdesc)){
-        gmacdev->TxBusyDesc = (DmaDesc *)txdesc->data2;
+        gmacdev->TxBusyDesc = DESC_DATA_TO_PTR(txdesc->data2);
         synopGMAC_tx_desc_init_chain(txdesc);
     }
     else{
@@ -1916,7 +2003,6 @@ s32 synopGMAC_get_tx_qptr(synopGMACdevice * gmacdev, u32 * Status, u32 * Buffer1
   * @param[in] u32 indicating whether the checksum offloading in HW/SW.
   * \return returns present tx descriptor index on success. Negative value if error.
   */
-u32 len;
 s32 synopGMAC_set_tx_qptr(synopGMACdevice * gmacdev, u32 Buffer1, u32 Length1, u32 Data1, u32 Buffer2, u32 Length2, u32 Data2,u32 offload_needed,u32 * index, DmaDesc * Dpr)
 {
     u32  txnext      = gmacdev->TxNext;
@@ -1960,7 +2046,7 @@ s32 synopGMAC_set_tx_qptr(synopGMACdevice * gmacdev, u32 Buffer1, u32 Length1, u
         #endif
 
         gmacdev->TxNext = synopGMAC_is_last_tx_desc(gmacdev,txdesc) ? 0 : txnext + 1;
-        gmacdev->TxNextDesc = (DmaDesc *)txdesc->data2;
+        gmacdev->TxNextDesc = DESC_DATA_TO_PTR(txdesc->data2);
     }
     else{
 //      printf("synopGMAC_set_tx_qptr:in ring mode\n");
@@ -2053,7 +2139,7 @@ s32 synopGMAC_set_rx_qptr(synopGMACdevice * gmacdev, u32 Buffer1, u32 Length1, u
         rxdesc->status = DescOwnByDma;
 
         gmacdev->RxNext     = synopGMAC_is_last_rx_desc(gmacdev,rxdesc) ? 0 : rxnext + 1;
-        gmacdev->RxNextDesc = (DmaDesc *)rxdesc->data2;
+        gmacdev->RxNextDesc = DESC_DATA_TO_PTR(rxdesc->data2);
     }
     else{
         rxdesc->length |= (((Length1 <<DescSize1Shift) & DescSize1Mask) | ((Length2 << DescSize2Shift) & DescSize2Mask));
@@ -2120,7 +2206,7 @@ s32 synopGMAC_set_rx_qptr(synopGMACdevice * gmacdev, u32 Buffer1, u32 Length1, u
         rxdesc->status = DescOwnByDma;
 
         gmacdev->RxNext     = synopGMAC_is_last_rx_desc(gmacdev,rxdesc) ? 0 : rxnext + 1;
-        gmacdev->RxNextDesc = (DmaDesc *)rxdesc->data2;
+        gmacdev->RxNextDesc = DESC_DATA_TO_PTR(rxdesc->data2);
     }
     else{
         rxdesc->length |= (((Length1 <<DescSize1Shift) & DescSize1Mask) | ((Length2 << DescSize2Shift) & DescSize2Mask));
@@ -2173,7 +2259,7 @@ s32 synopGMAC_set_rx_qptr_init(synopGMACdevice * gmacdev, u32 Buffer1, u32 Lengt
         rxdesc->status = 0;
 
         gmacdev->RxNext     = synopGMAC_is_last_rx_desc(gmacdev,rxdesc) ? 0 : rxnext + 1;
-        gmacdev->RxNextDesc = (DmaDesc *)rxdesc->data2;
+        gmacdev->RxNextDesc = DESC_DATA_TO_PTR(rxdesc->data2);
     }
     else{
         rxdesc->length |= (((Length1 <<DescSize1Shift) & DescSize1Mask) | ((Length2 << DescSize2Shift) & DescSize2Mask));
@@ -2255,7 +2341,7 @@ s32 synopGMAC_get_rx_qptr(synopGMACdevice * gmacdev, u32 * Status, u32 * Buffer1
     gmacdev->RxBusy     = synopGMAC_is_last_rx_desc(gmacdev,rxdesc) ? 0 : rxnext + 1;
 
     if(synopGMAC_is_rx_desc_chained(rxdesc)){
-        gmacdev->RxBusyDesc = (DmaDesc *)rxdesc->data2;
+        gmacdev->RxBusyDesc = DESC_DATA_TO_PTR(rxdesc->data2);
         synopGMAC_rx_desc_init_chain(rxdesc);
         //synopGMAC_desc_init_chain(rxdesc, synopGMAC_is_last_rx_desc(gmacdev,rxdesc),0,0);
     }
@@ -2292,7 +2378,6 @@ s32 synopGMAC_get_rx_qptr(synopGMACdevice * gmacdev, u32 * Status, u32 * Buffer1
                         //is spread over multiple buffers/descriptors
     DmaDesc * rxdesc = gmacdev->RxBusyDesc;
 
-    u32 len;
     if(synopGMAC_is_desc_owned_by_dma(rxdesc))
     {
         DEBUG_MES("synopGMAC_get_rx_qptr:DMA descriptor is owned by GMAC!\n");
@@ -2321,11 +2406,11 @@ s32 synopGMAC_get_rx_qptr(synopGMACdevice * gmacdev, u32 * Status, u32 * Buffer1
     if(Data1 != 0)
         *Data2 = rxdesc->data2;
 
-    len =  synopGMAC_get_rx_desc_frame_length(*Status);
-    DEBUG_MES("Cache sync for data buffer in rx dma desc: length = 0x%x\n",len);
+    DEBUG_MES("Cache sync for data buffer in rx dma desc: length = 0x%x\n",
+              synopGMAC_get_rx_desc_frame_length(*Status));
     gmacdev->RxBusy     = synopGMAC_is_last_rx_desc(gmacdev,rxdesc) ? 0 : rxnext + 1;
     if(synopGMAC_is_rx_desc_chained(rxdesc)){
-        gmacdev->RxBusyDesc = (DmaDesc *)rxdesc->data2;
+        gmacdev->RxBusyDesc = DESC_DATA_TO_PTR(rxdesc->data2);
         synopGMAC_rx_desc_init_chain(rxdesc);
     }
     else{
@@ -2534,7 +2619,7 @@ void synopGMAC_take_desc_ownership_rx(synopGMACdevice * gmacdev)
         if(synopGMAC_is_rx_desc_chained(desc)){ //This descriptor is in chain mode
 
             synopGMAC_take_desc_ownership(desc);
-            desc = (DmaDesc *)desc->data2;
+            desc = DESC_DATA_TO_PTR(desc->data2);
         }
         else{
             synopGMAC_take_desc_ownership(desc + i);
@@ -2559,7 +2644,7 @@ void synopGMAC_take_desc_ownership_tx(synopGMACdevice * gmacdev)
     for(i = 0; i < gmacdev->TxDescCount; i++){
         if(synopGMAC_is_tx_desc_chained(desc)){ //This descriptor is in chain mode
             synopGMAC_take_desc_ownership(desc);
-            desc = (DmaDesc *)desc->data2;
+            desc = DESC_DATA_TO_PTR(desc->data2);
         }
         else{
             synopGMAC_take_desc_ownership(desc + i);

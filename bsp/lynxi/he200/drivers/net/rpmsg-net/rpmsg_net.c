@@ -22,6 +22,13 @@
 #include <netif/ethernetif.h>
 #include <lwip/pbuf.h>
 #include <lwip/netif.h>
+#if defined(BSP_USING_GMAC) && defined(BSP_USING_RPMSG_NET)
+#include <lwip/netifapi.h>
+#include <lwip/inet.h>
+#endif
+#ifdef RT_USING_NETDEV
+#include <netdev.h>
+#endif
 
 /* RPMSG headers - adapt to your rpmsg-lite include paths */
 #include "rpmsg_lite.h"
@@ -177,6 +184,66 @@ static rt_uint32_t rpmsg_net_ip_mtu_from_buffer_payload(rt_uint32_t buffer_paylo
         ip_mtu = RPMSG_NET_MTU;
     return ip_mtu;
 }
+
+#if defined(BSP_USING_GMAC) && defined(BSP_USING_RPMSG_NET)
+/* 可在 rtconfig.h 中覆盖；须与 RT_LWIP_IPADDR 不同网段 */
+#ifndef BSP_RPMSG_NET_IPADDR
+#define BSP_RPMSG_NET_IPADDR  "1.1.1.2"
+#endif
+#ifndef BSP_RPMSG_NET_MSKADDR
+#define BSP_RPMSG_NET_MSKADDR "255.255.255.0"
+#endif
+#ifndef BSP_RPMSG_NET_GWADDR
+#define BSP_RPMSG_NET_GWADDR  "1.1.1.1"
+#endif
+
+/**
+ * e0 先注册，eth_device_init 对两网卡都使用 RT_LWIP_*，会与 rpnet0 重复同一 IPv4。
+ * 在 rpnet0 netif 创建后改为 BSP_RPMSG_NET_*，与 e0 网段解耦，由 lwIP 按目的地址选接口。
+ */
+static void rpmsg_net_apply_rpmsg_static_ip(struct netif *netif)
+{
+    ip4_addr_t ip;
+    ip4_addr_t nm;
+    ip4_addr_t gw;
+
+    if (netif == RT_NULL)
+        return;
+
+    if (rt_strcmp(RT_LWIP_IPADDR, BSP_RPMSG_NET_IPADDR) == 0)
+    {
+        LOG_E("rpmsg-net: RT_LWIP_IPADDR equals BSP_RPMSG_NET_IPADDR. Set RT_LWIP_* to e0 subnet (e.g. 192.168.1.x) in rtconfig.h.");
+    }
+
+    ip.addr = inet_addr(BSP_RPMSG_NET_IPADDR);
+    nm.addr = inet_addr(BSP_RPMSG_NET_MSKADDR);
+    gw.addr = inet_addr(BSP_RPMSG_NET_GWADDR);
+
+    if (netifapi_netif_set_addr(netif, &ip, &nm, &gw) != ERR_OK)
+        LOG_W("rpmsg-net: netifapi_netif_set_addr failed (rpnet0)");
+}
+#endif
+
+#ifdef RT_USING_NETDEV
+/* ifconfig / netdev 在 netdev_add() 时拷贝一份 IP/MTU，之后仅改 lwIP netif 不会更新，需手动对齐 */
+static void rpmsg_net_sync_netdev_from_netif(struct netif *netif)
+{
+    struct netdev *nd;
+    char name[NETIF_NAMESIZE + 1];
+
+    if (netif == RT_NULL)
+        return;
+    rt_memcpy(name, netif->name, NETIF_NAMESIZE);
+    name[NETIF_NAMESIZE] = '\0';
+    nd = netdev_get_by_name(name);
+    if (nd == RT_NULL)
+        return;
+    nd->ip_addr = netif->ip_addr;
+    nd->netmask = netif->netmask;
+    nd->gw = netif->gw;
+    nd->mtu = netif->mtu;
+}
+#endif
 
 static void rpmsg_net_apply_shmem_mtu_cap(struct rpmsg_net_device *rdev)
 {
@@ -1676,6 +1743,11 @@ int rpmsg_net_device_register(struct rpmsg_lite_instance *inst, void *ept, rpmsg
         return -RT_ERROR;
     }
 
+#if defined(BSP_USING_GMAC) && defined(BSP_USING_RPMSG_NET)
+    if (rdev->parent.netif)
+        rpmsg_net_apply_rpmsg_static_ip(rdev->parent.netif);
+#endif
+
     rpmsg_net_bind_lwip_worker_threads_cpu0();
 
     if (rdev->parent.netif)
@@ -1685,6 +1757,9 @@ int rpmsg_net_device_register(struct rpmsg_lite_instance *inst, void *ept, rpmsg
         rdev->parent.netif->hwaddr_len = ETH_ALEN;
         netif_set_link_down(rdev->parent.netif);
         rpmsg_net_apply_shmem_mtu_cap(rdev);
+#ifdef RT_USING_NETDEV
+        rpmsg_net_sync_netdev_from_netif(rdev->parent.netif);
+#endif
     }
 
     /* store global pointer for callback access */

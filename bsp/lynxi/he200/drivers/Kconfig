@@ -57,7 +57,6 @@ menu "Hardware Drivers Config"
                 config BSP_SD_MNT_DEVNAME
                     string "The name of the SD-BlkDev to be mounted"
                     default "sd0p1"
-                        config BSP_USING_PIN
 
                 config RT_MMCSD_DBG
                     bool "Enable SDIO debug"
@@ -91,9 +90,46 @@ menu "Hardware Drivers Config"
             select RT_USING_PIN
             default y
 
-        config BSP_USING_CLK
-            bool "Enable Clock Controller(CLK)"
+        config BSP_USING_SYSCTL_CLK
+            bool "Lynxi Lite sysctl clock gates (Linux clk-lynxi-lite.c)"
+            default y
+            help
+              Enable gate bits on sysctl@12500000 to match Linux drivers/clk/lynxi/clk-lynxi-lite.c
+              (DMA/UART/I2C/GMAC/...). Recommended for HE200/EVB when Linux-style CPR is expected.
+
+        menuconfig BSP_USING_RESET
+            bool "Enable reset controller"
+            default y
+
+            if BSP_USING_RESET
+                config BSP_USING_RESET_CTRL
+                    bool
+                    default y
+            endif
+
+        menuconfig BSP_USING_I2C
+            bool "Enable DesignWare I2C (dw-apb-i2c)"
+            select RT_USING_I2C
+            depends on BSP_USING_RESET
             default n
+
+            if BSP_USING_I2C
+                config BSP_USING_I2C0
+                    bool "Enable I2C0"
+                    default y
+
+                config BSP_USING_I2C1
+                    bool "Enable I2C1"
+                    default y
+
+                config BSP_USING_I2C2
+                    bool "Enable I2C2"
+                    default n
+
+                config BSP_USING_I2C3
+                    bool "Enable I2C3"
+                    default n
+            endif
 
         menuconfig BSP_USING_PCIE
             bool "Enable PCIE"
@@ -133,16 +169,52 @@ menu "Hardware Drivers Config"
         config BSP_USING_GMAC
             bool "Enable Synopsys GMAC driver"
             depends on RT_USING_LWIP
+            depends on BSP_USING_PIN
+            depends on !BSP_USING_RPMSG_NET
+            default n
+            help
+                与 BSP_USING_RPMSG_NET 互斥（双网卡争用 lwIP/中断资源）。
+
+        config RT_USING_GMAC_INT_MODE
+            bool "Use GMAC interrupt mode"
+            depends on BSP_USING_GMAC
+            default y
+
+        config BSP_GMAC_INIT_PINMUX
+            bool "GMAC rt_hw_eth_init: pinmux pins 21-30 and 35 (RGMII/PHY)"
+            depends on BSP_USING_GMAC
+            default y
+            help
+                若与 SDIO/eMMC 引脚复用冲突导致存储异常，可关闭此项以验证（引脚应由 Boot/板级另行配置）。
+
+        config BSP_USING_RTC
+            bool "Enable DW RTC"
+            select RT_USING_RTC
+            depends on BSP_USING_RESET
+            default n
+
+        config BSP_USING_EFUSE
+            bool "Enable eFuse readout"
+            default n
+
+        config BSP_USING_DW_AXI_DMA
+            bool "Enable DW AXI DMA helper"
+            depends on BSP_USING_RESET
             default n
 
         if BOARD_PKG_USING_RPMSG_LITE
             config BSP_USING_RPMSG_NET
                 bool "Using RPMSG-NET"
+                depends on !BSP_USING_GMAC
                 select RT_USING_LWIP
                 select RT_USING_MUTEX
                 default n
+                help
+                    与 BSP_USING_GMAC 互斥；调试板载 GMAC 时请关闭本项。
 
             if BSP_USING_RPMSG_NET
+                comment "GMAC+e0: set RT_LWIP_IPADDR to e0 subnet (e.g. 192.168.1.x); rpnet0 uses BSP_RPMSG_NET_* in rtconfig.h"
+
                 config BSP_USING_RPSH
                     bool "Enable RPSH remote shell server"
                     default n

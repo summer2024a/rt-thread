@@ -21,6 +21,9 @@
 
 #include "board.h"
 #include "drv_uart.h"
+#ifdef BSP_USING_SYSCTL_CLK
+#include "clock/drv_sysctl_lite.h"
+#endif
 
 #include "cp15.h"
 #include <mmu.h>
@@ -136,6 +139,10 @@ void rt_hw_board_init(void)
     LOG_D("2rt_kernel_space [%p : %p]\n", rt_kernel_space.start, rt_kernel_space.size);
     rt_hw_mmu_setup(&rt_kernel_space, platform_mem_desc, platform_mem_desc_size);
     LOG_D("-->rt_hw_mmu_setup ok");
+#ifdef BSP_USING_SYSCTL_CLK
+    /* 与 Linux clk_prepare_enable 路径对齐，早于 UART/DMA/GMAC 等设备 init */
+    lynxi_sysctl_lite_init();
+#endif
     /* map peripheral address to virtual address */
 #ifdef RT_USING_HEAP
     /* initialize system heap */
@@ -222,7 +229,6 @@ void rt_hw_secondary_cpu_bsp_start(void)
 {
     int cpu_id = rt_hw_cpu_id();
 
-    rt_kprintf("\r\n", cpu_id);
     LOG_D("cpu %d start", cpu_id);
 
     system_vectors_init();

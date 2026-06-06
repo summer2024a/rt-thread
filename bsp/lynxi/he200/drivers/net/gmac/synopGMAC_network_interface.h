@@ -50,7 +50,7 @@ void dumpphyreg();
  *      convert n hex digits from p to binary, result in vp,
  *      rtn 1 on success
  */
-static int gethex(u8 *vp, char *p, int n)
+static int __attribute__((unused)) gethex(u8 *vp, char *p, int n)
 {
         u8 v;
         int digit;

@@ -13,11 +13,31 @@
 #include "synopGMAC_Dev.h"
 #include <rthw.h>
 #include <rtthread.h>
-extern void flush_cache(unsigned long start_addr, unsigned long size);
-dma_addr_t __attribute__((weak)) gmac_dmamap(unsigned long va,u32 size)
+#include <mm_aspace.h>
+#include <mmu.h>
+
+void flush_cache(unsigned long start_addr, unsigned long size)
 {
-    return VA_TO_PA (va);
-    //return UNCACHED_TO_PHYS(va);
+    rt_hw_cpu_dcache_ops(RT_HW_CACHE_FLUSH, (void *)start_addr, (int)size);
+}
+
+/*
+ * HE200 is AArch64 with DDR in high physical addresses. Legacy MIPS-style
+ * CACHED_TO_UNCACHED / VA_TO_PA macros in synopGMAC_plat.h map heap VAs to
+ * 0xa0xxxxxx and truncate PA — that window is not mapped and causes faults
+ * when initializing DMA descriptors. Use kernel VA->PA from the MMU.
+ */
+dma_addr_t gmac_dmamap(unsigned long va, u32 size)
+{
+    void *pa;
+
+    (void)size;
+    pa = rt_kmem_v2p((void *)va);
+    if (pa == RT_NULL || pa == ARCH_MAP_FAILED)
+    {
+        return (dma_addr_t)0;
+    }
+    return (dma_addr_t)(rt_ubase_t)pa;
 }
 
 
@@ -46,28 +66,32 @@ void *plat_alloc_memory(u32 bytes)
 //void *plat_alloc_consistent_dmaable_memory(struct synopGMACdevice *dev, u32 size, u32 *addr)
 void *plat_alloc_consistent_dmaable_memory(synopGMACdevice *pcidev, u32 size, u32 *addr)
 {
-    void *buf;
-    buf = (void*)rt_malloc((u32)(size+16));
-    //CPU_IOFlushDCache( buf,size, SYNC_W);
-    unsigned long i = (unsigned long)buf;
-//  rt_kprintf("size = %d\n", size);
-//  rt_kprintf("bufaddr = %p\n", buf);
-//  rt_kprintf("i%%16 == %d\n", i%16);
-    if(i%16 == 8){
-        i += 8;
-    }
-    else if(i%16 == 4){
-        i += 12;
-    }
-    else if(i%16 == 12){
-        i += 4;
+    rt_ubase_t raw;
+    rt_ubase_t aligned;
+    void *pa;
+    u32 total;
+
+    (void)pcidev;
+    total = size + (u32)sizeof(void *) + 16U;
+    raw = (rt_ubase_t)rt_malloc(total);
+    if (raw == 0U)
+    {
+        return RT_NULL;
     }
 
-    flush_cache(i, size);
-    *addr =gmac_dmamap(i, size);
-    buf = (unsigned char *)CACHED_TO_UNCACHED(i);
-//  rt_kprintf("bufaddr = %p\n", buf);
-    return buf;
+    aligned = (raw + (rt_ubase_t)sizeof(void *) + 15UL) & ~(rt_ubase_t)15UL;
+    *(void **)(aligned - sizeof(void *)) = (void *)raw;
+
+    pa = rt_kmem_v2p((void *)aligned);
+    if (pa == RT_NULL || pa == ARCH_MAP_FAILED)
+    {
+        rt_free((void *)raw);
+        return RT_NULL;
+    }
+
+    flush_cache((unsigned long)aligned, size);
+    *addr = (u32)(rt_ubase_t)pa;
+    return (void *)aligned;
 }
 
 
@@ -81,8 +105,17 @@ void *plat_alloc_consistent_dmaable_memory(synopGMACdevice *pcidev, u32 size, u3
 //void plat_free_consistent_dmaable_memory(void * addr)
 void plat_free_consistent_dmaable_memory(synopGMACdevice *pcidev, u32 size, void * addr,u32 dma_addr)
 {
-    rt_free((void*)PHYS_TO_CACHED(UNCACHED_TO_PHYS(addr)));
- return;
+    void *raw;
+
+    (void)pcidev;
+    (void)size;
+    (void)dma_addr;
+    if (addr == RT_NULL)
+    {
+        return;
+    }
+    raw = *(void **)((char *)addr - sizeof(void *));
+    rt_free(raw);
 }
 
 

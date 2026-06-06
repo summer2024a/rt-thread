@@ -48,11 +48,11 @@ typedef int bool;
 #define MAX_MEM_ADDR            0xbe000000
 #define RESERVED_ADDR           0xbfc80000
 
-#define CACHED_TO_PHYS(x)       ((unsigned)(x) & 0x7fffffff)
-#define PHYS_TO_CACHED(x)       ((unsigned)(x) | CACHED_MEMORY_ADDR)
-#define UNCACHED_TO_PHYS(x)     ((unsigned)(x) & 0x1fffffff)
-#define PHYS_TO_UNCACHED(x)     ((unsigned)(x) | UNCACHED_MEMORY_ADDR)
-#define VA_TO_CINDEX(x)         ((unsigned)(x) & 0xffffff | CACHED_MEMORY_ADDR)
+#define CACHED_TO_PHYS(x)       (((rt_ubase_t)(x)) & (rt_ubase_t)0x7fffffffU)
+#define PHYS_TO_CACHED(x)       (((rt_ubase_t)(x)) | (rt_ubase_t)CACHED_MEMORY_ADDR)
+#define UNCACHED_TO_PHYS(x)     (((rt_ubase_t)(x)) & (rt_ubase_t)0x1fffffffU)
+#define PHYS_TO_UNCACHED(x)     (((rt_ubase_t)(x)) | (rt_ubase_t)UNCACHED_MEMORY_ADDR)
+#define VA_TO_CINDEX(x)        ((((rt_ubase_t)(x)) & (rt_ubase_t)0xffffffU) | (rt_ubase_t)CACHED_MEMORY_ADDR)
 #define CACHED_TO_UNCACHED(x)   (PHYS_TO_UNCACHED(CACHED_TO_PHYS(x)))
 
 #define VA_TO_PA(x)     UNCACHED_TO_PHYS(x)
@@ -142,11 +142,11 @@ void   plat_delay(u32);
  */
 static u32  synopGMACReadReg(u32 RegBase, u32 RegOffset)
 {
-    u32 addr;
+    rt_ubase_t addr;
     u32 data;
 
-    addr = RegBase + (u32)RegOffset;
-    data = *(volatile u32 *)addr;
+    addr = (rt_ubase_t)RegBase + (rt_ubase_t)RegOffset;
+    data = *(volatile u32 *)(rt_ubase_t)addr;
 
 #if SYNOP_REG_DEBUG
     TR("%s RegBase = 0x%08x RegOffset = 0x%08x RegData = 0x%08x\n", __FUNCTION__, (u32)RegBase, RegOffset, data );
@@ -167,14 +167,14 @@ static u32  synopGMACReadReg(u32 RegBase, u32 RegOffset)
 static void synopGMACWriteReg(u32 RegBase, u32 RegOffset, u32 RegData )
 {
 
-  u32 addr;
+  rt_ubase_t addr;
 
-          addr = RegBase + (u32)RegOffset;
+          addr = (rt_ubase_t)RegBase + (rt_ubase_t)RegOffset;
 //  rt_kprintf("%s RegBase = 0x%08x RegOffset = 0x%08x RegData = 0x%08x\n", __FUNCTION__,(u32) RegBase, RegOffset, RegData );
 #if SYNOP_REG_DEBUG
   TR("%s RegBase = 0x%08x RegOffset = 0x%08x RegData = 0x%08x\n", __FUNCTION__,(u32) RegBase, RegOffset, RegData );
 #endif
-    *(volatile u32 *)addr = RegData;
+    *(volatile u32 *)(rt_ubase_t)addr = RegData;
 
     if(addr == 0xbfe1100c)
         DEBUG_MES("regdata = %08x\n", RegData);
@@ -189,7 +189,7 @@ static void synopGMACWriteReg(u32 RegBase, u32 RegOffset, u32 RegData )
  * @param[in] Bit mask to set bits to logical 1
  * \return  void
  */
-static void synopGMACSetBits(u32 RegBase, u32 RegOffset, u32 BitPos)
+static void __attribute__((unused)) synopGMACSetBits(u32 RegBase, u32 RegOffset, u32 BitPos)
 {
   //u64 addr = (u64)RegBase + (u64)RegOffset;
   u32 data;
@@ -212,7 +212,7 @@ static void synopGMACSetBits(u32 RegBase, u32 RegOffset, u32 BitPos)
  * @param[in] Bit mask to clear bits to logical 0
  * \return  void
  */
-static void  synopGMACClearBits(u32 RegBase, u32 RegOffset, u32 BitPos)
+static void __attribute__((unused)) synopGMACClearBits(u32 RegBase, u32 RegOffset, u32 BitPos)
 {
   u32 data;
   data = synopGMACReadReg(RegBase, RegOffset);
@@ -233,7 +233,7 @@ static void  synopGMACClearBits(u32 RegBase, u32 RegOffset, u32 BitPos)
  * \return  returns TRUE if set to '1' returns FALSE if set to '0'. Result undefined there are no bit set in the BitPos argument.
  *
  */
-static bool  synopGMACCheckBits(u32 RegBase, u32 RegOffset, u32 BitPos)
+static bool __attribute__((unused)) synopGMACCheckBits(u32 RegBase, u32 RegOffset, u32 BitPos)
 {
 
   u32 data;

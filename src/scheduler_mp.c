@@ -934,6 +934,16 @@ void rt_schedule(void)
     pcpu   = rt_cpu_index(cpu_id);
     current_thread = pcpu->current_thread;
 
+    /*
+     * SMP 从核在 rt_system_scheduler_start() 完成前可能收到 SCHEDULE IPI；
+     * 此时 current_thread 仍为 NULL，访问 RT_SCHED_CTX 会 Data abort @ 0x80。
+     */
+    if (current_thread == RT_NULL)
+    {
+        rt_hw_local_irq_enable(level);
+        return;
+    }
+
     /* whether do switch in interrupt */
     if (rt_atomic_load(&(pcpu->irq_nest)))
     {

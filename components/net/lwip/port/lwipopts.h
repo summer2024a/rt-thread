@@ -404,6 +404,23 @@
 /* Maximum number of retransmissions of SYN segments. */
 #define TCP_SYNMAXRTX               4
 
+/* HE200 板载 GMAC：关闭延迟 ACK，加大 socket/mbox 避免 iperf server recvmbox 满导致零窗口 */
+#ifdef BSP_USING_GMAC
+#define LWIP_TCP_IMMEDIATE_ACK      1
+#undef TCP_FAST_INTERVAL
+#define TCP_FAST_INTERVAL           1
+#undef DEFAULT_TCP_RECVMBOX_SIZE
+#define DEFAULT_TCP_RECVMBOX_SIZE   64
+#undef RECV_BUFSIZE_DEFAULT
+#define RECV_BUFSIZE_DEFAULT        32768
+#undef MEMP_NUM_NETBUF
+#define MEMP_NUM_NETBUF             64
+#undef MEMP_NUM_TCPIP_MSG_INPKT
+#define MEMP_NUM_TCPIP_MSG_INPKT    32
+#undef MEMP_NUM_TCPIP_MSG_API
+#define MEMP_NUM_TCPIP_MSG_API      16
+#endif
+
 /* tcpip thread options */
 #ifdef RT_LWIP_TCPTHREAD_PRIORITY
 #define TCPIP_MBOX_SIZE             RT_LWIP_TCPTHREAD_MBOX_SIZE

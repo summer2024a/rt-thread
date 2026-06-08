@@ -44,6 +44,8 @@
 #define MACBASE 0x0000          // The Mac Base address offset is 0x0000
 #define DMABASE 0x1000          // Dma base address starts with an offset 0x1000
 
+/* HE200 KA200 GMAC is DWC Ethernet 4.x — 16-byte normal descriptors, channel DMA CSRs */
+#define BSP_LYNXI_DWMAC4  1
 
 enum GMACPhyBase
 {
@@ -57,7 +59,7 @@ enum GMACPhyBase
 //#define TRANSMIT_DESC_SIZE  256       //Tx Descriptors needed in the Descriptor pool/queue
 //#define RECEIVE_DESC_SIZE   256   //Rx Descriptors needed in the Descriptor pool/queue
 //#define TRANSMIT_DESC_SIZE  13//256   //Tx Descriptors needed in the Descriptor pool/queue
-#define TRANSMIT_DESC_SIZE  36 //48 //Tx Descriptors needed in the Descriptor pool/queue
+#define TRANSMIT_DESC_SIZE  64 /* DWMAC4 硬件环长 N-1，应用层保留 1 空槽 */
 #define RECEIVE_DESC_SIZE   72 //96 //Rx Descriptors needed in the Descriptor pool/queue
 
 #define ETHERNET_HEADER             14  //6 byte Dest addr, 6 byte Src addr, 2 byte length/type
@@ -93,6 +95,16 @@ In addition to this whenever extended status bit is set (RX DESC0 bit 0), RX DES
 
 #define MODULO_INTERRUPT   1 // if it is set to 1, interrupt is available for all the descriptors or else interrupt is available only for
                  // descriptor whose index%MODULO_INTERRUPT is zero
+#ifdef BSP_LYNXI_DWMAC4
+typedef struct LynxiHwDescStruct
+{
+  u32 des0;
+  u32 des1;
+  u32 des2;
+  u32 des3;
+} LynxiHwDesc;
+#endif
+
 #ifdef ENH_DESC_8W
 typedef struct DmaDescStruct
 {
@@ -167,6 +179,17 @@ typedef struct synopGMACDeviceStruct
   DmaDesc * TxNextDesc;          /* Tx Descriptor address corresponding to the index TxNext */
   DmaDesc * RxBusyDesc;          /* Rx Descriptor address corresponding to the index TxBusy */
   DmaDesc * RxNextDesc;          /* Rx Descriptor address corresponding to the index RxNext */
+
+#ifdef BSP_LYNXI_DWMAC4
+  LynxiHwDesc *TxHwRing;
+  LynxiHwDesc *RxHwRing;
+  dma_addr_t TxHwDma;
+  dma_addr_t RxHwDma;
+  rt_ubase_t *TxBufVa;
+  rt_ubase_t *RxBufVa;
+  u8 MacAddr[6];
+  u32 RxTailIdx;
+#endif
 
   /*Phy related stuff*/
   u32 ClockDivMdc;      /* Clock divider value programmed in the hardware           */
@@ -1678,8 +1701,8 @@ s32 synopGMAC_get_tx_qptr(synopGMACdevice * gmacdev, u32 * Status, u32 * Buffer1
 #else
 s32 synopGMAC_get_tx_qptr(synopGMACdevice * gmacdev, u32 * Status, u32 * Buffer1, u32 * Length1, u32 * Data1, u32 * Buffer2, u32 * Length2, u32 * Data2 );
 #endif
-s32 synopGMAC_set_tx_qptr(synopGMACdevice * gmacdev, u32 Buffer1, u32 Length1, u32 Data1, u32 Buffer2, u32 Length2, u32 Data2,u32 offload_needed,u32 * index,DmaDesc *Dpr);
-s32 synopGMAC_set_rx_qptr(synopGMACdevice * gmacdev, u32 Buffer1, u32 Length1, u32 Data1, u32 Buffer2, u32 Length2, u32 Data2);
+s32 synopGMAC_set_tx_qptr(synopGMACdevice * gmacdev, u32 Buffer1, u32 Length1, rt_ubase_t Data1, u32 Buffer2, u32 Length2, u32 Data2,u32 offload_needed,u32 * index,DmaDesc *Dpr);
+s32 synopGMAC_set_rx_qptr(synopGMACdevice * gmacdev, u32 Buffer1, u32 Length1, rt_ubase_t Data1, u32 Buffer2, u32 Length2, u32 Data2);
 #ifdef ENH_DESC_8W
 s32 synopGMAC_get_rx_qptr(synopGMACdevice * gmacdev, u32 * Status, u32 * Buffer1, u32 * Length1, u32 * Data1, u32 * Buffer2, u32 * Length2, u32 * Data2,
                            u32 * Ext_Status, u32 * Time_Stamp_High, u32 * Time_Stamp_low);

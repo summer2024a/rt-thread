@@ -10,6 +10,8 @@
 
 ## 1. 现象与根因（2026-06-06 更新）
 
+### 1.1 链路层（已解决）
+
 历史现象：
 
 - Host 侧网口（`enp25s0f1`）`Link detected: no`
@@ -17,6 +19,22 @@
 - `ifconfig` 统计中 Host RX 为 0
 
 根因之一：Linux EVB 使用 `phy-mode=rgmii-id`，旧驱动未配置 RTL8211F 内部 delay，导致物理层协商失败（`anlpar=0000`）。已合入 `lynxi_rtl8211f_rgmii_id_config()`。
+
+### 1.2 数据通路（2026-06-06 ping 打通）
+
+链路 up 后仍 ping 不通时的分层结论：
+
+| 层次 | 现象 | 根因 | 修复 |
+|------|------|------|------|
+| RX 长度 | 收包异常 | DWMAC4 `RDES3[14:0]` 已是帧长，旧代码再减 4 | `lynxi_dwmac4_rx_frame_length()` 直接用 |
+| RX pbuf | ICMP 回复失败 | `PBUF_RAW` 头空间不足 | `PBUF_TRANSPORT` + `PBUF_RAM` |
+| TX 回收 | 发几包后挂死 | `plat_free_memory` 误释 nocache TX 缓冲 | `lynxi_dwmac4_buf_is_nc()` 跳过 free |
+| TX DMA | 软件显示完成、Host 无包 | 描述符 len/PA、tail 与 Zephyr 不一致 | `lynxi_dwmac4_tx_submit` + `resume_dma_tx` |
+| **MTL** | ARP 通、标准 ping 不通；帧长阈值约 64B | MTL TX 未开 Store-and-Forward | `LYNXI_MTL_OP_TSF` @ `MTL_CHAN0_TX_OP` |
+
+**二分验证（MTL TSF）**：`ping -s 18`（线长 60B）通，`ping -s 26`（68B）不通 → 阈值约 64B，与 MTL 阈值模式一致；开 TSF 后标准 ping 8/8 通过。
+
+**验收**（49.81）：`he200_gmac_ping_test.sh` → `PASS: ping 192.168.1.2 成功`。
 
 实板复验命令（MSH）：
 
@@ -26,7 +44,18 @@ list_isr
 ping 192.168.1.1
 ```
 
-Host 侧：`sudo ./scripts/he200_test_env.sh` 后 `ping 192.168.1.2`、`iperf3 -s`。
+Host 侧：`sudo ./scripts/he200_test_env.sh` 后 `ping 192.168.1.2`；带宽用 **iperf v2**（端口 5001），勿用 iperf3/5201。
+
+### 1.3 带宽（2026-06-06）
+
+| 项 | 结果 | 备注 |
+|----|------|------|
+| ping 8/8 | PASS | `he200_gmac_ping_test.sh` |
+| Host→EP UDP iperf | ~52 Mbps | EP `iperf -s -u` |
+| EP→Host udpblast | ~177 Mbps | `he200_gmac_iperf_test.sh` EP TX 项 |
+| Host→EP TCP iperf | ~0.07 Mbps | **未达标**；GMAC TX/RX 计数正常，疑 lwIP TCP/socket |
+
+**TX 环满（36 包后失败）**：DWMAC4 硬件 tail 停在「下一空槽」；软件须保持 **N-1** 占用（`lynxi_dwmac4_tx_in_use`），`TRANSMIT_DESC_SIZE=64`，禁止在 `set_tx_qptr` 写 tail（仅 `resume_dma_tx`）。全环扫描 `lynxi_dwmac4_tx_reclaim_all()` 回收完成描述符。
 
 ## 2. 当前代码中的诊断日志
 
@@ -186,7 +215,52 @@ flowchart LR
     E --> F[lwIP协议栈处理]
 ```
 
-## 10. 链路检测与状态机
+## 10. DWMAC4 数据通路（2026-06-06）
+
+KA200 使用 **DWC Ethernet v4.x**（非 legacy synopGMAC CSR）。关键与 Zephyr `eth_dwmac_lynxi_ka200.c` 对齐：
+
+| 寄存器/字段 | Legacy 误用 | DWMAC4 正确 |
+|-------------|-------------|-------------|
+| `MAC_CONF` | `GmacConfig` @ `0x0000` 位定义 | @ `0x0000`：`RE/TE/CST/DM` |
+| `PKT_FILTER` | `GmacFrameFilter` @ `0x0004` | @ `0x0008` |
+| `MAC_ADDR0` | @ `0x0040` | @ `0x0300/0x0304` + `AE` |
+| DMA 环地址 | 32 位 `CH_*_LIST` | `CH_*_LIST_H` + `CH_*_LIST`；**`SYSBUS EAME`** |
+| 描述符 | 8 字 status/length | 16B `des0..3`；`des0/des1` = 缓冲 PA 低/高 32 位 |
+| HW 环内存 | heap/cacheable | nocache `MEM_PADDR_START+MEM_CACHE_SZ+0x200000` |
+
+**实板验收命令**（49.81，先 [`he200_test_env.sh`](../../scripts/he200_test_env.sh)）：
+
+```bash
+ip -4 addr show enp25s0f1    # 必须仅有 192.168.1.1/24
+sudo stty -F /dev/ttyUSB0 115200 raw -echo
+sudo timeout 30 cat /dev/ttyUSB0 > /tmp/he200.log &
+hotplug_wdt.sh --devid 0
+sleep 20
+sudo tcpdump -i enp25s0f1 -n arp or icmp &
+ping -c 8 192.168.1.2
+```
+
+**典型串口（修复后）**：
+
+```text
+gmac: dwmac4 rings tx=36 rx=72 list=0000000900200000/0000000900200240
+gmac dwmac4: RxRing[0] des0=0038f038 des1=00000008 des3=c1000000
+gmac dwmac4: SYSBUS=00001801 ... CH_STATUS=00000000
+Link is up in FULL DUPLEX mode
+Link is with 1000M Speed
+```
+
+**勿再出现**：`RX halt st=00303100`（RPS+FBE）、`Data abort fault addr=0x10022801`（`SYSBUS_MODE` 宏偏移/初值同名）。
+
+**勿恢复的错误做法**：
+
+- poll/IRQ 内 `tx_reclaim` 与 `rt_eth_tx` 并行回收
+- `plat_free_memory` 释放 `lynxi_dwmac4_alloc_nc` 缓冲
+- DWMAC4 RX 帧长再减 4
+- `netifapi_netif_set_link_up` 从 `link_timer` 调用（mutex 崩溃）
+- poll 内直接 `netif->input` 或 poll 内 `tx_reclaim`
+
+## 11. 链路检测与状态机
 
 `link_timer` 周期调用 `synopGMAC_linux_cable_unplug_function()`，核心逻辑：
 

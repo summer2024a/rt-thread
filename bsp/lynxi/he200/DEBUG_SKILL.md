@@ -4,19 +4,45 @@
 
 ## 1. 环境拓扑
 
+测试服务器有**两个网口**（两块网卡或同一网卡的两个端口），分别用于管理和 GMAC 实板联调：
+
+```text
+  [管理网口] 192.168.49.81  ←── SSH / 编译 / 热插拔
+        │
+   测试服务器 (lynxi@49.81)
+        │
+  [测试网口 enp25s0f1] 192.168.1.1/24 ──网线── EP RJ45 (192.168.1.2)
+        │
+  [/dev/ttyUSB0] ──串口── EP UART
+```
+
 | 角色 | 地址/设备 | 说明 |
 |------|-----------|------|
-| 调试服务器 | `192.168.49.81`，用户 `lynxi` | SSH 编译、烧录、Host 网口 |
+| 管理网口 | `enp25s0f0` / `192.168.49.81` | SSH（`lynxi`）、热插拔 |
+| 工程挂载 | `/mnt/49.20/rt-thread` 等 | 与本地同一份代码，**本地编译**，软链加载，无需 scp |
+| GMAC 测试网口 | `enp25s0f1` | 网线直连 EP；`sudo ip addr flush` 后配 `192.168.1.1/24` |
 | EP 串口 | `/dev/ttyUSB0` @ 115200 | `screen /dev/ttyUSB0 115200` |
-| 直连网口 | 服务器 `enp25s0f1` ↔ EP RJ45 | 测试网段 **192.168.1.0/24** |
-| Host IP | `192.168.1.1/24` | 与 EP `192.168.1.2` 同网段 |
+| EP 网口 IP | `192.168.1.2/24` | RT `RT_LWIP_IPADDR` / Zephyr `he200_ep_gmac.conf` |
 | 固件软链 | `/lib/firmware/lynd_pcie/u-boot.bin` | 指向 `rtthread.bin` 或 `zephyr.bin` |
 
-**注意**：`192.168.49.81` 是服务器管理 IP，与 GMAC 测试网段独立。
+**勿混淆**：`ping 192.168.49.81` 走管理网；GMAC 验收应对测试口执行 `ping 192.168.1.2`（Host 侧）或 EP 上 `ping 192.168.1.1`。
 
-## 2. 环境准备
+## 2. 编译与固件（本地编译 + 挂载软链）
 
-在 `192.168.49.81` 执行：
+**不在 49.81 上编译**。工程目录已挂载到 `/mnt/49.20/`，本地改代码并 `scons`/`west build` 后，49.81 通过软链读同一路径的 bin，**无需 scp**。
+
+```bash
+# === 本地（开发机）===
+cd /work/rt-thread/bsp/lynxi/he200
+export RTT_CC_PREFIX=.../aarch64-none-elf-
+scons -j8
+
+# === 49.81 确认软链（一般已配好）===
+ls -l /lib/firmware/lynd_pcie/u-boot.bin
+# lrwxrwxrwx ... -> /mnt/49.20/rt-thread/bsp/lynxi/he200/rtthread.bin
+```
+
+## 3. 环境准备（49.81）
 
 ```bash
 cd /mnt/49.20/rt-thread/bsp/lynxi/he200
@@ -31,41 +57,30 @@ sudo ip addr add 192.168.1.1/24 dev enp25s0f1
 ethtool enp25s0f1   # 确认 Link detected: yes
 ```
 
-## 3. 固件更新（热插拔）
+## 4. 固件更新（热插拔，49.81）
+
+本地编译完成后，在 49.81 执行：
 
 ```bash
-# 确认软链
+# 切换 RT / Zephyr 时改软链目标即可
 ls -l /lib/firmware/lynd_pcie/u-boot.bin
 
-# RT-Thread 示例
-ln -sf /mnt/49.20/rt-thread/bsp/lynxi/he200/rtthread.bin /lib/firmware/lynd_pcie/u-boot.bin
-
-# Zephyr 示例
-ln -sf /work/zephyr-rtos/zephyrproject/build_he200_ep_gmac/zephyr/zephyr.bin /lib/firmware/lynd_pcie/u-boot.bin
-
-# 热插拔加载
+# 热插拔加载（读挂载目录最新 bin）
 /mnt/49.20/tools/drivers_test/periph_slv_test/hotplug_wdt.sh --devid 0
 ```
 
-## 4. RT-Thread 编译
+Zephyr 软链示例：`.../build_he200_ep_gmac/zephyr/zephyr.bin`
+
+Kconfig 要点（RT）：`BSP_USING_GMAC=y`，**关闭** `BSP_USING_RPMSG_NET`。
+
+Zephyr 构建（本地）：
 
 ```bash
-cd /mnt/49.20/rt-thread/bsp/lynxi/he200
-export RTT_CC_PREFIX=/work/tools/cross-compiler/gcc-arm-10.2-2020.11-x86_64-aarch64-none-elf/bin/aarch64-none-elf-
-scons -j8
-```
-
-Kconfig 要点：`BSP_USING_GMAC=y`，**关闭** `BSP_USING_RPMSG_NET`。
-
-## 5. Zephyr 编译
-
-```bash
-cd /work/zephyr-rtos/zephyrproject
 west build -b he200_ep -d build_he200_ep_gmac app_shell_fs -- \
   -DEXTRA_CONF_FILE=../zephyr/boards/lynxi/he200_ep/he200_ep_gmac.conf
 ```
 
-## 6. GMAC 调试检查清单
+## 5. GMAC 调试检查清单
 
 | 检查项 | 正确做法 | 禁止 |
 |--------|----------|------|
@@ -114,7 +129,20 @@ he200 GMAC: PHY ID 001c:c916 (0x001cc916)
 ### Host 侧
 
 ```bash
-ping 192.168.1.2
+# 热插拔后、ping 前再确认测试口 IP（NM 常改回 49.81）
+bash /mnt/49.20/rt-thread/bsp/lynxi/he200/scripts/he200_test_env.sh
+ip -4 addr show enp25s0f1
+
+# 串口后台抓取（热插拔前启动）
+sudo stty -F /dev/ttyUSB0 115200 raw -echo
+sudo timeout 40 cat /dev/ttyUSB0 > /tmp/he200.log &
+
+sudo tcpdump -i enp25s0f1 -n arp or icmp &
+ping -c 8 192.168.1.2
+ip neigh show dev enp25s0f1
+```
+
+```bash
 iperf3 -s    # 带宽压测服务端
 ```
 

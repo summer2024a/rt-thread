@@ -430,6 +430,13 @@ void tcp_segs_free(struct tcp_seg *seg);
 void tcp_seg_free(struct tcp_seg *seg);
 struct tcp_seg *tcp_seg_copy(struct tcp_seg *seg);
 
+#ifndef LWIP_TCP_IMMEDIATE_ACK
+#define LWIP_TCP_IMMEDIATE_ACK 0
+#endif
+
+#if LWIP_TCP_IMMEDIATE_ACK
+#define tcp_ack(pcb)  tcp_ack_now(pcb)
+#else
 #define tcp_ack(pcb)                               \
   do {                                             \
     if((pcb)->flags & TF_ACK_DELAY) {              \
@@ -440,6 +447,7 @@ struct tcp_seg *tcp_seg_copy(struct tcp_seg *seg);
       (pcb)->flags |= TF_ACK_DELAY;                \
     }                                              \
   } while (0)
+#endif
 
 #define tcp_ack_now(pcb)                           \
   do {                                             \

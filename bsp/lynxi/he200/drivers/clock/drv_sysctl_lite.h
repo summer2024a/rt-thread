@@ -21,6 +21,9 @@ void lynxi_sysctl_lite_gmac_probe_clocks(void);
 /* 仅写 CPR 侧 GMAC 控制字（可重复调用） */
 void lynxi_sysctl_lite_gmac_ctrl_set(rt_uint32_t value);
 
+/* Linux lynchip_lite_cpr_gmac_config(1000M)：含 RGMII mux，DMA SWR 前需要 */
+void lynxi_sysctl_lite_gmac_cpr_apply_1000m(void);
+
 /* 打开单个 gate：reg_off 为相对 CPR_BASE 的字节偏移（与 Linux _GATE 一致） */
 void lynxi_sysctl_lite_gate_enable(rt_uint32_t reg_off, rt_uint32_t bit);
 

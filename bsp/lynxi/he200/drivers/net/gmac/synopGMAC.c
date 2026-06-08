@@ -16,7 +16,9 @@
 #include <string.h>
 #include <netif/ethernetif.h>
 #include <lwip/netifapi.h>
-//#include <lwip/pbuf.h>
+#include <lwip/tcpip.h>
+#include <lwip/pbuf.h>
+#include <lwip/err.h>
 
 #include "lynxi.h"
 #ifdef BSP_USING_RESET_CTRL
@@ -27,6 +29,7 @@
 #endif
 
 #include "synopGMAC.h"
+#include "lynxi_dwmac4.h"
 #include "mii.c"
 #include "synopGMAC_debug.h"
 
@@ -153,6 +156,7 @@ dma_addr_t plat_dma_map_single(void *hwdev, void *ptr, u32 size);
 
 void eth_rx_irq(int irqno, void *param);
 static void eth_rx_poll_timer(void *param);
+struct pbuf *rt_eth_rx(rt_device_t device);
 
 struct rt_eth_dev
 {
@@ -170,13 +174,13 @@ static struct rt_eth_dev eth_dev;
 static struct rt_semaphore sem_ack, sem_lock;
 static rt_bool_t lynxi_gmac_rx_started;
 static rt_bool_t lynxi_gmac_link_notified_up = RT_FALSE;
+static rt_bool_t lynxi_gmac_deferred_link_up = RT_FALSE;
 
 static rt_bool_t lynxi_gmac_netif_ready(struct eth_device *ed)
 {
     return (ed != RT_NULL && ed->netif != RT_NULL);
 }
 
-/* 仅在软定时器线程调用（RT_TIMER_FLAG_SOFT_TIMER），可安全使用 eth_device_linkchange */
 static void lynxi_eth_notify_link(rt_bool_t up)
 {
     struct eth_device *ed = &eth_dev.parent;
@@ -188,19 +192,43 @@ static void lynxi_eth_notify_link(rt_bool_t up)
         return;
 
     lynxi_gmac_link_notified_up = up;
-    /*
-     * 软定时器线程上下文：直接 netifapi，勿走 erx 邮箱（链路 up 时 erx 收包与
-     * netifapi 并发易把 erx/tcpip 卡死，表现为 Link is with 1000M 后 shell 假死）。
-     */
     if (up)
-        netifapi_netif_set_link_up(ed->netif);
+        ed->netif->flags |= NETIF_FLAG_LINK_UP;
     else
-        netifapi_netif_set_link_down(ed->netif);
+        ed->netif->flags &= ~NETIF_FLAG_LINK_UP;
+}
+
+static void lynxi_gmac_rx_notify(void)
+{
+    if (lynxi_gmac_netif_ready(&eth_dev.parent))
+        eth_device_ready(&eth_dev.parent);
 }
 
 static void eth_rx_poll_timer(void *param)
 {
+#ifdef BSP_LYNXI_DWMAC4
+    struct synopGMACNetworkAdapter *adapter = (struct synopGMACNetworkAdapter *)param;
+    synopGMACdevice *gmacdev;
+
+    if (adapter == RT_NULL || adapter->synopGMACdev == RT_NULL)
+        return;
+
+    gmacdev = adapter->synopGMACdev;
+    if (gmacdev->LinkState)
+    {
+        if (lynxi_gmac_deferred_link_up)
+        {
+            lynxi_gmac_deferred_link_up = RT_FALSE;
+            lynxi_eth_notify_link(RT_TRUE);
+        }
+        lynxi_dwmac4_tx_reclaim_all(gmacdev);
+        lynxi_dwmac4_rx_watchdog(gmacdev);
+        if (lynxi_dwmac4_rx_pending(gmacdev) || lynxi_gmac_link_notified_up)
+            lynxi_gmac_rx_notify();
+    }
+#else
     eth_rx_irq(LS1C_MAC_IRQ, param);
+#endif
 }
 
 static void lynxi_gmac_set_ctrl_by_speed(rt_uint32_t speed)
@@ -348,9 +376,47 @@ s32 synopGMAC_setup_tx_desc_queue(synopGMACdevice *gmacdev, u32 no_of_desc, u32 
     gmacdev->TxDesc      = first_desc;
     gmacdev->TxDescDma  = dma_addr;
 
+#ifdef BSP_LYNXI_DWMAC4
+    {
+        rt_uint64_t hw_dma;
+        LynxiHwDesc *hw_ring = (LynxiHwDesc *)lynxi_dwmac4_alloc_nc(
+            sizeof(LynxiHwDesc) * no_of_desc, &hw_dma);
+        if (hw_ring == RT_NULL)
+        {
+            rt_kprintf("Error in Tx HW descriptor allocation\n");
+            return -ESYNOPGMACNOMEM;
+        }
+        gmacdev->TxHwRing = hw_ring;
+        gmacdev->TxHwDma = (dma_addr_t)(hw_dma & 0xFFFFFFFFU);
+        lynxi_dwmac4_set_ring_pa(RT_TRUE, hw_dma);
+    }
+    gmacdev->TxBufVa = (rt_ubase_t *)rt_malloc(sizeof(rt_ubase_t) * no_of_desc);
+    if (gmacdev->TxBufVa == RT_NULL)
+    {
+        rt_kprintf("Error in Tx BufVa allocation\n");
+        return -ESYNOPGMACNOMEM;
+    }
+    rt_memset(gmacdev->TxBufVa, 0, sizeof(rt_ubase_t) * no_of_desc);
+    for (i = 0; i < (s32)no_of_desc; i++)
+    {
+        rt_uint64_t buf_pa;
+        void *buf = lynxi_dwmac4_alloc_nc(TX_BUF_SIZE, &buf_pa);
+
+        if (buf == RT_NULL)
+        {
+            rt_kprintf("Error in Tx buffer allocation\n");
+            return -ESYNOPGMACNOMEM;
+        }
+        gmacdev->TxBufVa[i] = (rt_ubase_t)buf;
+    }
+#endif
+
     for (i = 0; i < gmacdev->TxDescCount; i++)
     {
         synopGMAC_tx_desc_init_ring(gmacdev->TxDesc + i, i == gmacdev->TxDescCount - 1);
+#ifdef BSP_LYNXI_DWMAC4
+        lynxi_dwmac4_tx_desc_init(&gmacdev->TxHwRing[i]);
+#endif
 #if SYNOP_TOP_DEBUG
         rt_kprintf("\n%02d %08x \n", i, (unsigned int)(gmacdev->TxDesc + i));
         rt_kprintf("%08x ", (unsigned int)((gmacdev->TxDesc + i))->status);
@@ -421,9 +487,35 @@ s32 synopGMAC_setup_rx_desc_queue(synopGMACdevice *gmacdev, u32 no_of_desc, u32 
     gmacdev->RxDesc      = (DmaDesc *)first_desc;
     gmacdev->RxDescDma   = dma_addr;
 
+#ifdef BSP_LYNXI_DWMAC4
+    {
+        rt_uint64_t hw_dma;
+        LynxiHwDesc *hw_ring = (LynxiHwDesc *)lynxi_dwmac4_alloc_nc(
+            sizeof(LynxiHwDesc) * no_of_desc, &hw_dma);
+        if (hw_ring == RT_NULL)
+        {
+            rt_kprintf("Error in Rx HW descriptor allocation\n");
+            return -ESYNOPGMACNOMEM;
+        }
+        gmacdev->RxHwRing = hw_ring;
+        gmacdev->RxHwDma = (dma_addr_t)(hw_dma & 0xFFFFFFFFU);
+        lynxi_dwmac4_set_ring_pa(RT_FALSE, hw_dma);
+    }
+    gmacdev->RxBufVa = (rt_ubase_t *)rt_malloc(sizeof(rt_ubase_t) * no_of_desc);
+    if (gmacdev->RxBufVa == RT_NULL)
+    {
+        rt_kprintf("Error in Rx BufVa allocation\n");
+        return -ESYNOPGMACNOMEM;
+    }
+    rt_memset(gmacdev->RxBufVa, 0, sizeof(rt_ubase_t) * no_of_desc);
+#endif
+
     for (i = 0; i < gmacdev->RxDescCount; i++)
     {
         synopGMAC_rx_desc_init_ring(gmacdev->RxDesc + i, i == gmacdev->RxDescCount - 1);
+#ifdef BSP_LYNXI_DWMAC4
+        lynxi_dwmac4_rx_desc_init(&gmacdev->RxHwRing[i]);
+#endif
 
     }
 
@@ -490,6 +582,7 @@ void synopGMAC_linux_cable_unplug_function(void *adaptr)
         if (gmacdev->LinkState)
         {
             rt_kprintf("\r\nNo Link\r\n");
+            lynxi_gmac_deferred_link_up = RT_FALSE;
             lynxi_eth_notify_link(RT_FALSE);
         }
         gmacdev->DuplexMode = 0;
@@ -504,10 +597,23 @@ void synopGMAC_linux_cable_unplug_function(void *adaptr)
     if (gmacdev->LinkState != data)
     {
         gmacdev->LinkState = data;
-        synopGMAC_mac_init(gmacdev);
         lynxi_gmac_set_ctrl_by_speed(gmacdev->Speed);
-        lynxi_eth_notify_link(RT_TRUE);
+#ifdef BSP_LYNXI_DWMAC4
+        if (!lynxi_dwmac4_swr_succeeded())
+        {
+            rt_kprintf("gmac: retry DMA SWR after link-up CPR 0x66f\n");
+            synopGMAC_reset(gmacdev);
+            if (lynxi_dwmac4_swr_succeeded())
+                lynxi_dwmac4_dma_ring_init(gmacdev);
+        }
+#endif
+        synopGMAC_mac_init(gmacdev);
+#ifdef BSP_LYNXI_DWMAC4
+        lynxi_dwmac4_link_up_refresh(gmacdev);
+        lynxi_dwmac4_regs_dump(gmacdev);
+#endif
         rt_kprintf("Link is up in %s mode\n", (gmacdev->DuplexMode == FULLDUPLEX) ? "FULL DUPLEX" : "HALF DUPLEX");
+        lynxi_gmac_deferred_link_up = RT_TRUE;
         if (gmacdev->Speed == SPEED1000)
             rt_kprintf("Link is with 1000M Speed \r\n");
         if (gmacdev->Speed == SPEED100)
@@ -573,7 +679,18 @@ static rt_err_t eth_init(rt_device_t device)
      * Do not call synopGMAC_attach() again: it rt_memset()s the whole device struct
      * and would duplicate PHY scan; more importantly we must keep one consistent state.
      */
-    synopGMAC_reset(gmacdev);
+#ifdef BSP_LYNXI_DWMAC4
+    if (!lynxi_dwmac4_swr_succeeded())
+    {
+        rt_kprintf("gmac: retry DMA SWR before ring init\n");
+#ifdef BSP_USING_SYSCTL_CLK
+        lynxi_sysctl_lite_gmac_probe_clocks();
+        rt_hw_us_delay(500);
+#endif
+        synopGMAC_reset(gmacdev);
+    }
+    synopGMAC_set_mac_addr(gmacdev, GmacAddr0High, GmacAddr0Low, dev->dev_addr);
+#endif
 
     synopGMAC_read_version(gmacdev);
 
@@ -602,9 +719,8 @@ static rt_err_t eth_init(rt_device_t device)
 #endif
     synopGMAC_dma_control_init(gmacdev, DmaStoreAndForward | DmaTxSecondFrame | DmaRxThreshCtrl128);
 
-    status = synopGMAC_check_phy_init(adapter);
-    synopGMAC_mac_init(gmacdev);
-    /* 0x66f/0x65f 仅在链路 up 后由 link_timer 写，probe/eth_init 不写 */
+    (void)synopGMAC_check_phy_init(adapter);
+    /* MAC/DMA 配置在 RX 环填满后统一 mac_init，避免 legacy 写错 DWMAC4 寄存器 */
 
     synopGMAC_pause_control(gmacdev);
 
@@ -616,23 +732,31 @@ static rt_err_t eth_init(rt_device_t device)
     rt_ubase_t skb;
     do
     {
-        skb = (rt_ubase_t)plat_alloc_memory(RX_BUF_SIZE);      //should skb aligned here?
+#ifdef BSP_LYNXI_DWMAC4
+        {
+            rt_uint64_t nc_pa;
+
+            skb = (rt_ubase_t)lynxi_dwmac4_alloc_nc(RX_BUF_SIZE, &nc_pa);
+            dma_addr = nc_pa;
+        }
+#else
+        skb = (rt_ubase_t)plat_alloc_memory(RX_BUF_SIZE);
+        dma_addr = plat_dma_map_single(gmacdev, (void *)skb, RX_BUF_SIZE);
+#endif
         if (skb == (rt_ubase_t)RT_NULL)
         {
             rt_kprintf("ERROR in skb buffer allocation\n");
             break;
         }
 
-        dma_addr = plat_dma_map_single(gmacdev, (void *)skb, RX_BUF_SIZE);  //获取 skb 的 dma 地址
-
-        status = synopGMAC_set_rx_qptr(gmacdev, dma_addr, RX_BUF_SIZE, (u32)skb, 0, 0, 0);
+        status = synopGMAC_set_rx_qptr(gmacdev, (u32)dma_addr, RX_BUF_SIZE, skb, 0, 0, 0);
         if (status < 0)
         {
             rt_kprintf("status < 0!!\n");
             plat_free_memory((void *)skb);
         }
     }
-    while (status >= 0 && (status < (RECEIVE_DESC_SIZE - 1)));
+    while (status >= 0 && (gmacdev->BusyRxDesc < (RECEIVE_DESC_SIZE - 1U)));
 
     synopGMAC_clear_interrupt(gmacdev);
 
@@ -641,23 +765,44 @@ static rt_err_t eth_init(rt_device_t device)
     synopGMAC_disable_mmc_ipc_rx_interrupt(gmacdev, 0xFFFFFFFF);
 
     plat_delay(DEFAULT_LOOP_VARIABLE);
-    synopGMAC_check_phy_init(adapter);
+    status = synopGMAC_check_phy_init(adapter);
     synopGMAC_mac_init(gmacdev);
+#ifdef BSP_LYNXI_DWMAC4
+    if (status != 0)
+    {
+        gmacdev->LinkState = (u32)status;
+        lynxi_gmac_set_ctrl_by_speed(gmacdev->Speed);
+        if (!lynxi_dwmac4_swr_succeeded())
+        {
+            rt_kprintf("gmac: retry DMA SWR after eth_init link-up CPR\n");
+            synopGMAC_reset(gmacdev);
+            if (lynxi_dwmac4_swr_succeeded())
+                lynxi_dwmac4_dma_ring_init(gmacdev);
+        }
+        lynxi_dwmac4_link_up_refresh(gmacdev);
+    }
+    lynxi_dwmac4_regs_dump(gmacdev);
+#endif
 
     rt_timer_init(&dev->link_timer, "link_timer",
                   synopGMAC_linux_cable_unplug_function,
                   (void *)adapter,
                   RT_TICK_PER_SECOND,
                   RT_TIMER_FLAG_PERIODIC | RT_TIMER_FLAG_SOFT_TIMER);
-#ifdef RT_USING_GMAC_INT_MODE
-    lynxi_gmac_irq_setup(dev);
-#else
+#if defined(BSP_LYNXI_DWMAC4) || !defined(RT_USING_GMAC_INT_MODE)
     rt_timer_init(&dev->rx_poll_timer, "rx_poll_timer",
                   eth_rx_poll_timer,
                   (void *)adapter,
+#if defined(BSP_LYNXI_DWMAC4)
+                  1, /* 1 tick ≈ 1ms，IRQ 未投递时作 RX 兜底 */
+#else
                   1,
+#endif
                   RT_TIMER_FLAG_PERIODIC | RT_TIMER_FLAG_SOFT_TIMER);
-#endif  /*RT_USING_GMAC_INT_MODE*/
+#endif
+#ifdef RT_USING_GMAC_INT_MODE
+    lynxi_gmac_irq_setup(dev);
+#endif
 
     rt_kprintf("eth_inited!\n");
 
@@ -717,8 +862,9 @@ static const struct rt_device_ops _gmac_dev_ops =
 
 rt_err_t rt_eth_tx(rt_device_t device, struct pbuf *p)
 {
-    /* lock eth device */
+#ifndef BSP_LYNXI_DWMAC4
     rt_sem_take(&sem_lock, RT_WAITING_FOREVER);
+#endif
 
     DEBUG_MES("in %s\n", __FUNCTION__);
 
@@ -733,20 +879,72 @@ rt_err_t rt_eth_tx(rt_device_t device, struct pbuf *p)
     synopGMACdevice *gmacdev;
     adapter = (struct synopGMACNetworkAdapter *) dev->priv;
     if (adapter == NULL)
+    {
+#ifndef BSP_LYNXI_DWMAC4
+        rt_sem_release(&sem_lock);
+#endif
         return -1;
+    }
 
     gmacdev = (synopGMACdevice *) adapter->synopGMACdev;
     if (gmacdev == NULL)
+    {
+#ifndef BSP_LYNXI_DWMAC4
+        rt_sem_release(&sem_lock);
+#endif
         return -1;
+    }
 
+#ifdef BSP_LYNXI_DWMAC4
+    {
+        rt_uint32_t retry;
+        rt_bool_t submitted = RT_FALSE;
+
+        for (retry = 0; retry < 20000U && !submitted; retry++)
+        {
+            u32 tx_slot = gmacdev->TxNext;
+
+            lynxi_dwmac4_tx_reclaim_all(gmacdev);
+
+            if (!lynxi_dwmac4_tx_empty(gmacdev, tx_slot))
+            {
+                if ((retry % 100U) == 0U)
+                    synopGMAC_resume_dma_tx(gmacdev);
+                rt_hw_us_delay(10);
+                continue;
+            }
+
+            if (gmacdev->TxBufVa == RT_NULL || gmacdev->TxBufVa[tx_slot] == 0)
+                return -1;
+            if (p->tot_len > TX_BUF_SIZE)
+                return -RT_EINVAL;
+
+            pbuf = gmacdev->TxBufVa[tx_slot];
+            pbuf_copy_partial(p, (void *)pbuf, p->tot_len, 0);
+            status = synopGMAC_set_tx_qptr(gmacdev, 0, p->tot_len, pbuf, 0, 0, 0,
+                                           offload_needed, &index, dpr);
+            if (status < 0)
+            {
+                if (!lynxi_dwmac4_buf_is_nc((void *)pbuf))
+                    plat_free_memory((void *)pbuf);
+                return -16;
+            }
+            submitted = RT_TRUE;
+        }
+
+        if (!submitted)
+            return -RT_EBUSY;
+    }
+    synopGMAC_resume_dma_tx(gmacdev);
+    return RT_EOK;
+#else
     if (!synopGMAC_is_desc_owned_by_dma(gmacdev->TxNextDesc))
     {
-
         pbuf = (rt_ubase_t)plat_alloc_memory(p->tot_len);
-        //pbuf = (u32)pbuf_alloc(PBUF_LINK, p->len, PBUF_RAM);
         if (pbuf == (rt_ubase_t)0)
         {
             rt_kprintf("===error in alloc bf1\n");
+            rt_sem_release(&sem_lock);
             return -1;
         }
 
@@ -754,17 +952,18 @@ rt_err_t rt_eth_tx(rt_device_t device, struct pbuf *p)
         pbuf_copy_partial(p, (void *)pbuf, p->tot_len, 0);
         dma_addr = plat_dma_map_single(gmacdev, (void *)pbuf, p->tot_len);
 
-        status = synopGMAC_set_tx_qptr(gmacdev, dma_addr, p->tot_len, pbuf, 0, 0, 0, offload_needed, &index, dpr);
+        status = synopGMAC_set_tx_qptr(gmacdev, (u32)dma_addr, p->tot_len, pbuf, 0, 0, 0, offload_needed, &index, dpr);
         if (status < 0)
         {
-            rt_kprintf("%s No More Free Tx Descriptors\n", __FUNCTION__);
-
             plat_free_memory((void *)pbuf);
+            rt_sem_release(&sem_lock);
             return -16;
         }
     }
     synopGMAC_resume_dma_tx(gmacdev);
+#endif
 
+#ifndef BSP_LYNXI_DWMAC4
     s32 desc_index;
     u32 data1, data2;
     rt_ubase_t data1_addr;
@@ -786,6 +985,7 @@ rt_err_t rt_eth_tx(rt_device_t device, struct pbuf *p)
 #endif
         if (desc_index >= 0 && data1 != 0)
         {
+            data1_addr = (rt_ubase_t)data1;
 #ifdef  IPC_OFFLOAD
             if (synopGMAC_is_tx_ipv4header_checksum_error(gmacdev, status))
             {
@@ -797,8 +997,7 @@ rt_err_t rt_eth_tx(rt_device_t device, struct pbuf *p)
             }
 #endif
 
-            data1_addr = (rt_ubase_t)data1;
-            plat_free_memory((void *)data1_addr);  // sw: data1 = buffer1
+            plat_free_memory((void *)data1_addr);
 
             if (synopGMAC_is_desc_valid(status))
             {
@@ -814,11 +1013,10 @@ rt_err_t rt_eth_tx(rt_device_t device, struct pbuf *p)
         }
         adapter->synopGMACNetStats.collisions += synopGMAC_get_tx_collision_count(status);
     }
-    while (desc_index >= 0);
+    while (desc_index >= 0 && data1 != 0);
 
-    /* unlock eth device */
     rt_sem_release(&sem_lock);
-//  rt_kprintf("output %d bytes\n", p->len);
+#endif
     return RT_EOK;
 }
 
@@ -838,12 +1036,17 @@ struct pbuf *rt_eth_rx(rt_device_t device)
     u32 dma_addr1;
     u32 dma_addr2;
     struct pbuf *pbuf = RT_NULL;
+#ifndef BSP_LYNXI_DWMAC4
     rt_sem_take(&sem_lock, RT_WAITING_FOREVER);
+#endif
 
     adapter = (struct synopGMACNetworkAdapter *) dev->priv;
     if (adapter == NULL)
     {
         rt_kprintf("%S : Unknown Device !!\n", __FUNCTION__);
+#ifndef BSP_LYNXI_DWMAC4
+        rt_sem_release(&sem_lock);
+#endif
         return NULL;
     }
 
@@ -851,44 +1054,86 @@ struct pbuf *rt_eth_rx(rt_device_t device)
     if (gmacdev == NULL)
     {
         rt_kprintf("%s : GMAC device structure is missing\n", __FUNCTION__);
+#ifndef BSP_LYNXI_DWMAC4
+        rt_sem_release(&sem_lock);
+#endif
         return NULL;
     }
 
-    /*Handle the Receive Descriptors*/
-      desc_index = synopGMAC_get_rx_qptr(gmacdev, &status, &dma_addr1, NULL, &data1, &dma_addr2, NULL, &data2);
-      if (desc_index >= 0 && data1 != 0)
+#ifdef BSP_LYNXI_DWMAC4
+    /*
+     * 每次只上交一帧；勿在 while 内丢弃后续包（iperf/TCP 突发时旧逻辑仅拷贝首包）。
+     * 环上仍有多包时再次唤醒 erx。
+     */
+    desc_index = synopGMAC_get_rx_qptr(gmacdev, &status, &dma_addr1, NULL, &data1, &dma_addr2, NULL, &data2);
+    if (desc_index >= 0 && data1 != 0)
+    {
+        data1_addr = gmacdev->RxBufVa ? gmacdev->RxBufVa[desc_index] : 0;
+        if (data1_addr == 0)
+            data1_addr = (rt_ubase_t)data1;
+
+        if (data1_addr != 0)
         {
-          DEBUG_MES("Received Data at Rx Descriptor %d for skb 0x%08x whose status is %08x\n", desc_index, dma_addr1, status);
-          if (synopGMAC_is_rx_desc_valid(status) || SYNOP_PHY_LOOPBACK)
+            if (synopGMAC_is_rx_desc_valid(status) || SYNOP_PHY_LOOPBACK)
             {
-                data1_addr = (rt_ubase_t)data1;
-                dma_addr1 =  plat_dma_map_single(gmacdev, (void *)data1_addr, RX_BUF_SIZE);
-                len =  synopGMAC_get_rx_desc_frame_length(status)-4; //Not interested in Ethernet CRC bytes
-                pbuf = pbuf_alloc(PBUF_LINK, len, PBUF_RAM);
-                if (pbuf == 0) rt_kprintf("===error in pbuf_alloc\n");
-                rt_memcpy(pbuf->payload, (char *)data1_addr, len);
-                DEBUG_MES("==get pkg len: %d\n", len);
+                len = synopGMAC_get_rx_desc_frame_length(status);
+                pbuf = pbuf_alloc(PBUF_TRANSPORT, (u16_t)len, PBUF_RAM);
+                if (pbuf != RT_NULL)
+                    rt_memcpy(pbuf->payload, (char *)data1_addr, len);
             }
             else
             {
-                rt_kprintf("s: %08x\n", status);
+                rt_kprintf("gmac: rx invalid des3=%08x\n", status);
                 adapter->synopGMACNetStats.rx_errors++;
-                adapter->synopGMACNetStats.collisions       += synopGMAC_is_rx_frame_collision(status);
-                adapter->synopGMACNetStats.rx_crc_errors    += synopGMAC_is_rx_crc(status);
-                adapter->synopGMACNetStats.rx_frame_errors  += synopGMAC_is_frame_dribbling_errors(status);
-                adapter->synopGMACNetStats.rx_length_errors += synopGMAC_is_rx_frame_length_errors(status);
             }
-            desc_index = synopGMAC_set_rx_qptr(gmacdev, dma_addr1, RX_BUF_SIZE, (u32)data1, 0, 0, 0);
-            if (desc_index < 0)
-            {
-#if SYNOP_RX_DEBUG
-                rt_kprintf("Cannot set Rx Descriptor for data1 %08x\n", (u32)data1);
-#endif
-                data1_addr = (rt_ubase_t)data1;
+
+            if (synopGMAC_set_rx_qptr(gmacdev, dma_addr1, RX_BUF_SIZE, data1_addr, 0, 0, 0) < 0)
                 plat_free_memory((void *)data1_addr);
+        }
+
+        if (lynxi_dwmac4_rx_pending(gmacdev))
+            lynxi_gmac_rx_notify();
+    }
+#else
+    /* Drain all completed RX descriptors; return first valid frame to lwIP */
+    while (1)
+    {
+        desc_index = synopGMAC_get_rx_qptr(gmacdev, &status, &dma_addr1, NULL, &data1, &dma_addr2, NULL, &data2);
+        if (desc_index < 0 || data1 == 0)
+            break;
+
+        DEBUG_MES("Received Data at Rx Descriptor %d for skb 0x%08x whose status is %08x\n", desc_index, dma_addr1, status);
+        data1_addr = (rt_ubase_t)data1;
+
+        if (data1_addr == 0)
+            break;
+
+        if (synopGMAC_is_rx_desc_valid(status) || SYNOP_PHY_LOOPBACK)
+        {
+            rt_hw_cpu_dcache_ops(RT_HW_CACHE_INVALIDATE, (void *)data1_addr, RX_BUF_SIZE);
+            dma_addr1 = plat_dma_map_single(gmacdev, (void *)data1_addr, RX_BUF_SIZE);
+            len = synopGMAC_get_rx_desc_frame_length(status) - 4;
+            if (pbuf == RT_NULL)
+            {
+                pbuf = pbuf_alloc(PBUF_TRANSPORT, (u16_t)len, PBUF_RAM);
+                if (pbuf != RT_NULL)
+                    rt_memcpy(pbuf->payload, (char *)data1_addr, len);
             }
         }
+        else
+        {
+            rt_kprintf("gmac: rx invalid des3=%08x\n", status);
+            adapter->synopGMACNetStats.rx_errors++;
+        }
+
+        desc_index = synopGMAC_set_rx_qptr(gmacdev, dma_addr1, RX_BUF_SIZE, data1_addr, 0, 0, 0);
+        if (desc_index < 0)
+            plat_free_memory((void *)data1_addr);
+    }
+#endif
+#ifndef BSP_LYNXI_DWMAC4
     rt_sem_release(&sem_lock);
+#endif
     DEBUG_MES("%s : before return \n", __FUNCTION__);
     return pbuf;
 }
@@ -1023,12 +1268,17 @@ static void lynxi_gmac_rx_start(void)
     synopGMACSetBits(gmacdev->MacBase, GmacInterruptMask, GmacRgmiiIntMask);
     synopGMAC_enable_dma_rx(gmacdev);
     synopGMAC_enable_dma_tx(gmacdev);
+#ifdef BSP_LYNXI_DWMAC4
+    lynxi_dwmac4_rx_restart(gmacdev);
+    lynxi_dwmac4_dma_start(gmacdev);
+#endif
 
     rt_timer_start(&eth_dev.link_timer);
+#if defined(BSP_LYNXI_DWMAC4) || !defined(RT_USING_GMAC_INT_MODE)
+    rt_timer_start(&eth_dev.rx_poll_timer);
+#endif
 #ifdef RT_USING_GMAC_INT_MODE
     rt_hw_interrupt_umask(LS1C_MAC_IRQ);
-#else
-    rt_timer_start(&eth_dev.rx_poll_timer);
 #endif
     lynxi_gmac_rx_started = RT_TRUE;
     rt_kprintf("gmac: rx/irq started\n");
@@ -1078,7 +1328,11 @@ void eth_rx_irq(int irqno, void *param)
      */
     rt_hw_interrupt_mask(LS1C_MAC_IRQ);
 
+#ifdef BSP_LYNXI_DWMAC4
+    dma_status_reg = lynxi_dwmac4_read_clear_irq(gmacdev);
+#else
     dma_status_reg = synopGMACReadReg(gmacdev->DmaBase, DmaStatus);
+#endif
     if (dma_status_reg == 0)
     {
         u32 mac_irq_st = synopGMACReadReg(gmacdev->MacBase, GmacInterruptStatus);
@@ -1119,7 +1373,11 @@ void eth_rx_irq(int irqno, void *param)
         rt_kprintf("%s:: Interrupt due to GMAC LINE module\n", __FUNCTION__);
     }
 
+#ifdef BSP_LYNXI_DWMAC4
+    interrupt = lynxi_dwmac4_map_irq_status(dma_status_reg);
+#else
     interrupt = synopGMAC_get_interrupt_type(gmacdev);
+#endif
     //rt_kprintf("%s:Interrupts to be handled: 0x%08x\n",__FUNCTION__,interrupt);
     if (interrupt & synopGMACDmaError)
     {
@@ -1138,10 +1396,14 @@ void eth_rx_irq(int irqno, void *param)
         synopGMAC_reset(gmacdev);
 
         synopGMAC_set_mac_addr(gmacdev, GmacAddr0High, GmacAddr0Low, mac_addr0);
+#ifdef BSP_LYNXI_DWMAC4
+        lynxi_dwmac4_dma_ring_init(gmacdev);
+#else
         synopGMAC_dma_bus_mode_init(gmacdev, DmaFixedBurstEnable | DmaBurstLength8 | DmaDescriptorSkip2);
         synopGMAC_dma_control_init(gmacdev, DmaStoreAndForward);
         synopGMAC_init_rx_desc_base(gmacdev);
         synopGMAC_init_tx_desc_base(gmacdev);
+#endif
         synopGMAC_mac_init(gmacdev);
         synopGMAC_enable_dma_rx(gmacdev);
         synopGMAC_enable_dma_tx(gmacdev);
@@ -1149,9 +1411,9 @@ void eth_rx_irq(int irqno, void *param)
     }
     if (interrupt & synopGMACDmaRxNormal)
     {
-        //DEBUG_MES("%s:: Rx Normal \n", __FUNCTION__);
-        //synop_handle_received_data(netdev);
-        if (lynxi_gmac_netif_ready(&eth_dev.parent))
+        if (gmacdev->LinkState)
+            lynxi_gmac_rx_notify();
+        else if (lynxi_gmac_netif_ready(&eth_dev.parent))
             eth_device_ready(&eth_dev.parent);
     }
     if (interrupt & synopGMACDmaRxAbnormal)
@@ -1171,8 +1433,11 @@ void eth_rx_irq(int irqno, void *param)
 
     if (interrupt & synopGMACDmaTxNormal)
     {
+#ifdef BSP_LYNXI_DWMAC4
+        lynxi_dwmac4_tx_reclaim_all(gmacdev);
+#else
         DEBUG_MES("%s::Finished Normal Transmission \n", __FUNCTION__);
-        //          synop_handle_transmit_over(netdev);
+#endif
     }
 
     if (interrupt & synopGMACDmaTxAbnormal)
@@ -1221,6 +1486,12 @@ int rt_hw_eth_init(void)
     lynxi_sysctl_lite_gmac_probe_clocks();
     rt_kprintf("gmac: probe clocks CPR+0x8c=0x%08x (gates~0x207; 0x66f 为 boot/链路后速率字)\n",
                *(volatile rt_uint32_t *)(rt_uintptr_t)LYNXI_GMAC_CTRL_REG);
+    rt_hw_us_delay(500);
+#ifdef BSP_LYNXI_DWMAC4
+    /* 对齐 Zephyr dwmac_probe：probe_clocks 后立刻 DMA SWR，再 attach/PHY */
+    lynxi_dwmac4_early_bus_reset((u32)(rt_uintptr_t)GMAC_BASE,
+                                 (u32)(rt_uintptr_t)GMAC_BASE + DMABASE);
+#endif
 #else
 #ifdef BSP_USING_RESET_CTRL
     lynxi_reset_pulse(LYNXI_RESET_ETH, 1);
@@ -1258,7 +1529,6 @@ int rt_hw_eth_init(void)
     }
 
     init_phy(synopGMACadapter->synopGMACdev);
-    synopGMAC_reset(synopGMACadapter->synopGMACdev);
 
     /* MII setup */
     synopGMACadapter->mii.phy_id_mask = 0x1F;

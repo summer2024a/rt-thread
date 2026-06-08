@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# HE200 EP 实板调试环境准备（在 192.168.49.81 上运行）
+# HE200 EP 实板调试环境准备（SSH 到 192.168.49.81 后在本机执行）
+#
+# 服务器两块网口（实板）：
+#   - enp25s0f0：192.168.49.81（SSH 管理口）
+#   - enp25s0f1：网线直连 EP，本脚本 flush 后配 192.168.1.1/24
+# 固件：本地 scons 生成 rtthread.bin，经 /mnt/49.20 挂载 + 软链加载，无需 scp
 set -euo pipefail
 
 HOST_IF="${HOST_IF:-enp25s0f1}"

@@ -464,6 +464,10 @@ static err_t ethernetif_linkoutput(struct netif *netif, struct pbuf *p)
         /* waiting for ack */
         rt_completion_wait(&msg.ack, RT_WAITING_FOREVER);
     }
+    else
+    {
+        rt_kprintf("etx: mb full len=%u\n", (unsigned)p->tot_len);
+    }
 #else
     struct eth_device* enetif;
 
@@ -831,14 +835,8 @@ rt_err_t eth_device_ready(struct eth_device* dev)
 {
     if (dev->netif)
     {
-        if(dev->rx_notice == RT_FALSE)
-        {
-            dev->rx_notice = RT_TRUE;
-            return rt_mb_send(&eth_rx_thread_mb, (rt_ubase_t)dev);
-        }
-        else
-            return RT_EOK;
-        /* post message to Ethernet thread */
+        dev->rx_notice = RT_TRUE;
+        return rt_mb_send(&eth_rx_thread_mb, (rt_ubase_t)dev);
     }
     else
         return -RT_ERROR; /* netif is not initialized yet, just return. */
@@ -892,10 +890,9 @@ static void eth_tx_thread_entry(void* parameter)
             enetif = (struct eth_device*)msg->netif->state;
             if (enetif != RT_NULL)
             {
-                /* call driver's interface */
                 if (enetif->eth_tx(&(enetif->parent), msg->buf) != RT_EOK)
                 {
-                    /* transmit eth packet failed */
+                    LWIP_DEBUGF(NETIF_DEBUG, ("eth_tx failed len=%u\n", (unsigned)msg->buf->tot_len));
                 }
             }
 

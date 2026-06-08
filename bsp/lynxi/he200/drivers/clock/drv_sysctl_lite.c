@@ -33,6 +33,11 @@ void lynxi_sysctl_lite_gmac_ctrl_set(rt_uint32_t value)
     SYSCTL_REG32(LYNXI_SYSCTL_GMAC_CTRL_REG_OFF) = value;
 }
 
+void lynxi_sysctl_lite_gmac_cpr_apply_1000m(void)
+{
+    lynxi_sysctl_lite_gmac_ctrl_set(LYNXI_SYSCTL_GMAC_CTRL_1000M);
+}
+
 static void _lynxi_gmac_reset_pulse(void)
 {
     rt_uint32_t v;
@@ -57,6 +62,8 @@ void lynxi_sysctl_lite_gmac_probe_clocks(void)
     _sysctl_gate_on(LYNXI_SYSCTL_GMAC_CTRL_REG_OFF, 1u); /* LITE_GMAC_ACLK */
     _sysctl_gate_on(LYNXI_SYSCTL_GMAC_CTRL_REG_OFF, 9u); /* LITE_ETH_PHY */
     _sysctl_gate_on(LYNXI_SYSCTL_GMAC_CTRL_REG_OFF, 2u); /* LITE_GMAC_HCLK */
+    /* 对齐 Zephyr bus_init：probe 结束即写 0x66f（RGMII mux + gate） */
+    lynxi_sysctl_lite_gmac_cpr_apply_1000m();
 }
 
 void lynxi_sysctl_lite_init(void)

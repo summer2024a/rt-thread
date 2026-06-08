@@ -21,7 +21,7 @@ FIRMWARE_LINK="${FIRMWARE_LINK:-/lib/firmware/lynd_pcie/u-boot.bin}"
 # FIRMWARE=rt|zephyr：自动切换软链（zephyr 测完恢复 rt）
 FIRMWARE="${FIRMWARE:-rt}"
 RT_BIN="${RT_BIN:-/mnt/49.20/rt-thread/bsp/lynxi/he200/rtthread.bin}"
-ZEPHYR_BIN="${ZEPHYR_BIN:-/mnt/49.20/zephyr-rtos/zephyrproject/build_he200_ep_gmac/zephyr/zephyr.bin}"
+ZEPHYR_BIN="${ZEPHYR_BIN:-/mnt/49.20/zephyr-rtos/zephyrproject/build_he200_ep_final/zephyr/zephyr.bin}"
 HOTPLUG_SCRIPT="${HOTPLUG_SCRIPT:-/mnt/49.20/tools/drivers_test/periph_slv_test/hotplug_wdt.sh}"
 ENV_SCRIPT="${ENV_SCRIPT:-$(dirname "$0")/he200_test_env.sh}"
 

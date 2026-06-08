@@ -22,7 +22,7 @@
 | 工程挂载 | `/mnt/49.20/rt-thread` 等 | 与本地同一份代码，**本地编译**，软链加载，无需 scp |
 | GMAC 测试网口 | `enp25s0f1` | 网线直连 EP；`sudo ip addr flush` 后配 `192.168.1.1/24` |
 | EP 串口 | `/dev/ttyUSB0` @ 115200 | `screen /dev/ttyUSB0 115200` |
-| EP 网口 IP | `192.168.1.2/24` | RT `RT_LWIP_IPADDR` / Zephyr `he200_ep_gmac.conf` |
+| EP 网口 IP | `192.168.1.2/24` | RT `RT_LWIP_IPADDR` / Zephyr `he200_ep_defconfig` |
 | 固件软链 | `/lib/firmware/lynd_pcie/u-boot.bin` | 指向 `rtthread.bin` 或 `zephyr.bin` |
 
 **勿混淆**：`ping 192.168.49.81` 走管理网；GMAC 验收应对测试口执行 `ping 192.168.1.2`（Host 侧）或 EP 上 `ping 192.168.1.1`。
@@ -69,15 +69,14 @@ ls -l /lib/firmware/lynd_pcie/u-boot.bin
 /mnt/49.20/tools/drivers_test/periph_slv_test/hotplug_wdt.sh --devid 0
 ```
 
-Zephyr 软链示例：`.../build_he200_ep_gmac/zephyr/zephyr.bin`
+Zephyr 软链示例：`.../build_he200_ep_final/zephyr/zephyr.bin`
 
 Kconfig 要点（RT）：`BSP_USING_GMAC=y`，**关闭** `BSP_USING_RPMSG_NET`。
 
 Zephyr 构建（本地）：
 
 ```bash
-west build -b he200_ep -d build_he200_ep_gmac app_shell_fs -- \
-  -DEXTRA_CONF_FILE=../zephyr/boards/lynxi/he200_ep/he200_ep_gmac.conf
+west build -b he200_ep -d build_he200_ep_final app_shell_fs --pristine
 ```
 
 ## 5. GMAC 调试检查清单
@@ -142,9 +141,54 @@ ping -c 8 192.168.1.2
 ip neigh show dev enp25s0f1
 ```
 
+## 6. 带宽验收（49.81 实板，iperf v2 端口 5001）
+
+| 固件 | ping | UDP Host→EP | UDP EP→Host | TCP Host→EP |
+|------|------|-------------|-------------|-------------|
+| RT | 8/8 PASS | ~52 Mbps | ~177 Mbps (`udpblast`) | ~0.07 Mbps |
+| Zephyr | 8/8 PASS | ~52 Mbps | ~50 Mbps (`zperf`) | ~0.07 Mbps |
+
+UDP 达标说明 GMAC DMA/PHY 正常；TCP ~0.07 Mbps 疑协议栈/socket，非硬件层。
+
+### 一键脚本
+
 ```bash
-iperf3 -s    # 带宽压测服务端
+sudo FIRMWARE=rt|zephyr bash scripts/he200_gmac_ping_test.sh
+sudo FIRMWARE=rt|zephyr bash scripts/he200_gmac_bw_test.sh      # UDP，默认跳过 TCP
+sudo FIRMWARE=zephyr bash scripts/he200_gmac_tcp_test.sh        # TCP 快测
 ```
+
+### RT 手动（MSH 串口 + Host）
+
+```text
+# UDP Host→EP
+iperf -s -u
+# Host: iperf -u -c 192.168.1.2 -p 5001 -b 50M -t 10 -f m
+iperf --stop
+
+# UDP EP→Host
+# Host: iperf -s -u -p 5001 -f m
+udpblast 192.168.1.1 5001 10
+
+# TCP Host→EP
+iperf -s
+# Host: iperf -c 192.168.1.2 -p 5001 -t 10 -f m
+iperf --stop
+```
+
+### Zephyr 手动（Shell 串口 + Host）
+
+```text
+zperf udp download 5001
+# Host: iperf -u -c 192.168.1.2 -p 5001 -b 50M -t 10 -f m
+zperf udp download stop
+
+zperf tcp download 5001
+# Host: iperf -c 192.168.1.2 -p 5001 -t 10 -f m
+zperf tcp download stop
+```
+
+**注意**：勿用 iperf3/5201；Zephyr 热插拔后等 **50s**；串口占用时 `sudo fuser -k /dev/ttyUSB0`。
 
 ## 8. 故障树
 

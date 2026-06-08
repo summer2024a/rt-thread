@@ -44,7 +44,7 @@ list_isr
 ping 192.168.1.1
 ```
 
-Host 侧：`sudo ./scripts/he200_test_env.sh` 后 `ping 192.168.1.2`；带宽用 **iperf v2**（端口 5001），勿用 iperf3/5201。
+Host 侧：`sudo ./scripts/he200_test_env.sh` 后 `ping 192.168.1.2`；带宽用 **iperf v2**（端口 5001），勿用 iperf3/5201。脚本见 [`../../scripts/he200_gmac_bw_test.sh`](../../scripts/he200_gmac_bw_test.sh)、[`../../scripts/he200_gmac_tcp_test.sh`](../../scripts/he200_gmac_tcp_test.sh)；操作汇总见 [`../../DEBUG_SKILL.md`](../../DEBUG_SKILL.md) §6。
 
 ### 1.3 带宽（2026-06-06）
 

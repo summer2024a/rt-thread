@@ -212,7 +212,16 @@ void rt_hw_board_init(void)
 
     early_putc_direct('M');  /* Mark: MMU init start */
 
-    /* Step 1: PGD → PUD link */
+    /* Step 1: PGD → PUD links
+     * ARMv8-A page table addressing (4KB granule):
+     *   PGD index = (VA >> 39) & 0x1FF  (bits [47:39], each covers 512GB)
+     *   PUD index = (VA >> 30) & 0x1FF  (bits [38:30], each covers 1GB)
+     *   PMD index = (VA >> 21) & 0x1FF  (bits [29:21], each covers 2MB)
+     *
+     * IRAM1 @ 0x100000000 (4GB):
+     *   PGD index = (4GB >> 39) = 0 → 在PGD[0]范围(0-512GB)
+     *   PUD index = (4GB >> 30) & 0x1FF = 4 → 在pud_table_0[4]位置
+     */
     pgd[0] = ((rt_size_t)pud_table_0 & ~0x3FFUL) | MMU_TYPE_TABLE;  /* VA 0-512GB */
     LOG_D("pgd[0]=0x%lx → pud_table_0 @ 0x%lx", pgd[0], (rt_size_t)pud_table_0);
 
@@ -264,13 +273,25 @@ void rt_hw_board_init(void)
         pud_table_0[i] = ((rt_size_t)i << 30) | MMU_MAP_K_DEVICE | MMU_TYPE_BLOCK;
     }
 
-    /* Step 5: PUD[4]: VA 4-5GB (IRAM1 @ 0x100000000), NORMAL_MEM
-     * CRITICAL: IRAM1映射，使用1GB block descriptor
-     * Descriptor = (GB_index << 30) | attrs | MMU_TYPE_BLOCK
-     * GB_index = 4 (对应4GB-5GB范围)
+    /* Step 5: PUD[4]: VA 4-5GB → PA 4-5GB (IRAM1 @ 0x100000000), NORMAL_MEM
+     * CRITICAL: IRAM1在VA 4GB，位于PGD[0]范围
+     *
+     * VA calculation (ARMv8-A 4KB granule):
+     *   IRAM1 @ 0x100000000 = 4GB (虚拟地址，identity mapping)
+     *   PGD index = (4GB >> 39) & 0x1FF = 0 → 在PGD[0]范围(0-512GB)
+     *   PUD index = (4GB >> 30) & 0x1FF = 4 → 在pud_table_0[4]位置
+     *
+     * Descriptor format (1GB block):
+     *   OA field = bits [47:30] = physical_address_GB_index << 30
+     *   IRAM1物理地址 = 0x100000000 = 4GB
+     *   Physical GB index = 4
+     *
+     * Descriptor = (物理GB_index << 30) | attrs | MMU_TYPE_BLOCK
+     *             = (4 << 30) | MMU_MAP_K_RWCB | 0x1
+     *             = 0x100000601 (期望值)
      */
     pud_table_0[4] = (4ULL << 30) | MMU_MAP_K_RWCB | MMU_TYPE_BLOCK;
-    LOG_I("pud_table_0[4]=0x%llx (IRAM1 @ 4GB)", pud_table_0[4]);
+    LOG_I("pud_table_0[4]=0x%llx (VA 4GB → PA 4GB, IRAM1)", pud_table_0[4]);
 
     /* PUD[5-511]: VA 5-512GB, DEVICE (unused) */
     for (int i = 5; i < 512; i++) {
@@ -375,16 +396,52 @@ void rt_hw_board_init(void)
     LOG_I("[board] MMU initialization complete - proceeding to heap setup");
 
 #ifdef RT_USING_HEAP
+    early_putc_direct('H');  /* Mark: BEFORE heap init */
+
+    /* Debug: Use hex output to show heap addresses */
+    extern void early_printhex(rt_ubase_t number);
+    early_putc_direct('[');
+    early_printhex(heap_start);
+    early_putc_direct('-');
+    early_printhex(heap_end);
+    early_putc_direct(']');
+    early_putc_direct('S');  /* Mark: Addresses printed */
+
     rt_system_heap_init((void *)heap_start, (void *)heap_end);
-    LOG_I("[board] Heap: 0x%lx-0x%lx (%ldKB)",
-          heap_start, heap_end, (heap_end - heap_start) / 1024);
+
+    early_putc_direct('h');  /* Mark: AFTER heap init */
+
+    /* Verify heap is working */
+    early_putc_direct('M');  /* Mark: Before malloc test */
+    void *test_ptr = rt_malloc(64);
+    early_putc_direct('m');  /* Mark: After malloc test */
+    if (test_ptr) {
+        rt_free(test_ptr);
+        early_putc_direct('f');  /* Mark: After free test */
+    } else {
+        early_putc_direct('x');  /* Mark: Malloc failed! */
+    }
 #endif
 
     /* initialize hardware interrupt */
     LOG_I("[board] About to call rt_interrupt_init (GICv3)");
     early_putc_direct('G');  /* Mark: Before GIC init */
+
+    /* Verify GIC base addresses before init */
+    volatile unsigned int *gic_dist = (volatile unsigned int *)0x08000000;
+    volatile unsigned int *gic_redist = (volatile unsigned int *)0x08100000;
+    unsigned int dist_val = *gic_dist;
+    early_putc_direct('D');  /* Mark: GIC Distributor read */
+
     rt_hw_interrupt_init();
+
     early_putc_direct('g');  /* Mark: After GIC init */
+
+    /* Verify GIC is working after init */
+    unsigned int dist_val2 = *gic_dist;
+    early_putc_direct('d');  /* Mark: GIC Distributor read after init */
+
+    LOG_I("[board] GIC Dist: before=0x%x after=0x%x", dist_val, dist_val2);
     LOG_I("[board] rt_interrupt_init OK");
 
     /* initialize uart */
@@ -400,7 +457,9 @@ void rt_hw_board_init(void)
 
 #ifdef RT_USING_CONSOLE
     /* set console device */
+    early_putc_direct('C');  /* Mark: Before console set */
     rt_console_set_device(RT_CONSOLE_DEVICE_NAME);
+    early_putc_direct('c');  /* Mark: After console set */
 #endif /* RT_USING_CONSOLE */
 
 #ifdef RT_USING_COMPONENTS_INIT
@@ -418,6 +477,10 @@ void rt_hw_board_init(void)
     // rt_hw_interrupt_umask(RT_STOP_IPI);
     // rt_hw_interrupt_umask(RT_SMP_CALL_IPI);
 #endif
+
+    early_putc_direct('F');  /* Mark: Board init FINISHED */
+    LOG_I("[board] ===== BOARD INIT COMPLETE =====");
+    LOG_I("[board] Next: rt_show_version() → rt_application_init()");
 }
 
 #ifdef RT_USING_SMP

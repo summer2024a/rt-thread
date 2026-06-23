@@ -215,13 +215,29 @@ void rt_application_init(void)
 {
     rt_thread_t tid;
 
+    /* HP232X debug */
+    extern void early_putc_direct(char c);
+    early_putc_direct('A');  /* Mark: Enter rt_application_init */
+
 #ifdef RT_USING_HEAP
+    early_putc_direct('H');  /* Mark: Using HEAP */
     tid = rt_thread_create("main", main_thread_entry, RT_NULL,
                            RT_MAIN_THREAD_STACK_SIZE, RT_MAIN_THREAD_PRIORITY, 20);
+
+    early_putc_direct('T');  /* Mark: After thread_create */
+    if (tid == RT_NULL) {
+        early_putc_direct('X');  /* Mark: Thread create FAILED */
+        /* Add more debug info */
+        early_putc_direct('!');
+    } else {
+        early_putc_direct('t');  /* Mark: Thread create SUCCESS */
+    }
+
     RT_ASSERT(tid != RT_NULL);
 #else
     rt_err_t result;
 
+    early_putc_direct('N');  /* Mark: No HEAP, using static */
     tid = &main_thread;
     result = rt_thread_init(tid, "main", main_thread_entry, RT_NULL,
                             main_thread_stack, sizeof(main_thread_stack), RT_MAIN_THREAD_PRIORITY, 20);
@@ -231,7 +247,9 @@ void rt_application_init(void)
     (void)result;
 #endif /* RT_USING_HEAP */
 
+    early_putc_direct('S');  /* Mark: Before thread_startup */
     rt_thread_startup(tid);
+    early_putc_direct('s');  /* Mark: After thread_startup */
 }
 
 /**

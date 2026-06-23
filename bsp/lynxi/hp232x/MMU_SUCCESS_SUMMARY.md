@@ -116,9 +116,27 @@ TTBR0_EL1 = pgd基址
 
 ---
 
-## 剩余工作
+## GIC状态验证
 
-### ⚠️ Shell未显示
+**当前状态**：GIC初始化代码执行，但尚未完全验证功能
+
+**调试标记** (`GDgd`)：
+- **G** = rt_hw_interrupt_init()调用前
+- **D** = GIC Distributor寄存器读取成功（MMU映射验证）
+- **g** = rt_hw_interrupt_init()返回成功
+- **d** = GIC Distributor寄存器再次读取成功
+
+**已验证**：
+- ✅ GIC Distributor基地址映射正确 (@ 0x08000000)
+- ✅ GIC寄存器可读写（MMU DEVICE_MEM属性正确）
+- ✅ arm_gic_dist_init(), arm_gic_cpu_init(), arm_gic_redist_init()执行
+
+**待验证**：
+- ⚠️ Timer中断是否触发
+- ⚠️ 中断处理函数是否工作
+- ⚠️ OS tick是否正常产生
+
+**下一步**：需要Shell显示后才能验证中断功能
 
 **现象**：Banner显示后停止，无Shell输出
 

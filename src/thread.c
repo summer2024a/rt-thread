@@ -560,19 +560,32 @@ rt_thread_t rt_thread_create(const char *name,
     struct rt_thread *thread;
     void *stack_start;
 
+    /* HP232X debug */
+    extern void early_putc_direct(char c);
+    early_putc_direct('1');  /* Mark: Enter rt_thread_create */
+
     thread = (struct rt_thread *)rt_object_allocate(RT_Object_Class_Thread,
                                                     name);
-    if (thread == RT_NULL)
+    early_putc_direct('2');  /* Mark: After rt_object_allocate */
+
+    if (thread == RT_NULL) {
+        early_putc_direct('O');  /* Mark: Object allocate FAILED */
         return RT_NULL;
+    }
+    early_putc_direct('o');  /* Mark: Object allocate SUCCESS */
 
     stack_start = (void *)RT_KERNEL_MALLOC(stack_size);
+    early_putc_direct('3');  /* Mark: After stack malloc */
+
     if (stack_start == RT_NULL)
     {
         /* allocate stack failure */
+        early_putc_direct('M');  /* Mark: Stack malloc FAILED */
         rt_object_delete((rt_object_t)thread);
 
         return RT_NULL;
     }
+    early_putc_direct('m');  /* Mark: Stack malloc SUCCESS */
 
     _thread_init(thread,
                  name,

@@ -107,7 +107,6 @@
 /* end of Inter-Thread communication */
 
 /* Memory Management */
-
 #define RT_USING_SLAB
 #define RT_USING_MEMHEAP
 #define RT_MEMHEAP_FAST_MODE

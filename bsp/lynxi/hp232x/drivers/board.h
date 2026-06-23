@@ -83,7 +83,7 @@
 extern int __bss_end;
 
 #define PAGE_POOL_SIZE          0x4000UL    /* 16KB */
-#define HEAP_POOL_SIZE          0xC000UL    /* 48KB - working value */
+#define HEAP_POOL_SIZE          0x24000UL    /* 144KB - maximum safe value for Shell support */
 
 #define KERNEL_VADDR_START 0
 

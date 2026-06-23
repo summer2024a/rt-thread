@@ -20,7 +20,6 @@
 
 .macro SAVE_IRQ_CONTEXT
     /* Save the entire context. */
-    SAVE_FPU sp
     stp     x0, x1, [sp, #-0x10]!
     stp     x2, x3, [sp, #-0x10]!
     stp     x4, x5, [sp, #-0x10]!
@@ -80,8 +79,6 @@
     ldp     x4, x5, [sp], #0x10
     ldp     x2, x3, [sp], #0x10
     ldp     x0, x1, [sp], #0x10
-
-    RESTORE_FPU sp
 .endm
 
 .macro EXCEPTION_SWITCH, eframex, tmpx

@@ -1,0 +1,13 @@
+# HP232X 测试环境依赖 / HP232X test environment dependencies
+
+# SSH 连接 / SSH connection
+paramiko>=2.7.0
+
+# 串口通信 / Serial communication
+pyserial>=3.4
+
+# (Optional) 用于更高级的串口处理 / For advanced serial handling
+pyusb>=1.0.0
+
+# (Optional) 用于性能分析和绘图 / For performance analysis and plotting
+matplotlib>=3.3.0

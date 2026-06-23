@@ -1,0 +1,54 @@
+config BSP_SUPPORT_FPU
+    bool "Using Float"
+    default n
+
+menu "Hardware Drivers Config"
+    menu "BCM Peripheral Drivers"
+        menuconfig BSP_USING_UART
+            bool "Using UART"
+            select RT_USING_SERIAL
+            default y
+
+            if BSP_USING_UART
+                config RT_USING_UART0
+                bool "Enable UART 0"
+                default y
+
+                config RT_USING_UART1
+                bool "Enable UART 1"
+                default n
+            endif
+
+        menuconfig BSP_USING_GIC
+            bool "Enable GIC"
+            select RT_USING_GIC
+            default y
+
+            if BSP_USING_GIC
+                choice
+                    prompt "GIC Version"
+                    default BSP_USING_GICV3
+
+                    config BSP_USING_GICV2
+                        bool "Enable GIC400(GICV2)"
+
+                    config BSP_USING_GICV3
+                        bool "Enable GIC500(GICV3)"
+                endchoice
+            endif
+
+        config KERNEL_ASPACE_START
+            hex "Kernel aspace start address"
+            default 0x04000000
+
+        config BSP_USING_PIN
+            bool "Using PIN"
+            select RT_USING_PIN
+            default n
+
+        config BSP_USING_CORETIMER
+            bool "Using core timer"
+            select RT_USING_CORETIMER
+            default y
+    endmenu
+endmenu

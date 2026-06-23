@@ -49,6 +49,7 @@ tags
 .idea
 **/.cache/
 .vscode
+.cursor
 *.code-workspace
 *.eide.*
 .history

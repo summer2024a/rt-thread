@@ -1,0 +1,178 @@
+OUTPUT_FORMAT("elf64-littleaarch64", "elf64-littleaarch64", "elf64-littleaarch64")
+OUTPUT_ARCH(aarch64)
+ENTRY(_start)
+PHDRS
+{
+    text PT_LOAD FLAGS(5);
+    data PT_LOAD FLAGS(6);
+    stack PT_LOAD FLAGS(6);
+}
+SECTIONS
+{
+    /*
+     * HP232X / KA200 — two-segment IRAM layout (Memory Constraints Applied)
+     *
+     * IRAM0: 0x04000000 ~ 0x0403FFFF (前256KB可用) — kernel text + data + mmu_table
+     * IRAM0: 0x04040000 ~ 0x0407FFFF (后256KB保留) — 不可使用
+     * IRAM1: 0x100000000 ~ 0x10003FFFF (前256KB保留) — 不可使用
+     * IRAM1: 0x100040000 ~ 0x10007FFFF (后256KB可用) — bss + heap + stack
+     *
+    * For EVB PCIe boot mode (non-HAPS):
+    * - Bootcode loads image at 0x04000000
+    * - 32-byte header for bootcode metadata/checks at 0x04000000
+    * - Actual code entry at 0x04000020 (TEXT_START = 0x4000020)
+    * - bootcode reads header, verifies, jumps to 0x04000020
+     */
+    _text_offset = 0x20;
+    . = 0x04000000 + _text_offset;
+    .head :
+    {
+        KEEP(*(.text.entrypoint))
+        . = ALIGN(8);
+    } :text
+
+    /* Reserved space for bootcode header in EVB mode
+     * Skip 32 bytes (0x20) to allow bootcode to place header at 0x04000000
+     * Actual code starts at 0x04000020 for EVB/PCIe boot */
+    . = . + 0x20;
+
+    .text :
+    {
+        PROVIDE(__text_start = .);
+        *(.vectors)
+        *(.text)
+        *(.text.*)
+        *(.rodata)
+        *(.rodata*)
+        *(.glue_7)
+        *(.glue_7t)
+        *(.gnu.linkonce.t*)
+        . = ALIGN(8);
+        PROVIDE(__rt_utest_tc_tab_start = .);
+        KEEP(*(UtestTcTab))
+        PROVIDE(__rt_utest_tc_tab_end = .);
+        . = ALIGN(8);
+        PROVIDE(__fsymtab_start = .);
+        KEEP(*(FSymTab))
+        PROVIDE(__fsymtab_end = .);
+        . = ALIGN(8);
+        PROVIDE(__vsymtab_start = .);
+        KEEP(*(VSymTab))
+        PROVIDE(__vsymtab_end = .);
+        . = ALIGN(8);
+        PROVIDE(__rtmsymtab_start = .);
+        KEEP(*(RTMSymTab))
+        PROVIDE(__rtmsymtab_end = .);
+        . = ALIGN(8);
+        PROVIDE(__rt_init_start = .);
+        KEEP(*(SORT(.rti_fn*)))
+        PROVIDE(__rt_init_end = .);
+        . = ALIGN(16);
+        PROVIDE(__text_end = .);
+    } :text
+
+    /* HP232X: Early MMU page tables must be in IRAM0 (accessible before MMU enable) */
+    .early_hp232x :
+    {
+        . = ALIGN(4096);
+        PROVIDE(__early_tbl_start = .);
+        KEEP(*(.early_hp232x))
+        . = ALIGN(4096);
+        PROVIDE(__early_tbl_end = .);
+    } :text
+
+    /* HP232X: Match bootwrapper layout - no MMU tables needed */
+    /* bootwrapper has .text at 0x4000020, .stack at 0x100020000 */
+
+    .eh_frame_hdr :
+    {
+        *(.eh_frame_hdr)
+        *(.eh_frame_entry)
+    }
+    .eh_frame : ONLY_IF_RO { KEEP (*(.eh_frame)) }
+    . = ALIGN(8);
+    .data :
+    {
+        *(.data)
+        *(.data.*)
+        *(.data1)
+        *(.data1.*)
+        . = ALIGN(16);
+        _gp = ABSOLUTE(.);
+        *(.sdata)
+        *(.sdata.*)
+        *(.rel.local)
+    } :data
+    . = ALIGN(8);
+    .ctors :
+    {
+        PROVIDE(__ctors_start__ = .);
+        KEEP(*(SORT(.init_array.*)))
+        KEEP(*(.init_array))
+        PROVIDE(__ctors_end__ = .);
+    }
+    .dtors :
+    {
+        PROVIDE(__dtors_start__ = .);
+        KEEP(*(SORT(.dtors.*)))
+        KEEP(*(.dtors))
+        PROVIDE(__dtors_end__ = .);
+    }
+    . = ALIGN(4096);
+
+    /* Page tables MUST be in IRAM0 (accessible before MMU enables IRAM1 access) */
+    .mmu_table :
+    {
+        PROVIDE(__mmu_table_start = .);
+        KEEP(*(.mmu_table))
+        *(.mmu_table.*)
+        . = ALIGN(4096);
+        PROVIDE(__mmu_table_end = .);
+    } :data
+
+    . = ALIGN(16);
+    /* BSS placed in upper half of IRAM1, keep low 256KB (0x100000000-0x10003FFFF) empty */
+    /* Memory constraint: only use IRAM1 upper 256KB (0x100040000-0x10007FFFF) */
+    /* Layout: 0x100040000-0x10004FFFF for stacks/early_data, .bss starts at 0x100050000 */
+    .bss 0x100050000 :
+    {
+        PROVIDE(__bss_noclean_start = .);
+        EXCLUDE_FILE(*entry_point.o) *(.bss.noclean.*)
+        . = ALIGN(8);
+        PROVIDE(__bss_noclean_end = .);
+        PROVIDE(__bss_start = .);
+        *(.bss)
+        *(.bss.*)
+        *(.dynbss)
+        *(COMMON)
+        . = ALIGN(8);
+        PROVIDE(__bss_end = .);
+    } :data
+    _end = .;
+    .stab 0 : { *(.stab) }
+    .stabstr 0 : { *(.stabstr) }
+    .stab.excl 0 : { *(.stab.excl) }
+    .stab.exclstr 0 : { *(.stab.exclstr) }
+    .stab.index 0 : { *(.stab.index) }
+    .stab.indexstr 0 : { *(.stab.indexstr) }
+    .comment 0 : { *(.comment) }
+    .debug 0 : { *(.debug) }
+    .line 0 : { *(.line) }
+    .debug_srcinfo 0 : { *(.debug_srcinfo) }
+    .debug_sfnames 0 : { *(.debug_sfnames) }
+    .debug_aranges 0 : { *(.debug_aranges) }
+    .debug_pubnames 0 : { *(.debug_pubnames) }
+    .debug_info 0 : { *(.debug_info .gnu.linkonce.wi.*) }
+    .debug_abbrev 0 : { *(.debug_abbrev) }
+    .debug_line 0 : { *(.debug_line) }
+    .debug_frame 0 : { *(.debug_frame) }
+    .debug_str 0 : { *(.debug_str) }
+    .debug_loc 0 : { *(.debug_loc) }
+    .debug_macinfo 0 : { *(.debug_macinfo) }
+    .debug_weaknames 0 : { *(.debug_weaknames) }
+    .debug_funcnames 0 : { *(.debug_funcnames) }
+    .debug_typenames 0 : { *(.debug_typenames) }
+    .debug_varnames 0 : { *(.debug_varnames) }
+    __data_size = SIZEOF(.data);
+    __bss_size = SIZEOF(.bss);
+}

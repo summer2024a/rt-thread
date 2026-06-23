@@ -1,5 +1,30 @@
 # HP232X BSP for KA200 (IRAM-only, direct boot)
 
+## ✅ Current Status (2026-06-23)
+
+**🎉 RT-Thread Kernel Successfully Started!**
+
+Test output:
+```
+ECO POK!
+
+ \ | /
+- RT -     Thread Operating System
+ / | \     5.3.0 build Jun 23 2026 15:26:35
+ 2006 - 2024 Copyright by RT-Thread team
+```
+
+**Verified**:
+- ✅ Complete EL transition: EL3 → EL2 → EL1
+- ✅ Bootwrapper-style EL drop implementation
+- ✅ Memory constraints satisfied (IRAM0 first 256KB + IRAM1 last 256KB)
+- ✅ PCIe Boot mode working
+- ✅ Kernel startup with Banner display
+
+**Remaining**:
+- ⚠️ System hangs after Banner (page_init/mm_page_init not reached)
+- ⚠️ Need manual MMU configuration to bypass 4MB continuous memory requirement
+
 ## Overview
 
 This BSP targets the **HP232X** board using the **KA200** SoC — an ARMv8-A

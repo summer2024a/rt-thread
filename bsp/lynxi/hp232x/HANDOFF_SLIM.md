@@ -1,8 +1,101 @@
-# HP232X BSP Handoff (精简版) - 重大突破！
+# HP232X BSP Handoff (精简版) - Shell Thread调试记录
 
-## 🎉 最新进展 (2026-06-23 15:30)
+## 🔥 最新进展 (2026-06-24 深夜)
 
-### ✅ RT-Thread内核成功启动！
+### ✅ GICv3已成功实现！Timer interrupt工作！
+
+**重大突破**：
+- ✅ **GICv3中断控制器完整实现** - Distributor + Redistributor + 系统寄存器
+- ✅ **Timer interrupt正常触发** - rt_tick_increase()工作
+- ✅ **中断调度机制启用** - rt_thread_delay()可以唤醒线程
+- ✅ **GIC500硬件完全支持** - KA200 SoC正确运行
+
+**GICv3实现细节**：
+
+| 组件 | 实现状态 | 基地址 | 说明 |
+|------|---------|--------|------|
+| Distributor | ✅ 完成 | 0x08000000 | GICD_*寄存器配置 |
+| Redistributor | ✅ 完成 | 0x08100000 | GICR_* per-CPU配置 |
+| 系统寄存器接口 | ✅ 使能 | ICC_*_EL1 | ICC_SRE_EL1已配置 |
+| Timer中断路由 | ✅ 配置 | IRQ 30 | Affinity routing正确 |
+| 中断优先级 | ✅ 设置 | ICC_PMR_EL1 | 优先级mask正确 |
+
+**当前聚焦：Shell thread调试**
+
+**已解决的问题**：
+- ✅ GICv3架构支持
+- ✅ Timer interrupt触发
+- ✅ 系统寄寄器访问使能
+
+**待解决的问题**：
+- ⚠️ Shell thread调度时机 - main thread需要让出CPU
+- ⚠️ 单核调度触发点 - yield/delay机制验证
+- 📋 完整的shell功能验证
+
+**完整调试记录**：参见 [SHELL_DEBUG_SESSION.md](SHELL_DEBUG_SESSION.md)
+
+---
+
+## 历史进展 (2026-06-23 15:43)
+
+### ✅ 系统完全启动成功！Small memory allocator工作！
+
+**测试结果**：
+```
+ECO
+POK!
+IiMmxSGDgdUuTtCcF
+
+ \ | /
+- RT -     Thread Operating System
+ / | \     5.3.0 build Jun 23 2026 15:43:01
+ 2006 - 2024 Copyright by RT-Thread team
+```
+
+**里程碑成就**：
+- ✅ **完整EL降级流程实现**：EL3 → EL2 → EL1
+- ✅ **MMU完全启用**：Identity mapping正确工作
+- ✅ **Small memory allocator成功**：malloc/free正常工作
+- ✅ **所有初始化完成**：GIC/UART/Timer/Console
+- ✅ **RT-Thread内核启动**：Banner完整显示
+- ✅ **进入应用初始化阶段**：rt_application_init
+
+**调试标记解析** (`IiMmxSGDgdUuTtCcF`)：
+- `Ii` = Heap初始化成功
+- `Mm` = malloc 64字节测试成功
+- `x未显示` = malloc返回非NULL
+- `SGDgd` = GIC中断初始化成功
+- `UuTtCcF` = UART/Timer/Console初始化成功
+
+**Memory Allocator关键发现**：
+
+| Allocator | 状态 | 根因分析 |
+|-----------|------|----------|
+| **SLAB** | ❌ Shell失败 | zone_size=128KB不适合144KB小heap |
+| **Small Mem** | ✅ malloc成功 | 无zone限制，更适合小heap |
+
+**SLAB zone_size计算机制**：
+```c
+// heap=144KB → zone_size动态计算为128KB
+// 创建新zone需要128KB连续空间
+// 剩余空间不足以创建完整zone → Shell thread失败
+```
+
+**Small memory allocator优势**：
+- 无zone概念，直接管理heap
+- malloc直接从heap切割
+- 每个内存块仅32字节管理开销
+- 完美适配小heap（144KB）
+
+**文档参考**：
+- [MEMORY_ALLOCATOR_DEBUG.md](MEMORY_ALLOCATOR_DEBUG.md) - 详细对比分析
+- [README.md](README.md) - 当前状态
+
+---
+
+## 历史进展记录
+
+### 🎉 RT-Thread内核成功启动！(2026-06-23 15:30)
 
 **测试结果**：
 ```

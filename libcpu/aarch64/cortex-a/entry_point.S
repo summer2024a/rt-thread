@@ -169,6 +169,16 @@ _start:
     orr     x0, x0, #(1 << 10)      /* RW=1: 64-bit EL2 */
     msr     scr_el3, x0
 
+#ifdef BSP_USING_GICV3
+    /* Step 2.1b: Enable GICv3 system register interface at EL3 */
+    /* Reference: lynxi-bootwrapper/gic.S:196-200 */
+    mov     x0, #((1 << 3) | (1 << 0))  /* Enable=1 | SRE=1 */
+    mrs     x1, S3_6_C12_C12_5          /* ICC_SRE_EL3 */
+    orr     x1, x1, x0
+    msr     S3_6_C12_C12_5, x1         /* Enable ICC_SRE_EL3 */
+    isb
+#endif
+
     /* Step 2.2: Disable copro. traps to EL3 (boot.S:55) */
     msr     cptr_el3, xzr
 
@@ -613,6 +623,11 @@ init_cpu_el:
 	orr	    x0, x0, #(1 << 3)	    /* Set ICC_SRE_EL2.Enable==1 */
 	msr 	S3_4_C12_C9_5, x0
 	isb					        /*  Make sure SRE is now set */
+
+	/* CRITICAL: Set ICC_SRE_EL1 from EL2 to enable EL1 GICv3 system register access */
+	mov	    x0, #((1 << 2) | (1 << 1) | (1 << 0))  /* DIB=1, DFB=1, SRE=1 */
+	msr 	S3_0_C12_C12_5, x0    /* ICC_SRE_EL1 */
+	isb
 #endif /* BSP_USING_GICV3 */
 
     mov     x0, #(1 << 31)          /* Enable AArch64 in EL1 */

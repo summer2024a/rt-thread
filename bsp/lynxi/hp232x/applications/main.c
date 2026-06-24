@@ -14,16 +14,7 @@
 
 int main(int argc, char** argv)
 {
-    rt_kprintf("CRIT: *** MAIN THREAD ENTRY ***\n");
-    rt_kprintf("CRIT: Scheduler should be running now!\n");
-
-    // Loop to confirm threads are being scheduled
-    int counter = 0;
-    for (;;) {
-        volatile int i;
-        for (i = 0; i < 500000; i++) { ; }
-        rt_kprintf("CRIT: alive[%d]\n", ++counter);
-    }
-
+    rt_kprintf("Hi, this is RT-Thread!!\n");
+    rt_thread_yield();
     return 0;
 }

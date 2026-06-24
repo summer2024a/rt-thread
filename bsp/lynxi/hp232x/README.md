@@ -1,41 +1,35 @@
 # HP232X BSP for KA200 (IRAM-only, direct boot)
 
-## ✅ Current Status (2026-06-23 16:40)
+## ✅ Current Status (2026-06-24 深夜)
 
-**🎉 MMU完全启用成功！所有板级初始化完成！**
+**🎉 GICv3完整实现！Timer interrupt工作！**
 
-Test output:
-```
-ECO
-POK!
-IBKMPDUATB1RCGgUuTt
-
- \ | /
-- RT -     Thread Operating System
- / | \     5.3.0 build Jun 23 2026 08:40:09
- 2006 - 2024 Copyright by RT-Thread team
-```
-
-**Verified (调试标记解析)**:
+**Latest Update**:
 - ✅ Complete EL transition: EL3 → EL2 → EL1
 - ✅ MMU页表配置: PGD/PUD/PMD在IRAM0 (12KB)
-- ✅ MMU启用成功: SCTLR_EL1.M=1, C=1, I=1
-- ✅ IRAM1访问: 通过MMU访问4GB边界外地址
-- ✅ Cache启用: Data Cache + Instruction Cache
-- ✅ GICv3中断初始化成功
-- ✅ UART驱动初始化成功
-- ✅ Timer初始化成功
+- ✅ MMU启用成功: Identity mapping工作
+- ✅ IRAM1访问: 通过MMU成功访问4GB边界外地址
+- ✅ **Small memory allocator成功**: malloc/free工作
+- ✅ **GICv3完整实现**: Distributor + Redistributor + 系统寄存器
+- ✅ **Timer interrupt触发**: rt_tick_increase()正常工作
+- ✅ UART驱动初始化
 - ✅ Kernel启动: Banner完整显示
+- ⚠️ **Shell thread调试**: 单核调度机制验证中
 
-**调试标记含义** (`IBKMPDUATB1RCGgUuTt`):
-- M/P/D/U/A/T/B/1/R/C = MMU完整启用流程
-- G/g = GIC中断初始化成功
-- U/u = UART初始化成功
-- T/t = Timer初始化成功
+**GICv3实现完成**:
+1. ✅ GIC Distributor配置（GICv3寄存器格式）
+2. ✅ GIC Redistributor支持（per-CPU中断配置 @ 0x08100000）
+3. ✅ 系统寄存器接口使能（ICC_SRE_EL1）
+4. ✅ Timer中断affinity routing配置（IRQ 30）
 
 **Remaining**:
-- ⚠️ Shell未显示（应用初始化阶段需要调试）
-- 📋 下一步：调试rt_application_init，检查线程创建
+- ⚠️ Shell thread调度时机优化
+- 📋 完整shell功能测试
+- 📋 代码清理和优化
+
+**Memory Allocator对比**:
+- ❌ SLAB allocator: zone_size=128KB不适合144KB小heap
+- ✅ Small mem: 无zone限制，malloc成功，更适合小heap
 
 ## Overview
 

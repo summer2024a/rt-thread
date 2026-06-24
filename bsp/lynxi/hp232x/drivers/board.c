@@ -46,6 +46,8 @@ extern int __bss_start;
 extern int __bss_end;
 extern void *system_vectors;
 
+static int is_uart_initialized = 0;
+
 size_t gpio_base_addr = GPIO_BASE_ADDR;
 size_t uart_base_addr = UART_BASE;
 size_t gic_base_addr  = GIC_V2_BASE;
@@ -57,6 +59,13 @@ size_t wdt_base_addr = WDT_BASE;
 #ifdef BSP_USING_HP232X_DEBUG_UART
 void early_putc_direct(char c)
 {
+    if (is_uart_initialized)
+    {
+        /* If UART is initialized, use standard LOG output */
+        rt_kprintf("%c", c);
+        return;
+    }
+
     volatile unsigned int *uart_thr = (volatile unsigned int *)0x10006000;
     volatile unsigned int *uart_lsr = (volatile unsigned int *)0x10006014;
 
@@ -111,10 +120,12 @@ void idle_wfi(void)
     asm volatile ("wfi");
 }
 
+#ifdef RT_USING_SMP
 static void system_vectors_init(void)
 {
     rt_hw_set_current_vbar((rt_ubase_t)&system_vectors);
 }
+#endif
 
 extern size_t MMUTable[];
 
@@ -210,8 +221,6 @@ void rt_hw_board_init(void)
     rt_memset(pud_table_0, 0, sizeof(pud_table_0));
     rt_memset(pmd_table_0, 0, sizeof(pmd_table_0));
 
-    early_putc_direct('M');  /* Mark: MMU init start */
-
     /* Step 1: PGD → PUD links
      * ARMv8-A page table addressing (4KB granule):
      *   PGD index = (VA >> 39) & 0x1FF  (bits [47:39], each covers 512GB)
@@ -236,7 +245,6 @@ void rt_hw_board_init(void)
      * Descriptor format:
      *   descriptor = (pmd_index << 21) | attrs | MMU_TYPE_BLOCK
      */
-    early_putc_direct('P');  /* Mark: PMD setup */
 
     /* PMD[0-31]: VA 0-64MB, DEVICE (unused) */
     for (int i = 0; i < 32; i++) {
@@ -265,8 +273,6 @@ void rt_hw_board_init(void)
     for (int i = 256; i < 512; i++) {
         pmd_table_0[i] = ((rt_size_t)i << 21) | MMU_MAP_K_DEVICE | MMU_TYPE_BLOCK;
     }
-
-    early_putc_direct('D');  /* Mark: PMD done */
 
     /* Step 4: PUD[1-3]: VA 1-4GB, DEVICE (unused) */
     for (int i = 1; i < 4; i++) {
@@ -298,8 +304,6 @@ void rt_hw_board_init(void)
         pud_table_0[i] = ((rt_size_t)i << 30) | MMU_MAP_K_DEVICE | MMU_TYPE_BLOCK;
     }
 
-    early_putc_direct('U');  /* Mark: PUD done */
-
     /* Verify key descriptors */
     LOG_I("Page table setup complete:");
     LOG_I("  pgd[0]=0x%lx (links to pud)", pgd[0]);
@@ -310,7 +314,6 @@ void rt_hw_board_init(void)
 
 /* Step 6: Configure MAIR_EL1 (Memory Attribute Indirection Register) */
     LOG_I("[board] STEP2: Configure MMU registers");
-    early_putc_direct('A');  /* Mark: Before MAIR */
 
     unsigned long mair = 0x00447fUL;  /* RT-Thread standard value */
     __asm__ volatile("msr mair_el1, %0" :: "r"(mair) : "memory");
@@ -336,8 +339,6 @@ void rt_hw_board_init(void)
     __asm__ volatile("isb" ::: "memory");
     LOG_I("TCR_EL1 configured: 0x%lx", tcr);
 
-    early_putc_direct('T');  /* Mark: After TCR */
-
     /* Step 8: Set TTBR0_EL1 (Translation Table Base Register) */
     __asm__ volatile("msr ttbr0_el1, %0" :: "r"((unsigned long)pgd) : "memory");
     __asm__ volatile("isb" ::: "memory");
@@ -345,7 +346,6 @@ void rt_hw_board_init(void)
 
     /* Step 9: Data Synchronization Barrier */
     __asm__ volatile("dsb sy" ::: "memory");
-    early_putc_direct('B');  /* Mark: Before MMU enable */
 
     /* Step 10: Enable MMU (Phase 1: MMU only, no caches) */
     LOG_I("[board] STEP3: Enable MMU");
@@ -362,7 +362,6 @@ void rt_hw_board_init(void)
     __asm__ volatile("msr sctlr_el1, %0" :: "r"(sctlr));
     __asm__ volatile("isb" ::: "memory");
 
-    early_putc_direct('1');  /* Mark: MMU enabled */
     LOG_I("MMU enabled successfully!");
 
     /* Step 11: Verify MMU and test IRAM1 access */
@@ -372,9 +371,8 @@ void rt_hw_board_init(void)
 
     /* Test IRAM1 access through MMU */
     volatile unsigned long *iram1_test = (volatile unsigned long *)0x100040000;
-    unsigned long iram1_val = *iram1_test;
-    LOG_I("IRAM1 test: read 0x%lx from 0x100040000", iram1_val);
-    early_putc_direct('R');  /* Mark: IRAM1 read OK */
+    (void )*iram1_test;  /* Read to ensure access is valid */
+    LOG_I("IRAM1 test: read 0x%lx from 0x100040000", (unsigned long)*iram1_test);
 
     /* Step 12: Enable caches (Phase 2) */
     LOG_I("[board] STEP4: Enable caches");
@@ -385,7 +383,6 @@ void rt_hw_board_init(void)
     __asm__ volatile("msr sctlr_el1, %0" :: "r"(sctlr));
     __asm__ volatile("isb" ::: "memory");
 
-    early_putc_direct('C');  /* Mark: Caches enabled */
     LOG_I("MMU + caches fully enabled!");
 
     /* Final verification */
@@ -396,70 +393,98 @@ void rt_hw_board_init(void)
     LOG_I("[board] MMU initialization complete - proceeding to heap setup");
 
 #ifdef RT_USING_HEAP
-    early_putc_direct('H');  /* Mark: BEFORE heap init */
-
-    /* Debug: Use hex output to show heap addresses */
-    extern void early_printhex(rt_ubase_t number);
-    early_putc_direct('[');
-    early_printhex(heap_start);
-    early_putc_direct('-');
-    early_printhex(heap_end);
-    early_putc_direct(']');
-    early_putc_direct('S');  /* Mark: Addresses printed */
-
     rt_system_heap_init((void *)heap_start, (void *)heap_end);
-
-    early_putc_direct('h');  /* Mark: AFTER heap init */
-
-    /* Verify heap is working */
-    early_putc_direct('M');  /* Mark: Before malloc test */
-    void *test_ptr = rt_malloc(64);
-    early_putc_direct('m');  /* Mark: After malloc test */
-    if (test_ptr) {
-        rt_free(test_ptr);
-        early_putc_direct('f');  /* Mark: After free test */
-    } else {
-        early_putc_direct('x');  /* Mark: Malloc failed! */
-    }
 #endif
 
-    /* initialize hardware interrupt */
-    LOG_I("[board] About to call rt_interrupt_init (GICv3)");
-    early_putc_direct('G');  /* Mark: Before GIC init */
+    LOG_I("[board] starting GICv3 init...");
 
-    /* Verify GIC base addresses before init */
-    volatile unsigned int *gic_dist = (volatile unsigned int *)0x08000000;
-    volatile unsigned int *gic_redist = (volatile unsigned int *)0x08100000;
-    unsigned int dist_val = *gic_dist;
-    early_putc_direct('D');  /* Mark: GIC Distributor read */
-
+    /* Initialize GIC */
     rt_hw_interrupt_init();
 
-    early_putc_direct('g');  /* Mark: After GIC init */
+    /* Check Timer interrupt (IRQ 30) configuration in Redistributor */
+    volatile uint32_t *gicr_isenabler0 = (volatile uint32_t *)(0x08100000 + 0x1100);  // GICR_ISENABLER0
+    volatile uint8_t *gicr_ipriorityr = (volatile uint8_t *)(0x08100000 + 0x4100);    // GICR_IPRIORITYR base
 
-    /* Verify GIC is working after init */
-    unsigned int dist_val2 = *gic_dist;
-    early_putc_direct('d');  /* Mark: GIC Distributor read after init */
+    LOG_I("  Timer IRQ30 enabled: bit30=%d (expect 1)",
+          (*gicr_isenabler0 >> 30) & 1);
+    LOG_I("  Timer IRQ30 priority: 0x%02x (expect 0xa0)",
+          gicr_ipriorityr[30]);
 
-    LOG_I("[board] GIC Dist: before=0x%x after=0x%x", dist_val, dist_val2);
-    LOG_I("[board] rt_interrupt_init OK");
+    /* Check ICC_PMR_EL1 (Priority Mask Register) */
+    uint64_t pmr;
+    __asm__ volatile("mrs %0, S3_0_C4_C6_0" : "=r"(pmr));  // ICC_PMR_EL1
+    LOG_I("  ICC_PMR_EL1 = 0x%llx (expect 0xff)", pmr);
+
+    /* Check ICC_IGRPEN1_EL1 (Interrupt Group Enable) */
+    uint64_t igprpen1;
+    __asm__ volatile("mrs %0, S3_0_C12_C12_7" : "=r"(igprpen1));  // ICC_IGRPEN1_EL1
+    LOG_I("  ICC_IGRPEN1_EL1 = 0x%llx (Enable=%d)", igprpen1, (igprpen1 >> 0) & 1);
+
+    LOG_I("[board] ===== GICv3 Initialization Complete =====");
+
+    /* ===== Timer interrupt test ===== */
+    LOG_I("[board] Testing Timer interrupt...");
+
+    /* Check CNTP timer configuration */
+    uint64_t cntp_ctl, cntp_cval, cntp_tval;
+    __asm__ volatile("mrs %0, CNTP_CTL_EL0" : "=r"(cntp_ctl));
+    __asm__ volatile("mrs %0, CNTP_CVAL_EL0" : "=r"(cntp_cval));
+    __asm__ volatile("mrs %0, CNTP_TVAL_EL0" : "=r"(cntp_tval));
+
+    LOG_I("  CNTP_CTL_EL0  = 0x%llx (ENABLE=%d, IMASK=%d, ISTATUS=%d)",
+          cntp_ctl, (cntp_ctl >> 0) & 1, (cntp_ctl >> 1) & 1, (cntp_ctl >> 2) & 1);
+    LOG_I("  CNTP_CVAL_EL0 = 0x%llx", cntp_cval);
+    LOG_I("  CNTP_TVAL_EL0 = 0x%llx", cntp_tval);
+
+    /* Manually enable timer interrupt if needed */
+    if (((*gicr_isenabler0 >> 30) & 1) == 0) {
+        LOG_W("[board] Timer IRQ30 not enabled! Manually enabling...");
+        *gicr_isenabler0 = (1 << 30);  /* Enable IRQ 30 */
+        gicr_ipriorityr[30] = 0xa0;    /* Set priority */
+        __DSB();
+        LOG_I("  Timer IRQ30 manually enabled");
+    }
+
+    /* Test timer interrupt trigger */
+    if ((cntp_ctl & 1) == 0) {
+        LOG_W("[board] CNTP timer not enabled! Testing timer...");
+
+        /* Set a short timer value for test */
+        uint64_t cntpct;
+        __asm__ volatile("mrs %0, CNTPCT_EL0" : "=r"(cntpct));
+        cntp_cval = cntpct + 10000;  /* Trigger after 10000 cycles */
+        __asm__ volatile("msr CNTP_CVAL_EL0, %0" :: "r"(cntp_cval));
+
+        cntp_ctl = 1;  /* ENABLE=1, IMASK=0 */
+        __asm__ volatile("msr CNTP_CTL_EL0, %0" :: "r"(cntp_ctl));
+        __ISB();
+
+        LOG_I("  Timer test: CNTPCT=%llx, CVAL=%llx, CTL=%llx", cntpct, cntp_cval, cntp_ctl);
+        LOG_I("  Waiting for timer interrupt...");
+
+        /* Wait a bit to see if interrupt triggers */
+        for (int i = 0; i < 100000; i++) { __asm__ volatile("nop"); }
+
+        /* Check if interrupt triggered */
+        __asm__ volatile("mrs %0, CNTP_CTL_EL0" : "=r"(cntp_ctl));
+        LOG_I("  After wait: CNTP_CTL_EL0 = 0x%llx (ISTATUS=%d)",
+              cntp_ctl, (cntp_ctl >> 2) & 1);
+    }
 
     /* initialize uart */
-    early_putc_direct('U');  /* Mark: Before UART init */
     rt_hw_uart_init();
-    early_putc_direct('u');  /* Mark: After UART init */
-    LOG_D("-->rt_hw_uart_init ok");
+    is_uart_initialized = 1;
+    LOG_I("-->rt_hw_uart_init ok\n");
 
     /* initialize timer for os tick */
-    early_putc_direct('T');  /* Mark: Before Timer init */
+
     rt_hw_gtimer_init();
-    early_putc_direct('t');  /* Mark: After Timer init */
+    LOG_I("-->rt_hw_gtimer_init ok\n");
 
 #ifdef RT_USING_CONSOLE
     /* set console device */
-    early_putc_direct('C');  /* Mark: Before console set */
     rt_console_set_device(RT_CONSOLE_DEVICE_NAME);
-    early_putc_direct('c');  /* Mark: After console set */
+    LOG_I("-->rt_console_set_device ok\n");
 #endif /* RT_USING_CONSOLE */
 
 #ifdef RT_USING_COMPONENTS_INIT
@@ -478,7 +503,6 @@ void rt_hw_board_init(void)
     // rt_hw_interrupt_umask(RT_SMP_CALL_IPI);
 #endif
 
-    early_putc_direct('F');  /* Mark: Board init FINISHED */
     LOG_I("[board] ===== BOARD INIT COMPLETE =====");
     LOG_I("[board] Next: rt_show_version() → rt_application_init()");
 }

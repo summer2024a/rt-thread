@@ -190,6 +190,10 @@ int finsh_getchar(void)
             }
         }
     }
+
+    /* Debug: print received character */
+    rt_kprintf("[Shell RX] char='%c' (0x%02x)\n", ch, (unsigned char)ch);
+
     return ch;
 #endif /* RT_USING_POSIX_STDIO */
 #else

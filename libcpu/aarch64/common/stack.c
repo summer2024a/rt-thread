@@ -14,7 +14,7 @@
 
 #include <armv8.h>
 
-#define INITIAL_SPSR_EL1 (PSTATE_EL1 | SP_ELx)
+#define INITIAL_SPSR_EL1 (PSTATE_EL1 | SP_ELx)  /* EL1h, SP_ELx, interrupts enabled */
 
 /**
  * This function will initialize thread stack

@@ -5,8 +5,8 @@
 #define BSP_USING_HP232X
 
 /* Enable UART debug for MMU initialization tracking */
-#define BSP_USING_HP232X_DEBUG_UART
 
+/* Enable components init debugging */
 /* Disable other debug outputs */
 /* #define RT_USING_DEBUG */
 /* #define RT_DEBUGING_ASSERT */
@@ -106,14 +106,16 @@
 /* RT_USING_MESSAGEQUEUE — disabled to save code */
 /* end of Inter-Thread communication */
 
-/* Memory Management */
-#define RT_USING_SLAB
-#define RT_USING_MEMHEAP
-#define RT_MEMHEAP_FAST_MODE
-#define RT_USING_SLAB_AS_HEAP
+/* Memory Management - Use small memory allocator for small heap */
+/* #define RT_USING_SLAB */
+/* #define RT_USING_MEMHEAP */
+/* #define RT_MEMHEAP_FAST_MODE */
+/* #define RT_USING_SLAB_AS_HEAP */
+#define RT_USING_SMALL_MEM
+#define RT_USING_SMALL_MEM_AS_HEAP  /* CRITICAL: Use small_mem as system heap */
 /* RT_USING_MEMTRACE — disabled to save memory */
-/* RT_USING_HEAP_ISR — disabled to save memory */
-#define RT_USING_HEAP  /* Keep heap for RT-Thread compatibility */
+/* RT_USING_HEAP_ISR — disabled: spinlock may not work before scheduler init */
+#define RT_USING_HEAP
 /* end of Memory Management */
 #define RT_USING_DEVICE
 #define RT_USING_DEVICE_OPS
@@ -150,15 +152,15 @@
 
 #define RT_USING_COMPONENTS_INIT
 #define RT_USING_USER_MAIN
-#define RT_MAIN_THREAD_STACK_SIZE 1024  /* Reduced from 1536 for minimal memory */
-#define RT_MAIN_THREAD_PRIORITY 10
+#define RT_MAIN_THREAD_STACK_SIZE 2048  /* Increased from 1024 to prevent stack overflow with scheduling */
+#define RT_MAIN_THREAD_PRIORITY 10  /* Higher priority to complete init before shell runs */
 #define RT_USING_MSH
 #define RT_USING_FINSH
 #define FINSH_USING_MSH
 #define FINSH_THREAD_NAME "tshell"
 #define FINSH_THREAD_PRIORITY 20
-#define FINSH_THREAD_STACK_SIZE 768
-/* FINSH_USING_HISTORY — disabled to save code/RAM */
+#define FINSH_THREAD_STACK_SIZE 2048  /* Increased from 1KB to 2KB for input handling */
+#define FINSH_USING_HISTORY
 #define FINSH_HISTORY_LINES 3
 #define FINSH_USING_SYMTAB
 #define FINSH_CMD_SIZE 64
@@ -242,8 +244,8 @@
 #define BSP_USING_UART
 #define RT_USING_UART0
 #define BSP_USING_GIC
-#define BSP_USING_GICV2
-/* #define BSP_USING_GICV3 */
+/* #define BSP_USING_GICV2 */
+#define BSP_USING_GICV3  /* Use GICv3 for KA200 SoC (GIC-500) */
 #define KERNEL_ASPACE_START 0x04000000
 #define BSP_USING_CORETIMER
 

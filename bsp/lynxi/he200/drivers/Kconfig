@@ -205,7 +205,6 @@ menu "Hardware Drivers Config"
         if BOARD_PKG_USING_RPMSG_LITE
             config BSP_USING_RPMSG_NET
                 bool "Using RPMSG-NET"
-                depends on !BSP_USING_GMAC
                 select RT_USING_LWIP
                 select RT_USING_MUTEX
                 default n

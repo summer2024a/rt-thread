@@ -9,3 +9,6 @@ ext_images/
 .build-tools.cson
 .gdbinit
 tags
+
+# lwext4 rt-thread port source code (override root-level "rtthread" ignore)
+!ports/rtthread/

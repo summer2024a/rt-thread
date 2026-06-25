@@ -21,9 +21,6 @@
 .section .text
 
 START_POINT(_thread_start)
-    /* Enable interrupts first - clear all DAIF bits */
-    msr     daifclr, #0xf      /* D=0, A=0, I=0, F=0 */
-
     mov     x0, x21
     blr     x19
     mov     x29, #0

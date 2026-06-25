@@ -31,6 +31,7 @@ DoBuilding(TARGET, objs)
 
 image_cmd = (
     "python3 mkimage.py rtthread.bin rtthread-header.bin "
-    "--dest-addr 0x04000020 --next-offset 0x20000"
+    "--dest-addr 0x04000020 --next-offset 0x20000 "
+    "--elf rtthread.elf"
 )
 env.AddPostAction(TARGET, image_cmd)

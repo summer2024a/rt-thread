@@ -4,7 +4,8 @@
 /* HP232X BSP - two segment IRAM KA200 */
 #define BSP_USING_HP232X
 
-/* Enable UART debug for MMU initialization tracking */
+/* Enable UART debug for boot process tracking */
+#define BSP_USING_HP232X_DEBUG_UART
 
 /* Enable components init debugging */
 /* Disable other debug outputs */

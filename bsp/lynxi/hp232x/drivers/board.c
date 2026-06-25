@@ -401,7 +401,16 @@ void rt_hw_board_init(void)
     /* Initialize GIC */
     rt_hw_interrupt_init();
 
-    /* Check Timer interrupt (IRQ 30) configuration in Redistributor */
+    /* NOTE: GIC Secure configuration (ARE_NS, UART Group1) is done in pre_entry.S at EL3 */
+    /* EL1 Non-Secure cannot modify GIC Secure registers - these attempts will fail */
+
+    /* Verify GIC configuration (read-only at EL1 NS) */
+    rt_kprintf("\n[DEBUG] ===== Verifying GIC configuration =====\n");
+
+    volatile uint32_t *gicd_ctrl = (volatile uint32_t *)(GIC_PL500_DISTRIBUTOR_PPTR + 0x000);
+    uint32_t gicd_ctlr = *gicd_ctrl;
+    rt_kprintf("  GICD_CTLR: 0x%x (ARE_NS view at EL1 NS)\n", gicd_ctlr);
+
     volatile uint32_t *gicr_isenabler0 = (volatile uint32_t *)(0x08100000 + 0x1100);  // GICR_ISENABLER0
     volatile uint8_t *gicr_ipriorityr = (volatile uint8_t *)(0x08100000 + 0x4100);    // GICR_IPRIORITYR base
 
@@ -410,10 +419,7 @@ void rt_hw_board_init(void)
     LOG_I("  Timer IRQ30 priority: 0x%02x (expect 0xa0)",
           gicr_ipriorityr[30]);
 
-    /* Check ICC_PMR_EL1 (Priority Mask Register) */
-    uint64_t pmr;
-    __asm__ volatile("mrs %0, S3_0_C4_C6_0" : "=r"(pmr));  // ICC_PMR_EL1
-    LOG_I("  ICC_PMR_EL1 = 0x%llx (expect 0xff)", pmr);
+    rt_kprintf("========================================\n\n");
 
     /* Check ICC_IGRPEN1_EL1 (Interrupt Group Enable) */
     uint64_t igprpen1;
@@ -477,7 +483,6 @@ void rt_hw_board_init(void)
     LOG_I("-->rt_hw_uart_init ok\n");
 
     /* initialize timer for os tick */
-
     rt_hw_gtimer_init();
     LOG_I("-->rt_hw_gtimer_init ok\n");
 

@@ -153,6 +153,7 @@ cci_init_done:
     /* Reference: lynxi-bootwrapper/gic.S:107-109 */
     ldr     x1, =0x08000000             /* GIC500 Distributor base */
 
+#ifdef BSP_USING_HP232X_DEBUG_UART
     /* DEBUG: Print 'D' before GICD_CTLR config */
 8:  ldr     w8, [x6]                /* Read LSR */
     tst     w8, #0x20               /* Check THRE */
@@ -169,6 +170,7 @@ cci_init_done:
     b.eq    9b
     mov     w8, #'X'                /* Print 'X' - before write */
     str     w8, [x7]
+#endif
 
     /* Enable all groups and affinity routing */
     mov     w0, #7                      /* EnableGrp0 | EnableGrp1ns | EnableGrp1s */
@@ -177,6 +179,7 @@ cci_init_done:
     dsb     sy
     isb
 
+#ifdef BSP_USING_HP232X_DEBUG_UART
     /* DEBUG: Read GICD_CTLR AFTER write */
     ldr     w0, [x1]                /* Read GICD_CTLR new value */
 
@@ -193,6 +196,7 @@ cci_init_done:
     b.eq    9b
     mov     w8, #'A'                /* Print 'A' marker */
     str     w8, [x7]
+#endif
 
     #ifdef BSP_USING_HP232X_DEBUG_UART
     /* Print 'R' before loading Redistributor base */
@@ -354,118 +358,6 @@ cci_init_done:
 #endif /* BSP_USING_GICV3 */
 
     /* Step 5: Disable coprocessor traps to EL3 (boot.S:55) */
-    and     w4, w4, w9                  /* Clear ProcessorSleep bit (use w9!) */
-    str     w4, [x2, #0x014]            /* Write back to GICR_WAKER */
-    dsb     sy
-    isb
-
-    /* Wait for ChildrenAsleep to clear */
-redist_wait_waker:
-    ldr     w4, [x2, #0x014]            /* GICR_WAKER */
-    ands    wzr, w4, #(1 << 2)          /* Test ChildrenAsleep bit */
-    b.ne    redist_wait_waker           /* Wait until cleared */
-
-    /* Configure GICR after wakeup */
-    add     x3, x2, #(1 << 16)          /* SGI_base offset (0x10000) */
-
-    str     w5, [x3, #0x80]             /* GICR_IGROUP0 = 0xffffffff (all Group1) */
-    str     wzr, [x3, #0xD00]           /* GICR_IGRPMOD0 = 0 (Non-secure) */
-    dsb     sy
-    isb
-
-    /* Enable SGI 0 for multi-core IPI communication */
-    /* Reference: u-boot SPL gic_64.S:107-108 */
-    mov     w11, #0x1                   /* Enable SGI 0 */
-    str     w11, [x3, #0x100]           /* GICR_ISENABLER0 */
-    dsb     sy
-
-#ifdef BSP_USING_HP232X_DEBUG_UART
-    /* DEBUG: Print 'I' after SGI enable */
-    early_putc 'I'
-#endif
-
-#ifdef BSP_USING_HP232X_DEBUG_UART
-    /* DEBUG: Print 'N' after GICR config */
-    early_putc 'N'
-#endif
-
-    /* Step 4.4: Set SPI interrupts to Group1 (after Redistributor) */
-    /* Reference: lynxi-bootwrapper/gic.S:173-183 + u-boot SPL gic_64.S:35-41 */
-    ldr     w2, [x1, #4]                /* GICD_TYPER */
-    and     w2, w2, #0x1f               /* ITLinesNumber */
-    cbz     w2, spi_config_done         /* Skip if no SPI interrupts */
-
-#ifdef BSP_USING_HP232X_DEBUG_UART
-    /* DEBUG: Print 'S' before SPI config */
-    early_putc 'S'
-#endif
-
-    add     x3, x1, #0x84               /* GICD_IGROUP1 (SPI group register) */
-    add     x4, x1, #0xD04              /* GICD_IGRPMOD1 (SPI mode register) */
-
-spi_group_loop:
-    str     w5, [x3], #4                /* Set Group1 for 32 SPIs */
-    str     wzr, [x4], #4               /* Set Non-secure mode */
-    sub     w2, w2, #1
-    cbnz    w2, spi_group_loop
-
-#ifdef BSP_USING_HP232X_DEBUG_UART
-    /* DEBUG: Print 'P' after SPI config */
-    early_putc 'P'
-#endif
-
-spi_config_done:
-    /* Step 4.5: ICC System Registers Configuration (u-boot SPL style) */
-    /* Purpose: Enable Group1 interrupts, allow EL1 access to ICC, set NS priority mask */
-
-#ifdef BSP_USING_HP232X_DEBUG_UART
-    /* DEBUG: Print 'E' before ICC enable setup */
-    early_putc 'E'
-#endif
-
-    /* ICC_IGRPEN1_EL3: Enable Secure and Non-secure Group 1 interrupts */
-    mov     x10, #0x3               /* EnableGrp1NS=1 | EnableGrp1S=1 */
-    msr     S3_6_C12_C12_7, x10     /* ICC_IGRPEN1_EL3 */
-    isb
-
-#ifdef BSP_USING_HP232X_DEBUG_UART
-    /* DEBUG: Print '1' after ICC_IGRPEN1_EL3 */
-    early_putc '1'
-#endif
-
-    /* ICC_SRE_EL2: Allow EL1 access to ICC system registers */
-    mrs     x10, S3_4_C12_C9_5      /* Read ICC_SRE_EL2 */
-    orr     x10, x10, #0xf          /* SRE=1 | Disable IRQ/FIQ bypass | Allow EL1 access */
-    msr     S3_4_C12_C9_5, x10      /* ICC_SRE_EL2 */
-    isb
-
-#ifdef BSP_USING_HP232X_DEBUG_UART
-    /* DEBUG: Print '2' after ICC_SRE_EL2 */
-    early_putc '2'
-#endif
-
-    /* ICC_PMR_EL1: Allow Non-secure access to priority mask (CRITICAL!) */
-    mov     x10, #0x80              /* Non-Secure access to ICC_PMR_EL1 (bit 7) */
-    msr     S3_0_C4_C6_0, x10       /* ICC_PMR_EL1 */
-    isb
-
-#ifdef BSP_USING_HP232X_DEBUG_UART
-    /* DEBUG: Print 'M' after ICC_PMR_EL1 */
-    early_putc 'M'
-#endif
-
-    /* ICC_CTLR_EL1: Non-secure CPU interface configuration */
-    msr     S3_0_C12_C12_4, xzr      /* ICC_CTLR_EL1 = 0 */
-    isb
-
-#ifdef BSP_USING_HP232X_DEBUG_UART
-    /* DEBUG: Print 'C' after ICC_CTLR_EL1 */
-    early_putc 'C'
-#endif
-
-    /* Step 4.4: Set SPI interrupts to Group1 (after Redistributor) */
-
-    /* Step 5: Disable copro. traps to EL3 (boot.S:55) */
     msr     cptr_el3, xzr
 
     /* Step 6: Set timer frequency (boot.S:75-77) */

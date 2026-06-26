@@ -56,16 +56,10 @@ size_t stimer_base_addr = STIMER_BASE;
 size_t wdt_base_addr = WDT_BASE;
 
 /* Simple UART direct output for early debug (before LOG system works) */
-#ifdef BSP_USING_HP232X_DEBUG_UART
 void early_putc_direct(char c)
 {
-    if (is_uart_initialized)
-    {
-        /* If UART is initialized, use standard LOG output */
-        rt_kprintf("%c", c);
-        return;
-    }
-
+    /* Direct UART output - works regardless of BSP_USING_HP232X_DEBUG_UART */
+    /* This ensures boot progress is visible even when DEBUG_UART is disabled */
     volatile unsigned int *uart_thr = (volatile unsigned int *)0x10006000;
     volatile unsigned int *uart_lsr = (volatile unsigned int *)0x10006014;
 
@@ -76,11 +70,8 @@ void early_putc_direct(char c)
     *uart_thr = (unsigned int)c;
 
     /* Add small delay to prevent UART overflow */
-    for (int i = 0; i < 1000; i++) { asm volatile("nop"); }
+    for (int i = 0; i < 100; i++) { asm volatile("nop"); }
 }
-#else
-void early_putc_direct(char c) { (void)c; }  /* Empty stub when DEBUG_UART disabled */
-#endif
 
 /*
  * HP232X memory descriptors for MMU setup (fixing address bounds for MPR/IRAM1):
@@ -169,6 +160,15 @@ static rt_ubase_t hp232x_align_page(rt_ubase_t addr)
  */
 void rt_hw_board_init(void)
 {
+    /* ===== EARLY DIAGNOSTIC OUTPUT ===== */
+    /* Print boot marker BEFORE any initialization - works without DEBUG_UART */
+    early_putc_direct('\n');
+    early_putc_direct('B');
+    early_putc_direct('O');
+    early_putc_direct('O');
+    early_putc_direct('T');
+    early_putc_direct('\n');
+
     rt_ubase_t bss_end;
     rt_ubase_t noclean_end;
     rt_ubase_t bss_start;

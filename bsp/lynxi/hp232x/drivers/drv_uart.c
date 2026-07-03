@@ -155,7 +155,7 @@ void rt_hw_earlycon_ioremap_early(void)
     /* hp232x: identity mapping (no ioremap needed for IRAM-only system) */
     earlycon_base = (void *)_earlycon_base;
 
-    /* init uart */
+    /* init uart - uses physical address before MMU enable */
     uart_init((rt_ubase_t)earlycon_base, 115200);
 }
 

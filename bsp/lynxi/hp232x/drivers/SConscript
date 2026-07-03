@@ -1,12 +1,12 @@
 from building import *
 
 cwd     = GetCurrentDir()
-src     = Glob('*.c') + Glob('*.cpp')
+src     = Glob('*.c') + Glob('*.cpp') + Glob('*.S')
 
 # pre_entry.S only needed for BL21 mode (EL3 bootwrapper initialization)
 # BL22 mode: bootwrapper already done EL transition, skip pre_entry.S
-if GetDepend('BSP_USING_HP232X_BL22') == False:
-    src += Glob('*.S')
+if GetDepend('BSP_USING_HP232X_BL22'):
+    SrcRemove(src, ['pre_entry.S'])
 
 CPPPATH = [cwd, str(Dir('#'))]
 

@@ -259,7 +259,12 @@
 /* #define BSP_USING_GICV2 */
 #define BSP_USING_GICV3  /* Use GICv3 for KA200 SoC (GIC-500) */
 #define KERNEL_ASPACE_START 0x04000000
-#define BSP_USING_CORETIMER
+/* ARM generic timer disabled as system tick when APB timer is selected. */
+/* #define BSP_USING_CORETIMER */
+#define BSP_USING_APB_TIMER
+#define BSP_USING_APB_TIMER_AS_TICK
+#define HP232X_APB_TIMER_CLOCK 50000000
+#define HP232X_APB_TIMER_TICK_ID 0
 
 /* end of Hardware Drivers Config */
 

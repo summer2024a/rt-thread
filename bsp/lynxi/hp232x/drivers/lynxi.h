@@ -17,7 +17,7 @@
 #define __REG16(x)  (*((volatile unsigned short *)(x)))
 
 /* GIC IRQ MAX */
-#define MAX_HANDLERS                (64)
+#define MAX_HANDLERS                (128)
 
 /*
  * HP232X / KA200 memory layout (two IRAM segments only, no external DDR):
@@ -134,6 +134,7 @@ extern size_t wdt_base_addr;
 #define CONFIG_TIMER_NUM    4
 #define ST_BASE_OFFSET      (0x10012000)
 #define STIMER_BASE         (PER_BASE + ST_BASE_OFFSET)
+#define TIMER_IRQ_START     (66)  /* DW APB timer0 SPI: 32 + 34 */
 extern size_t stimer_base_addr;
 
 /* the basic constants and interfaces needed by gic */

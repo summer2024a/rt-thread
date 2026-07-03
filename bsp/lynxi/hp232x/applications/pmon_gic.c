@@ -35,6 +35,7 @@ extern volatile rt_uint32_t uart_isr_count;
 /* 系统ISR表（用于统计） */
 extern struct rt_irq_desc isr_table[];
 
+static void print_gic_status(void) __attribute__((unused));
 static void print_gic_status(void)
 {
     volatile rt_uint32_t *gicd_ctlr = (rt_uint32_t *)GICD_CTLR;
@@ -124,13 +125,9 @@ static void pmon_gic_thread(void *parameter)
 
         /* 仅每5次迭代输出一次 */
         if (count % 5 == 0) {
-            // rt_kprintf("[GIC] #%d Tick=%d ISR=%d\n", count, rt_tick_get(), gtimer_isr_counter);
             rt_kprintf("[GIC] #%d Tick=%d\n", count, rt_tick_get());
         }
 
-        /* Busy wait ~500ms — rt_thread_mdelay hangs because timer PPI
-         * can't be enabled (HCR_EL2.TTC=1 traps CNTP_CTL_EL0 writes). */
-        // for (volatile int i = 0; i < 5000000; i++) { }
         rt_thread_mdelay(500);
         // rt_hw_us_delay(10000);
 

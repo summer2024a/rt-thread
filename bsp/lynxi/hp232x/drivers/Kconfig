@@ -47,8 +47,32 @@ menu "Hardware Drivers Config"
             default n
 
         config BSP_USING_CORETIMER
-            bool "Using core timer"
+            bool "Using ARM generic core timer"
             select RT_USING_CORETIMER
+            depends on !BSP_USING_APB_TIMER_AS_TICK
             default y
+
+        menuconfig BSP_USING_APB_TIMER
+            bool "Enable DesignWare APB system timer"
+            default y
+
+        if BSP_USING_APB_TIMER
+            config BSP_USING_APB_TIMER_AS_TICK
+                bool "Use DesignWare APB timer as system tick"
+                default y
+                help
+                    Use DW APB timer@0x10012000 as the RT-Thread OS tick source.
+                    When enabled, the ARM generic timer is not initialized as the
+                    system tick source.
+
+            config HP232X_APB_TIMER_CLOCK
+                int "DesignWare APB timer clock frequency"
+                default 50000000
+
+            config HP232X_APB_TIMER_TICK_ID
+                int "DesignWare APB timer channel for system tick"
+                range 0 3
+                default 0
+        endif
     endmenu
 endmenu

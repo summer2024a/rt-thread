@@ -21,6 +21,7 @@
 #include <rtconfig.h>
 #include "board.h"
 #include "drv_uart.h"
+#include "drv_apb_timer.h"
 #include "hp232x_mmu.h"
 
 #include "cp15.h"
@@ -208,6 +209,7 @@ void rt_hw_board_init(void)
     uint32_t gicd_ctlr = *gicd_ctrl;
     rt_kprintf("  GICD_CTLR: 0x%x (ARE_NS view at EL1 NS)\n", gicd_ctlr);
 
+#ifdef BSP_USING_CORETIMER
     volatile uint32_t *gicr_isenabler0 = (volatile uint32_t *)(0x08100000 + 0x1100);  // GICR_ISENABLER0
     volatile uint8_t *gicr_ipriorityr = (volatile uint8_t *)(0x08100000 + 0x4100);    // GICR_IPRIORITYR base
 
@@ -215,6 +217,7 @@ void rt_hw_board_init(void)
           (*gicr_isenabler0 >> 30) & 1);
     LOG_I("  Timer IRQ30 priority: 0x%02x (expect 0xa0)",
           gicr_ipriorityr[30]);
+#endif
 
     rt_kprintf("========================================\n\n");
 
@@ -225,7 +228,8 @@ void rt_hw_board_init(void)
 
     LOG_I("[board] ===== GICv3 Initialization Complete =====");
 
-    /* ===== Timer interrupt test ===== */
+#ifdef BSP_USING_CORETIMER
+    /* ===== ARM generic timer interrupt test ===== */
     LOG_I("[board] Testing Timer interrupt...");
 
     /* Check CNTP timer configuration */
@@ -273,6 +277,7 @@ void rt_hw_board_init(void)
         LOG_I("  After wait: CNTP_CTL_EL0 = 0x%llx (ISTATUS=%d)",
               cntp_ctl, (cntp_ctl >> 2) & 1);
     }
+#endif
 
     /* initialize uart */
     rt_hw_uart_init();
@@ -280,8 +285,13 @@ void rt_hw_board_init(void)
     LOG_I("-->rt_hw_uart_init ok\n");
 
     /* initialize timer for os tick */
+#ifdef BSP_USING_APB_TIMER_AS_TICK
+    rt_hw_apb_timer_init();
+    LOG_I("-->rt_hw_apb_timer_init ok\n");
+#elif defined(BSP_USING_CORETIMER)
     rt_hw_gtimer_init();
     LOG_I("-->rt_hw_gtimer_init ok\n");
+#endif
 
 #ifdef RT_USING_CONSOLE
     /* set console device */

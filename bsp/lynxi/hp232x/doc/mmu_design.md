@@ -174,113 +174,150 @@ L1 table
                L2[0] -> APU Device block
 ```
 
-5. RAM0/RAM1 精确映射设计
-5.1 RAM0
+## 5. RAM0/RAM1 精确映射设计
+
+### 5.1 RAM0
+
 RAM0 地址范围：
 
-text
+```text
 0x04000000 ~ 0x0407ffff
+```
+
 大小：
 
-text
+```text
 512KB = 128 * 4KB
+```
+
 索引计算：
 
-text
+```text
 L1 index = 0x04000000 >> 30 = 0
 L2 index = (0x04000000 >> 21) & 0x1ff = 32
 L3 index = (0x04000000 >> 12) & 0x1ff = 0
+```
+
 页表结构：
 
-text
+```text
 L1[0]      -> L2_LOW table
 L2[32]     -> L3_RAM0 table
 L3[0..127] -> 0x04000000 ~ 0x0407ffff
+```
+
 注意：
 
-RAM0 不能使用 L2 block 精确映射。
+- RAM0 不能使用 L2 block 精确映射。
+- 如果使用 L2 block，会映射整个 `0x04000000 ~ 0x041fffff`，即 2MB。
 
-如果使用 L2 block，会映射整个 0x04000000 ~ 0x041fffff，即 2MB。
+### 5.2 RAM1
 
-5.2 RAM1
 RAM1 地址范围：
 
-text
+```text
 0x100000000 ~ 0x10007ffff
+```
+
 大小：
 
-text
+```text
 512KB = 128 * 4KB
+```
+
 索引计算：
 
-text
+```text
 L1 index = 0x100000000 >> 30 = 4
 L2 index = (0x100000000 >> 21) & 0x1ff = 0
 L3 index = (0x100000000 >> 12) & 0x1ff = 0
+```
+
 页表结构：
 
-text
+```text
 L1[4]      -> L2_RAM1 table
 L2[0]      -> L3_RAM1 table
 L3[0..127] -> 0x100000000 ~ 0x10007ffff
+```
+
 注意：
 
-不建议使用 L1[4] 直接映射 1GB block。
+- 不建议使用 L1[4] 直接映射 1GB block。
+- 如果 L1[4] 使用 1GB block，会映射 `0x100000000 ~ 0x13fffffff`，远大于 RAM1 的 512KB。
 
-如果 L1[4] 使用 1GB block，会映射 0x100000000 ~ 0x13fffffff，远大于 RAM1 的 512KB。
+---
 
-6. 外设 Device 映射策略
-6.1 推荐策略
+## 6. 外设 Device 映射策略
+
+### 6.1 推荐策略
+
 对于 IP 外设，使用 2MB L2 block 映射。
 
 外设区域属性：
 
-text
+```text
 Device-nGnRnE
 PXN = 1
 UXN = 1
+```
+
 推荐映射方式：
 
-text
+```text
 低地址 IP:
   按 2MB block 单独映射
 
 0x10000000 ~ 0x1fffffff:
   可以整体映射为 Device
-如果为了简单覆盖 lynchip-lite-base.md 中大部分 IP，可以映射：
+```
 
-text
+如果为了简单覆盖 `lynchip-lite-base.md` 中大部分 IP，可以映射：
+
+```text
 0x08000000 ~ 0x0fffffff  Device
 0x10000000 ~ 0x1fffffff  Device
+```
+
 这样可以覆盖：
 
-text
+```text
 GIC / Core Timer / CCM
 UART / I2C / SPI / GPIO / WDT / TIMER / RTC / DMA / ETH / MMC
 PINCTRL / PVT / EFUSE / CPR / EDAC / VPSS / GPU / PCIe
+```
+
 但需要额外映射：
 
-text
-0x00000000 Boot ROM / AHB IRAM
-0x02000000 SPI1/SFC AHB
-0x06000000 IRAM0 Sys IRAM
+```text
+0x00000000   Boot ROM / AHB IRAM
+0x02000000   SPI1/SFC AHB
+0x06000000   IRAM0 Sys IRAM
 0x1000000000 APU
-6.2 推荐最终映射表
-VA	PA	Size	Attr
-0x04000000	0x04000000	512KB	Normal WB
-0x100000000	0x100000000	512KB	Normal WB
-0x00000000	0x00000000	2MB	Device 或 Normal-NC
-0x02000000	0x02000000	2MB	Device
-0x06000000	0x06000000	2MB	Device 或 Normal-WB/NC
-0x08000000	0x08000000	128MB	Device
-0x10000000	0x10000000	256MB	Device
-0x1000000000	0x1000000000	2MB 或按实际大小	Device
+```
+
+### 6.2 推荐最终映射表
+
+| VA | PA | Size | Attr |
+|---:|---:|---:|---|
+| `0x04000000` | `0x04000000` | 512KB | Normal WB |
+| `0x100000000` | `0x100000000` | 512KB | Normal WB |
+| `0x00000000` | `0x00000000` | 2MB | Device 或 Normal-NC |
+| `0x02000000` | `0x02000000` | 2MB | Device |
+| `0x06000000` | `0x06000000` | 2MB | Device 或 Normal-WB/NC |
+| `0x08000000` | `0x08000000` | 128MB | Device |
+| `0x10000000` | `0x10000000` | 256MB | Device |
+| `0x1000000000` | `0x1000000000` | 2MB 或按实际大小 | Device |
+
 DDR 不映射。
 
-7. 页表空间需求
+---
+
+## 7. 页表空间需求
+
 因为 RAM0/RAM1 需要 L3 page table 精确映射，所以页表至少需要：
 
-text
+```text
 L1 table        4KB
 L2_LOW table    4KB
 L2_RAM1 table   4KB
@@ -289,50 +326,71 @@ L3_RAM0 table   4KB
 L3_RAM1 table   4KB
 -------------------
 Total           24KB
+```
+
 建议预留：
 
-text
+```text
 32KB
+```
+
 不建议继续使用旧设计中的 12KB，因为：
 
-text
+```text
 12KB = L1 + L2 + L2
+```
+
 不足以支持 RAM0/RAM1 的 L3 精确映射，也不足以优雅支持 APU 高地址映射。
 
-8. 页表放置要求
-页表应放在 .mmu_table section，并保证 4KB 对齐。
+---
+
+## 8. 页表放置要求
+
+页表应放在 `.mmu_table` section，并保证 4KB 对齐。
 
 建议 linker script：
 
+```ld
 .mmu_table ALIGN(0x1000) : {
     __mmu_table_start = .;
     KEEP(*(.mmu_table))
     . = ALIGN(0x1000);
     __mmu_table_end = .;
 } > IRAM0
+```
+
 其中 IRAM0 可用区域建议定义为：
 
+```ld
 MEMORY
 {
     IRAM0 (rwx) : ORIGIN = 0x04040000, LENGTH = 0x00040000
     IRAM1 (rwx) : ORIGIN = 0x100040000, LENGTH = 0x00040000
 }
+```
+
 注意：
 
-.mmu_table 本身应位于 0x04040000 ~ 0x0407ffff。
-页表数组必须 4KB 对齐。
-TTBR0_EL1 写入的地址也必须 4KB 对齐。
-页表不能跨越未映射或不可访问区域。
-9. MAIR_EL1 设计
+- `.mmu_table` 本身应位于 `0x04040000 ~ 0x0407ffff`。
+- 页表数组必须 4KB 对齐。
+- `TTBR0_EL1` 写入的地址也必须 4KB 对齐。
+- 页表不能跨越未映射或不可访问区域。
+
+---
+
+## 9. MAIR_EL1 设计
+
 建议使用 3 类 memory attribute：
 
-AttrIndx	类型	MAIR encoding
-0	Normal WB Cacheable	0xff
-1	Normal Non-cacheable	0x44
-2	Device nGnRnE	0x00
+| AttrIndx | 类型 | MAIR encoding |
+|---:|---|---:|
+| 0 | Normal WB Cacheable | `0xff` |
+| 1 | Normal Non-cacheable | `0x44` |
+| 2 | Device nGnRnE | `0x00` |
+
 推荐：
 
-c
+```c
 #define MAIR_ATTR_NORMAL_WB      0xffUL
 #define MAIR_ATTR_NORMAL_NC      0x44UL
 #define MAIR_ATTR_DEVICE_nGnRnE  0x00UL
@@ -341,34 +399,49 @@ c
     ((MAIR_ATTR_NORMAL_WB     << 0)  | \
      (MAIR_ATTR_NORMAL_NC     << 8)  | \
      (MAIR_ATTR_DEVICE_nGnRnE << 16))
+```
+
 即：
 
-text
+```text
 MAIR_EL1 = 0x000044ff
+```
+
 不建议使用旧设计中的：
 
-text
+```text
 MAIR_EL1 = 0x00447f
-10. Descriptor 属性设计
-10.1 Descriptor 类型
+```
+
+---
+
+## 10. Descriptor 属性设计
+
+### 10.1 Descriptor 类型
+
 AArch64 descriptor 低两位：
 
-text
+```text
 Invalid descriptor: 0b00
 Block descriptor  : 0b01
 Table descriptor  : 0b11
 Page descriptor   : 0b11
+```
+
 推荐宏：
 
-c
+```c
 #define DESC_VALID          (1UL << 0)
 #define DESC_TABLE_BIT      (1UL << 1)
 
 #define DESC_BLOCK          (DESC_VALID)
 #define DESC_TABLE          (DESC_VALID | DESC_TABLE_BIT)
 #define DESC_PAGE           (DESC_VALID | DESC_TABLE_BIT)
-10.2 内存属性
-c
+```
+
+### 10.2 内存属性
+
+```c
 #define ATTR_INDEX_NORMAL_WB    (0UL << 2)
 #define ATTR_INDEX_NORMAL_NC    (1UL << 2)
 #define ATTR_INDEX_DEVICE       (2UL << 2)
@@ -389,14 +462,19 @@ c
 
 #define ATTR_DEVICE \
     (ATTR_INDEX_DEVICE | DESC_AP_RW_EL1 | DESC_SH_OUTER | DESC_AF | DESC_PXN | DESC_UXN)
-10.3 地址掩码
-c
+```
+
+### 10.3 地址掩码
+
+```c
 #define ADDR_MASK_TABLE     0x0000fffffffff000UL
 #define ADDR_MASK_L2_BLOCK  0x0000ffffffe00000UL
 #define ADDR_MASK_L3_PAGE   0x0000fffffffff000UL
+```
+
 生成 descriptor：
 
-c
+```c
 static inline uint64_t table_desc(uint64_t addr)
 {
     return (addr & ADDR_MASK_TABLE) | DESC_TABLE;
@@ -411,18 +489,25 @@ static inline uint64_t page_desc(uint64_t addr, uint64_t attr)
 {
     return (addr & ADDR_MASK_L3_PAGE) | attr | DESC_PAGE;
 }
-11. TCR_EL1 配置
+```
+
+---
+
+## 11. TCR_EL1 配置
+
 推荐配置：
 
-text
+```text
 T0SZ = 25
 TG0  = 4KB
 SH0  = Inner Shareable
 ORGN0/IRGN0 = Normal WB Cacheable
 IPS  = 40-bit PA
+```
+
 示例：
 
-c
+```c
 uint64_t tcr = 0;
 
 tcr |= 25UL;             /* T0SZ: 39-bit VA */
@@ -430,16 +515,22 @@ tcr |= (1UL << 8);       /* IRGN0: WB WA RA */
 tcr |= (1UL << 10);      /* ORGN0: WB WA RA */
 tcr |= (3UL << 12);      /* SH0: Inner Shareable */
 tcr |= (2UL << 32);      /* IPS: 40-bit PA */
+```
+
 说明：
 
-RAM1 位于 0x100000000，即 4GB。
-APU 位于 0x1000000000，即 64GB。
-因此 IPS 至少不能小于 37-bit。
-实际建议使用 IPS = 2，即 40-bit PA。
-12. 建表示例结构
+- RAM1 位于 `0x100000000`，即 4GB。
+- APU 位于 `0x1000000000`，即 64GB。
+- 因此 IPS 至少不能小于 37-bit。
+- 实际建议使用 IPS = 2，即 40-bit PA。
+
+---
+
+## 12. 建表示例结构
+
 页表数组：
 
-c
+```c
 static uint64_t l1_table[512]
     __attribute__((aligned(4096), section(".mmu_table")));
 
@@ -457,9 +548,11 @@ static uint64_t l3_ram0_table[512]
 
 static uint64_t l3_ram1_table[512]
     __attribute__((aligned(4096), section(".mmu_table")));
+```
+
 核心映射逻辑：
 
-c
+```c
 l1_table[0]  = table_desc((uint64_t)l2_low_table);
 l1_table[4]  = table_desc((uint64_t)l2_ram1_table);
 l1_table[64] = table_desc((uint64_t)l2_apu_table);
@@ -521,10 +614,15 @@ map_l2_block_range(l2_apu_table,
                    0x1000000000UL,
                    0x00200000UL,
                    ATTR_DEVICE);
-13. MMU 启用流程
+```
+
+---
+
+## 13. MMU 启用流程
+
 推荐流程：
 
-text
+```text
 1. 关闭或保持 cache disabled
 2. 清零页表
 3. 构建 L1/L2/L3 页表
@@ -536,8 +634,11 @@ text
 9. 设置 SCTLR_EL1.M 启用 MMU
 10. ISB
 11. 确认 MMU 正常后，再启用 I-cache/D-cache
+```
+
 示例：
 
+```asm
 /* MAIR_EL1 */
 ldr     x0, =0x000044ff
 msr     mair_el1, x0
@@ -563,10 +664,14 @@ mrs     x0, sctlr_el1
 orr     x0, x0, #0x1
 msr     sctlr_el1, x0
 isb
+```
+
 Cache 可在 MMU 验证通过后再启用：
 
+```asm
 mrs     x0, sctlr_el1
 orr     x0, x0, #0x4        /* D-cache */
 orr     x0, x0, #0x1000     /* I-cache */
 msr     sctlr_el1, x0
 isb
+```

@@ -74,31 +74,43 @@ START_POINT(vector_exception)
     SAVE_IRQ_CONTEXT
     mov     EFRAMEX, sp
 
+#ifdef RT_KERNEL_IRQ_DBG
     mov     x0, #0x10
     bl      rt_hw_entry_step_debug
+#endif
 
     SAVE_USER_CTX EFRAMEX, x0
 
+#ifdef RT_KERNEL_IRQ_DBG
     mov     x0, #0x11
     bl      rt_hw_entry_step_debug
+#endif
 
+#ifdef RT_KERNEL_IRQ_DBG
     bl      rt_hw_exception_entry_debug
+#endif
     mov     x0, EFRAMEX
     bl      rt_hw_trap_exception
 
+#ifdef RT_KERNEL_IRQ_DBG
     mov     x0, #0x12
     bl      rt_hw_entry_step_debug
+#endif
 
     RESTORE_USER_CTX EFRAMEX, x0
 
+#ifdef RT_KERNEL_IRQ_DBG
     mov     x0, #0x13
     bl      rt_hw_entry_step_debug
+#endif
 
     /* do exception switch for IRQ/exception handlers */
     EXCEPTION_SWITCH sp, x0
 
+#ifdef RT_KERNEL_IRQ_DBG
     mov     x0, #0x14
     bl      rt_hw_entry_step_debug
+#endif
 
     RESTORE_IRQ_CONTEXT
     eret
@@ -110,7 +122,9 @@ START_POINT(vector_serror)
 
     SAVE_USER_CTX EFRAMEX, x0
 
+#ifdef RT_KERNEL_IRQ_DBG
     bl      rt_hw_serror_entry_debug
+#endif
     mov     x0, EFRAMEX
     bl      rt_hw_trap_serror
 
@@ -123,46 +137,62 @@ START_POINT(vector_irq)
     SAVE_IRQ_CONTEXT
     mov     EFRAMEX, sp
 
+#ifdef RT_KERNEL_IRQ_DBG
     /* debug IRQ entry early */
     bl      rt_hw_irq_entry_debug
+#endif
 
+#ifdef RT_KERNEL_IRQ_DBG
     mov     x0, #1
     bl      rt_hw_irq_entry_step_debug
+#endif
 
     /* trace IRQ level */
     bl      rt_interrupt_enter
 
+#ifdef RT_KERNEL_IRQ_DBG
     mov     x0, #2
     bl      rt_hw_irq_entry_step_debug
+#endif
 
     SAVE_USER_CTX EFRAMEX, x0
 
+#ifdef RT_KERNEL_IRQ_DBG
     mov     x0, #3
     bl      rt_hw_irq_entry_step_debug
+#endif
 
     /* handline IRQ */
     mov     x0, EFRAMEX
     bl      rt_hw_trap_irq
 
+#ifdef RT_KERNEL_IRQ_DBG
     mov     x0, #4
     bl      rt_hw_irq_entry_step_debug
+#endif
 
     RESTORE_USER_CTX EFRAMEX, x0
 
+#ifdef RT_KERNEL_IRQ_DBG
     mov     x0, #5
     bl      rt_hw_irq_entry_step_debug
+#endif
 
     /* restore IRQ level */
     bl      rt_interrupt_leave
 
+#ifdef RT_KERNEL_IRQ_DBG
     mov     x0, #6
     bl      rt_hw_irq_entry_step_debug
+#endif
 
     mov     x0, EFRAMEX
     bl      rt_hw_vector_irq_sched
 
+#ifdef RT_KERNEL_IRQ_DBG
     mov     x0, #7
     bl      rt_hw_irq_entry_step_debug
+#endif
 
     b       rt_hw_irq_exit
 START_POINT_END(vector_irq)
@@ -173,10 +203,12 @@ rt_hw_irq_exit:
     /* do exception switch for IRQ/exception handlers */
     EXCEPTION_SWITCH sp, x0
 
+#ifdef RT_KERNEL_IRQ_DBG
     mrs     x0, elr_el1
     mrs     x1, spsr_el1
     mov     x2, sp
     bl      rt_hw_irq_exit_debug
+#endif
 
     RESTORE_IRQ_CONTEXT
     eret

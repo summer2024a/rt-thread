@@ -22,4 +22,13 @@ menu "AArch64 Architecture Configuration"
     config ARCH_INIT_PAGE_SIZE
         hex "Size of init page region"
         default 0x200000
+
+    config RT_KERNEL_IRQ_DBG
+        bool "Enable verbose AArch64 IRQ/exception debug tracing"
+        default n
+        help
+            Enable early UART tracing in AArch64 IRQ, exception, and IRQ
+            context-switch paths. This is intended for low-level bring-up and
+            fault localization only. Leave it disabled for normal builds because
+            it is very verbose and changes IRQ timing.
 endmenu

@@ -155,8 +155,6 @@ void rt_hw_board_init(void)
     rt_ubase_t heap_end;
     rt_ubase_t stack_guard_base;
 
-    rt_hw_earlycon_ioremap_early();
-
     noclean_end = (rt_ubase_t)&__bss_start;
     bss_start = noclean_end;
     bss_end = (rt_ubase_t)&__bss_end;
@@ -167,6 +165,13 @@ void rt_hw_board_init(void)
     stack_guard_base = IRAM1_STACK_TOP
         - HP232X_CPU_STACK_BYTES * (RT_CPUS_NR - 1)
         - HP232X_CPU_STACK_BYTES;
+
+    /* HP232X places .bss in IRAM1 above 4GB. entry_point.S skips early
+     * zeroing for this high address, so clear it here before any BSS globals
+     * such as interrupt hooks, earlycon_base, and scheduler state are used. */
+    rt_memset((void *)bss_start, 0, bss_end - bss_start);
+
+    rt_hw_earlycon_ioremap_early();
 
     RT_ASSERT(noclean_end >= IRAM1_USE_START);
     RT_ASSERT(bss_start >= IRAM1_USE_START);

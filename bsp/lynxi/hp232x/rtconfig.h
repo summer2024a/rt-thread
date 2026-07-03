@@ -100,6 +100,8 @@
 /* kservice options */
 
 /* end of kservice options */
+/* RT_KERNEL_IRQ_DBG — enable verbose early UART tracing for IRQ/exception debug */
+/* #define RT_KERNEL_IRQ_DBG */
 /* #define RT_USING_DEBUG */  /* Temporarily disable for EL drop test */
 /* #define RT_DEBUGING_ASSERT */
 /* RT_DEBUGING_COLOR — disabled to save code */

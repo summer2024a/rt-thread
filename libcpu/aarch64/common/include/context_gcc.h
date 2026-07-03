@@ -29,7 +29,9 @@
     mrs     \tmp2x, fpsr
     stp     \tmpx, \tmp2x, [sp, #-0x10]!
 
-    mov     \tmpx, #((3 << 6) | 0x5)    /* el1h, disable interrupt */
+    mrs     \tmpx, DAIF
+    mov     \tmp2x, #0x05              /* EL1h mode */
+    orr     \tmpx, \tmpx, \tmp2x       /* preserve current DAIF */
     stp     x30, \tmpx, [sp, #-0x10]!
 
 .endm
@@ -40,7 +42,9 @@
 
     add     sp, sp, #-7 * 16
 
-    mov     x19, #((3 << 6) | 0x4 | 0x1)  /* el1h, disable interrupt */
+    mrs     x19, DAIF
+    mov     x20, #0x05              /* EL1h mode */
+    orr     x19, x19, x20           /* preserve current DAIF */
     stp     lr, x19, [sp, #-0x10]!
 
 .endm

@@ -48,9 +48,13 @@ rt_hw_vector_irq_sched:
      */
     ldr     x1, =rt_thread_switch_interrupt_flag
     ldr     x2, [x1]
+#ifdef RT_KERNEL_IRQ_DBG
+    stp     x1, x30, [sp, #-0x10]!
     mov     x0, x2
     bl      rt_hw_irq_sched_debug
+    ldp     x1, x30, [sp], #0x10
     ldr     x2, [x1]
+#endif
     cmp     x2, #1
     bne     1f
 

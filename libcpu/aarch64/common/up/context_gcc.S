@@ -74,10 +74,18 @@ rt_hw_context_switch:
  * void rt_hw_context_switch_interrupt(rt_ubase_t from, rt_ubase_t to, rt_thread_t from_thread, rt_thread_t to_thread);
  */
 rt_hw_context_switch_interrupt:
+#ifdef RT_KERNEL_IRQ_DBG
+    stp     x0, x1, [sp, #-0x10]!
+    stp     x2, x30, [sp, #-0x10]!
     ldr     x6, =rt_thread_switch_interrupt_flag
     ldr     x7, [x6]
     mov     x0, x7
     bl      rt_hw_context_switch_interrupt_before_debug
+    ldp     x2, x30, [sp], #0x10
+    ldp     x0, x1, [sp], #0x10
+#endif
+
+    ldr     x6, =rt_thread_switch_interrupt_flag
     ldr     x7, [x6]
     cmp     x7, #1
     b.eq     _reswitch
@@ -99,7 +107,13 @@ rt_hw_context_switch_interrupt:
 _reswitch:
     ldr     x6, =rt_interrupt_to_thread     // set rt_interrupt_to_thread
     str     x1, [x6]
+#ifdef RT_KERNEL_IRQ_DBG
+    stp     x0, x1, [sp, #-0x10]!
+    stp     x2, x30, [sp, #-0x10]!
     bl      rt_hw_context_switch_interrupt_after_debug
+    ldp     x2, x30, [sp], #0x10
+    ldp     x0, x1, [sp], #0x10
+#endif
     ret
 
 .globl rt_hw_context_switch_interrupt_do
@@ -111,7 +125,9 @@ rt_hw_context_switch_interrupt_do:
     clrex
     SAVE_CONTEXT_SWITCH_FAST
 
+#ifdef RT_KERNEL_IRQ_DBG
     bl      rt_hw_context_switch_interrupt_do_before_debug
+#endif
 
     ldr     x3,  =rt_interrupt_from_thread
     ldr     x4,  [x3]
@@ -122,8 +138,10 @@ rt_hw_context_switch_interrupt_do:
     ldr     x4,  [x3]
     ldr     x0,  [x4]       // get new task's stack pointer
     mov     x19, x0
+#ifdef RT_KERNEL_IRQ_DBG
     mov     x0, x19
     bl      rt_hw_context_switch_interrupt_do_after_debug
+#endif
     mov     x0, x19
     mov     sp, x0
 

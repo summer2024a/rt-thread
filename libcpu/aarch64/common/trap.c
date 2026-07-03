@@ -343,16 +343,22 @@ static void _rt_hw_trap_irq(rt_interrupt_context_t irq_context)
     rt_isr_handler_t isr_func;
     extern struct rt_irq_desc isr_table[];
 
+#ifdef RT_KERNEL_IRQ_DBG
     early_puts_direct("IRQ get_irq call\n");
+#endif
     ir = rt_hw_interrupt_get_irq();
+#ifdef RT_KERNEL_IRQ_DBG
     early_puts_direct("IRQ get_irq ret=0x");
     early_puthex64(ir);
     early_putc_direct('\n');
+#endif
 
     if (ir == 1023)
     {
         /* Spurious interrupt */
+#ifdef RT_KERNEL_IRQ_DBG
         early_puts_direct("IRQ spurious\n");
+#endif
         return;
     }
 
@@ -372,25 +378,33 @@ static void _rt_hw_trap_irq(rt_interrupt_context_t irq_context)
         /* Interrupt for myself. */
         param = isr_table[ir_self].param;
 
+#ifdef RT_KERNEL_IRQ_DBG
         early_puts_direct("IRQ handler=0x");
         early_puthex64((unsigned long)isr_func);
         early_puts_direct(" irq=0x");
         early_puthex64(ir_self);
         early_putc_direct('\n');
+#endif
 
         /* turn to interrupt service routine */
         isr_func(ir_self, param);
 
+#ifdef RT_KERNEL_IRQ_DBG
         early_puts_direct("IRQ handler done\n");
+#endif
     }
     else
     {
+#ifdef RT_KERNEL_IRQ_DBG
         early_puts_direct("IRQ no handler\n");
+#endif
     }
 
     /* end of interrupt */
     rt_hw_interrupt_ack(ir);
+#ifdef RT_KERNEL_IRQ_DBG
     early_puts_direct("IRQ ack done\n");
+#endif
 #endif
 }
 #else
@@ -407,11 +421,15 @@ void rt_hw_trap_irq(struct rt_hw_exp_stack *regs)
         .node = RT_SLIST_OBJECT_INIT(this_ctx.node),
     };
 
+#ifdef RT_KERNEL_IRQ_DBG
     early_puts_direct("IRQ trap enter\n");
+#endif
     rt_interrupt_context_push(&this_ctx);
     _rt_hw_trap_irq(&this_ctx);
     rt_interrupt_context_pop();
+#ifdef RT_KERNEL_IRQ_DBG
     early_puts_direct("IRQ trap exit\n");
+#endif
 }
 
 void rt_hw_exception_entry_debug(void)
@@ -466,9 +484,43 @@ void rt_hw_trap_exception(struct rt_hw_exp_stack *regs)
 {
     unsigned long esr;
     unsigned char ec;
+#ifdef RT_KERNEL_IRQ_DBG
+    unsigned long far;
+    unsigned long elr;
+    unsigned long spsr;
+#endif
 
     asm volatile("mrs %0, esr_el1":"=r"(esr));
+#ifdef RT_KERNEL_IRQ_DBG
+    asm volatile("mrs %0, far_el1":"=r"(far));
+    asm volatile("mrs %0, elr_el1":"=r"(elr));
+    asm volatile("mrs %0, spsr_el1":"=r"(spsr));
+#endif
     ec = (unsigned char)((esr >> 26) & 0x3fU);
+
+#ifdef RT_KERNEL_IRQ_DBG
+    early_puts_direct("EXC detail: ESR=0x");
+    early_puthex64(esr);
+    early_puts_direct(" EC=0x");
+    early_puthex64(ec);
+    early_puts_direct(" FAR=0x");
+    early_puthex64(far);
+    early_puts_direct(" ELR=0x");
+    early_puthex64(elr);
+    early_puts_direct(" SPSR=0x");
+    early_puthex64(spsr);
+    early_putc_direct('\n');
+
+    early_puts_direct("EXC regs: PC=0x");
+    early_puthex64(regs->pc);
+    early_puts_direct(" CPSR=0x");
+    early_puthex64(regs->cpsr);
+    early_puts_direct(" X0=0x");
+    early_puthex64(regs->x0);
+    early_puts_direct(" X30=0x");
+    early_puthex64(regs->x30);
+    early_putc_direct('\n');
+#endif
 
     if (DBG_CHECK_EVENT(regs, esr))
     {

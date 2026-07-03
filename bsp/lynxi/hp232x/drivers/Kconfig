@@ -74,5 +74,14 @@ menu "Hardware Drivers Config"
                 range 0 3
                 default 0
         endif
+
+        config RT_BSP_PMON_TEST
+            bool "Enable PMON GIC monitor thread"
+            default y
+            help
+                Enable the PMON (Periodic MONitor) thread that prints GIC
+                status and system tick information every 2.5 seconds.
+                Useful for verifying system tick and interrupt functionality.
+                Disable to reduce code size and IRAM usage.
     endmenu
 endmenu

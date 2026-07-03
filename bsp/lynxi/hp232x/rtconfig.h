@@ -162,22 +162,23 @@
 
 #define RT_USING_COMPONENTS_INIT
 #define RT_USING_USER_MAIN
-#define RT_MAIN_THREAD_STACK_SIZE 4096  /* Increased from 2048 to accommodate rt_components_init + pmon thread creation */
+#define RT_MAIN_THREAD_STACK_SIZE 4096  /* Increased from 2048 to accommodate rt_components_init */
 #define RT_MAIN_THREAD_PRIORITY 10
-/* Disable FINSH/Shell - UART RX interrupt not working */
-/* #define RT_USING_MSH */
-/* #define RT_USING_FINSH */
-/* #define FINSH_USING_MSH */
-/* #define FINSH_THREAD_NAME "tshell" */
-/* #define FINSH_THREAD_PRIORITY 21 */
-/* #define FINSH_THREAD_STACK_SIZE 2048 */
-/* #define FINSH_USING_HISTORY */
-/* #define FINSH_HISTORY_LINES 5 */
-/* #define FINSH_USING_SYMTAB */
-/* #define FINSH_CMD_SIZE 80 */
-/* #define MSH_USING_BUILT_IN_COMMANDS */
-/* #define FINSH_USING_DESCRIPTION */
-/* #define FINSH_ARG_MAX 10 */
+
+/* FINSH/Shell - msh console */
+#define RT_USING_MSH
+#define RT_USING_FINSH
+#define FINSH_USING_MSH
+#define FINSH_THREAD_NAME "tshell"
+#define FINSH_THREAD_PRIORITY 21
+#define FINSH_THREAD_STACK_SIZE 4096
+#define FINSH_USING_HISTORY
+#define FINSH_HISTORY_LINES 5
+#define FINSH_USING_SYMTAB
+#define FINSH_CMD_SIZE 80
+#define MSH_USING_BUILT_IN_COMMANDS
+#define FINSH_USING_DESCRIPTION
+#define FINSH_ARG_MAX 10
 /* #define FINSH_USING_OPTION_COMPLETION */
 
 /* DFS — disabled; serial driver uses rt_device API directly, shell uses rt_device_read/write */
@@ -265,6 +266,7 @@
 #define BSP_USING_APB_TIMER_AS_TICK
 #define HP232X_APB_TIMER_CLOCK 50000000
 #define HP232X_APB_TIMER_TICK_ID 0
+#define RT_BSP_PMON_TEST
 
 /* end of Hardware Drivers Config */
 

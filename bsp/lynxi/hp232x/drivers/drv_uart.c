@@ -72,28 +72,18 @@ static rt_err_t uart_control(struct rt_serial_device *serial, int cmd, void *arg
     RT_ASSERT(serial != RT_NULL);
     uart = (struct hw_uart_device *)serial->parent.user_data;
 
-    rt_kprintf("[UART_CTRL] cmd=%d, irqno=%d\n", cmd, uart->irqno);
-
     switch (cmd)
     {
     case RT_DEVICE_CTRL_CLR_INT:
         /* disable rx irq */
-        rt_kprintf("[UART_CTRL] Disabling RX interrupt\n");
         DW_APB_REG_IER(uart->hw_base) = (DW_APB_REG_IER(uart->hw_base) & ~0x1);
         rt_hw_interrupt_mask(uart->irqno);
         break;
 
     case RT_DEVICE_CTRL_SET_INT:
         /* enable rx irq */
-        rt_kprintf("[UART_CTRL] Enabling RX interrupt: IER before=0x%x\n", DW_APB_REG_IER(uart->hw_base));
         DW_APB_REG_IER(uart->hw_base) = (DW_APB_REG_IER(uart->hw_base) | 0x1);
-        rt_kprintf("[UART_CTRL] IER after=0x%x\n", DW_APB_REG_IER(uart->hw_base));
         rt_hw_interrupt_umask(uart->irqno);
-        rt_kprintf("[UART_CTRL] Interrupt umask called for IRQ %d\n", uart->irqno);
-
-        /* DEBUG: Check UART interrupt status */
-        unsigned int ier = DW_APB_REG_IER(uart->hw_base);
-        rt_kprintf("[UART_CTRL] Final IER=0x%x (bit0=%d)\n", ier, ier & 0x1);
         break;
     }
     return RT_EOK;
@@ -196,11 +186,7 @@ static void rt_hw_uart_isr(int irqno, void *param)
     struct rt_serial_device *serial = (struct rt_serial_device *)param;
     struct hw_uart_device *uart = (struct hw_uart_device *)serial->parent.user_data;
 
-    /* DEBUG: Log UART interrupt entry */
-    rt_kprintf("[UART_ISR] IRQ=%d triggered\n", irqno);
-
     iir = DW_APB_REG_IIR(uart->hw_base);
-    rt_kprintf("[UART_ISR] IIR=0x%x\n", iir);
 
     if ((iir & 0x3f) == UART_IIR_RX_TIMEOUT)
     {
@@ -214,7 +200,6 @@ static void rt_hw_uart_isr(int irqno, void *param)
     if (!(iir & UART_IIR_NO_INT))
     {
         rt_hw_serial_isr(serial, RT_SERIAL_EVENT_RX_IND);
-        rt_kprintf("[UART_ISR] Called rt_hw_serial_isr\n");
     }
 
     if ((iir & UART_IIR_BUSY) == UART_IIR_BUSY) {

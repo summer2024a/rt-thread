@@ -7,6 +7,8 @@
 #include <rtdevice.h>
 #include "lynxi.h"  /* for MAX_HANDLERS */
 
+#ifdef RT_BSP_PMON_TEST
+
 /* GIC寄存器地址 */
 #define GICD_BASE       0x08000000
 #define GICR_BASE       0x08100000
@@ -158,3 +160,5 @@ int pmon_gic_init(void)
 }
 
 INIT_APP_EXPORT(pmon_gic_init);
+
+#endif /* RT_BSP_PMON_TEST */

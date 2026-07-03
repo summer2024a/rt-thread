@@ -35,11 +35,18 @@
  * CRITICAL: x6/x7 must be initialized before using early_putc!
  */
 .macro early_putc, char
-1:  ldr     w8, [x6]              /* Read LSR (x6 pre-loaded) */
-    tst     w8, #0x20             /* Check THRE (Transmitter Holding Register Empty) */
-    b.eq    1b                    /* Wait if NOT ready */
-    mov     w8, \char             /* Load character */
-    str     w8, [x7]              /* Write to THR (x7 pre-loaded) */
+// 1:  ldr     w8, [x6]              /* Read LSR (x6 pre-loaded) */
+//     tst     w8, #0x20             /* Check THRE (Transmitter Holding Register Empty) */
+//     b.eq    1b                    /* Wait if NOT ready */
+//     mov     w8, \char             /* Load character */
+//     str     w8, [x7]              /* Write to THR (x7 pre-loaded) */
+
+ldr     x6, =0x10006000         /* UART0 base address (THR) */
+1:  ldr     w8, [x6, #0x14]      /* 读 LSR = base + 0x14 */
+    tst     w8, #0x20
+    b.eq    1b
+    mov     w8, \char
+    str     w8, [x6]             /* 写 THR = base + 0 */
 .endm
 #else
 .macro early_putc, char          /* Empty stub when DEBUG_UART disabled */
@@ -173,9 +180,12 @@ cci_init_done:
 #endif
 
     /* Enable all groups and affinity routing */
+    /* CRITICAL: Set DS bit (bit 6) to disable Security state separation */
+    /* This allows Non-secure access to all GIC registers */
     mov     w0, #7                      /* EnableGrp0 | EnableGrp1ns | EnableGrp1s */
     orr     w0, w0, #(3 << 4)           /* ARE_S | ARE_NS (both bits 4 and 5) */
-    str     w0, [x1]                    /* GICD_CTLR = 0x37 */
+    orr     w0, w0, #(1 << 6)           /* DS=1 (Disable Security) */
+    str     w0, [x1]                    /* GICD_CTLR = 0x77 */
     dsb     sy
     isb
 
@@ -257,6 +267,12 @@ cci_init_done:
 
     str     w5, [x3, #0x80]             /* GICR_IGROUP0 = 0xffffffff (all Group1) */
     str     wzr, [x3, #0xD00]           /* GICR_IGRPMOD0 = 0 (Non-secure) */
+
+    /* ===== CRITICAL: Enable NS access to GICR registers ===== */
+    /* Without this, Non-secure EL1 cannot modify group registers */
+    /* GICR_NSACR: Allow Non-secure access to SGI/PPI configuration */
+    mov     w11, #0xFFFFFFFF            /* Allow NS access to all SGI/PPI (0-31) */
+    str     w11, [x3, #0xE00]           /* GICR_NSACR = 0xffffffff */
     dsb     sy
     isb
 
@@ -302,26 +318,42 @@ cci_init_done:
 
 2:  /* GICv3 initialization complete */
 
-    /* ===== Step 2.1f: ICC System Registers Configuration (u-boot SPL style) ===== */
-    /* Purpose: Enable Group1 interrupts, allow EL1 access to ICC, set NS priority mask */
+    /* ===== Step 2.1f: ICC System Registers Configuration (lynxi-bootwrapper gic.S order) ===== */
+    /* CRITICAL: Must set ICC_SRE_EL3 FIRST before any other ICC registers */
 
 #ifdef BSP_USING_HP232X_DEBUG_UART
     /* Print 'E' before ICC enable setup */
     early_putc 'E'
 #endif
 
-    /* ICC_IGRPEN1_EL3: Enable Secure and Non-secure Group 1 interrupts */
-    mov     x10, #0x3               /* EnableGrp1NS=1 | EnableGrp1S=1 */
-    msr     S3_6_C12_C12_7, x10     /* ICC_IGRPEN1_EL3 */
-    isb
-
-    /* CRITICAL: Configure ICC_CTLR_EL3 for Non-Secure access (lynxi-bootwrapper gic.S:205) */
-    /* Without this, EL1 Non-Secure cannot modify GIC Secure registers */
-    msr     S3_6_C12_C12_4, xzr     /* ICC_CTLR_EL3 = 0 */
+    /* CRITICAL: Set ICC_SRE_EL3 FIRST (Enable | SRE) - like lynxi-bootwrapper gic.S:196-200 */
+    mov     x10, #((1 << 3) | (1 << 0))      /* Enable | SRE */
+    mrs     x11, S3_6_C12_C12_5              /* ICC_SRE_EL3 */
+    orr     x11, x11, x10
+    msr     S3_6_C12_C12_5, x11              /* ICC_SRE_EL3 */
     isb
 
 #ifdef BSP_USING_HP232X_DEBUG_UART
-    /* Print '1' after ICC_IGRPEN1_EL3 + ICC_CTLR_EL3 */
+    /* Print 'S' after ICC_SRE_EL3 */
+    early_putc 'S'
+#endif
+
+    /* Configure ICC_CTLR_EL3 for Non-Secure access */
+    msr     S3_6_C12_C12_4, xzr              /* ICC_CTLR_EL3 = 0 */
+    isb
+
+#ifdef BSP_USING_HP232X_DEBUG_UART
+    /* Print 'C' after ICC_CTLR_EL3 */
+    early_putc 'C'
+#endif
+
+    /* Now safe to set ICC_IGRPEN1_EL3 (after SRE is enabled) */
+    mov     x10, #0x3                          /* EnableGrp1NS=1 | EnableGrp1S=1 */
+    msr     S3_6_C12_C12_7, x10              /* ICC_IGRPEN1_EL3 */
+    isb
+
+#ifdef BSP_USING_HP232X_DEBUG_UART
+    /* Print '1' after ICC_IGRPEN1_EL3 */
     early_putc '1'
 #endif
 
@@ -378,8 +410,64 @@ cci_init_done:
     eret
 
 .hp232x_after_eret:
-    /* At EL2 now: Continue to EL1 */
-    b       .hp232x_el1_continue
+    /* At EL2 now: Configure HCR_EL2 to route IRQ/FIQ/SError to EL1 */
+    /* CRITICAL: Without this, IRQ will be routed to EL2 and EL1 cannot handle interrupts! */
+
+#ifdef BSP_USING_HP232X_DEBUG_UART
+    /* Re-initialize UART registers after eret (context may be lost) */
+    ldr     x6, =0x10006014         /* UART0 LSR */
+    ldr     x7, =0x10006000         /* UART0 THR */
+
+    /* NOTE: UART may not be accessible from EL2 — skip early_putc markers here */
+    /* early_putc 'H' */
+#endif
+
+    /* Set HCR_EL2: Route all interrupts to EL1 */
+    mov     x0, #(1 << 31)          /* RW=1: 64-bit EL1 */
+    /* CRITICAL: Clear interrupt routing bits to route IRQ/FIQ/SError to EL1 */
+    bic     x0, x0, #(1 << 4)       /* IMO=0: IRQ route to EL1 (not EL2) */
+    bic     x0, x0, #(1 << 5)       /* FMO=0: FIQ route to EL1 (not EL2) */
+    bic     x0, x0, #(1 << 6)       /* AMO=0: SError route to EL1 (not EL2) */
+    bic     x0, x0, #(1 << 24)      /* TTC=0: Allow EL1 to write CNTP_CTL_EL0 */
+    bic     x0, x0, #(1 << 25)      /* TSC=0: Allow EL1 to access timer sysregs */
+    bic     x0, x0, #(1 << 26)      /* TWE=0: Allow EL1 WFI */
+    bic     x0, x0, #(1 << 27)      /* TWI=0: Allow EL1 WFE */
+    bic     x0, x0, #(1 << 28)      /* TPC=0: Allow EL1 to access physical counter */
+    bic     x0, x0, #(1 << 29)      /* TPIDRURO=0: Allow EL1 access to TPIDRURO */
+    bic     x0, x0, #(1 << 30)      /* TPIDRURW=0: Allow EL1 access to TPIDRURW */
+    /* TRVM (bit 31) must NOT be cleared — it conflicts with RW (bit 31) */
+    msr     hcr_el2, x0
+    isb
+
+#ifdef BSP_USING_HP232X_DEBUG_UART
+    /* NOTE: UART may not be accessible from EL2 */
+    /* early_putc 'L' */
+#endif
+
+    /* Set SCTLR_EL1 */
+    mov     x0, #0
+    msr     sctlr_el1, x0
+    isb
+
+#ifdef BSP_USING_HP232X_DEBUG_UART
+    /* Print 'O' marker - SCTLR_EL1 set */
+    early_putc 'O'
+#endif
+
+    /* Set SPSR_EL2 and ELR_EL2 for EL2→EL1 */
+    adr     x0, .hp232x_el1_continue  /* Return to EL1 continuation */
+    mov     x1, #(5 | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 9))  /* SPSR: EL1h + all exceptions masked */
+    msr     elr_el2, x0
+    msr     spsr_el2, x1
+    isb
+
+#ifdef BSP_USING_HP232X_DEBUG_UART
+    /* Print 'W' marker - Ready for EL2→EL1 eret */
+    early_putc 'W'
+#endif
+
+    /* EL2→EL1 transition */
+    eret
 
 /* ===== Secondary CPU Initialization (Per-CPU) ===== */
 
@@ -453,6 +541,12 @@ sec_wait_waker:
     mvn     w5, wzr                    /* w5 = 0xFFFFFFFF */
     str     w5, [x3, #0x80]            /* GICR_IGROUP0 = 0xFFFFFFFF */
     str     wzr, [x3, #0xD00]          /* GICR_IGRPMOD0 = 0x00000000 */
+
+    /* ===== CRITICAL: Enable NS access to GICR registers ===== */
+    mov     w11, #0xFFFFFFFF           /* Allow NS access to all SGI/PPI */
+    str     w11, [x3, #0xE00]          /* GICR_NSACR = 0xffffffff */
+    dsb     sy
+    isb
 
     /* Enable SGI 0 for IPI */
     mov     w11, #0x1
@@ -533,8 +627,12 @@ sec_wait_waker:
 .hp232x_secondary_el2:
     /* At EL2: Continue EL2→EL1 transition */
 
-    /* Set HCR_EL2 */
+    /* Set HCR_EL2: Route all interrupts to EL1 */
     mov     x0, #(1 << 31)          /* RW=1: 64-bit EL1 */
+    /* CRITICAL: Clear interrupt routing bits to route IRQ/FIQ/SError to EL1 */
+    bic     x0, x0, #(1 << 4)       /* IMO=0: IRQ route to EL1 (not EL2) */
+    bic     x0, x0, #(1 << 5)       /* FMO=0: FIQ route to EL1 (not EL2) */
+    bic     x0, x0, #(1 << 6)       /* AMO=0: SError route to EL1 (not EL2) */
     msr     hcr_el2, x0
     isb
 
@@ -576,10 +674,97 @@ sec_wait_waker:
     b       .hp232x_el1_continue
 
 .hp232x_el1_continue:
-    /* At EL1: Continue normal boot flow */
-    /* Return to entry_point.S for standard RT-Thread initialization */
-    /* CRITICAL: Must return to caller (entry_point.S line 164: bl hp232x_bootwrapper_init) */
+    /* At EL1: Enable MMU before returning to entry_point.S */
+    /* Set TTBR0_EL1 */
+    ldr     x0, =hp232x_static_pgd
+    msr     ttbr0_el1, x0
+    isb
+
+    /* Set MAIR_EL1 */
+    ldr     x0, =0x00447f
+    msr     mair_el1, x0
+    isb
+
+    /* Set TCR_EL1 */
+    ldr     x0, =0x0000000200000000
+    orr     x0, x0, #(3 << 12)
+    orr     x0, x0, #(1 << 10)
+    orr     x0, x0, #(1 << 8)
+    msr     tcr_el1, x0
+    isb
+
+    /* Enable MMU and caches in SCTLR_EL1 */
+    mrs     x0, sctlr_el1
+    mov     x1, #0x1
+    movk    x1, #0x5001, lsl #16
+    orr     x0, x0, x1
+    msr     sctlr_el1, x0
+    isb
+
+    /* CRITICAL: Clear SPSR_EL1 to unmask all exceptions on return */
+    /* Otherwise 'ret' restores D+A+I+F=1 from SPSR_EL1, blocking all interrupts */
+    mov     x0, #0
+    msr     spsr_el1, x0
+    isb
+
+    /* Return to entry_point.S */
     ret
+
+/* ===== Static Page Table Data (hardcoded, stored in IRAM0 .text) ===== */
+
+.align 12
+hp232x_static_pgd:
+    /* PGD[0]: Points to PUD table (covers VA 0-512GB) */
+    .quad hp232x_static_pud + 0x3    /* Table descriptor: addr | type=3 */
+
+.align 12
+hp232x_static_pud:
+    /* PUD[0]: Points to PMD table for 0GB-1GB region */
+    .quad hp232x_static_pmd + 0x3    /* Table descriptor */
+    .quad 0
+    .quad 0
+    .quad 0
+    /* PUD[4]: IRAM1 - maps VA 0x100050000-0x13FFFFFFF to PA 0x100000000 */
+    /* IRAM1 physical base 0x100000000, VA base 0x100050000 */
+    /* Need VA-aligned mapping: VA 0x100050000 → PA 0x100050000 */
+    /* But IRAM1 PA is 0x100000000, so we map VA 0x100000000 to PA 0x100000000 */
+    /* and rely on board.c MMU setup for the VA offset correction */
+    .quad 0x100000601 // VA 0x100000000 -> PA 0x100000000
+
+.align 12
+hp232x_static_pmd:
+    /* PMD covers VA 0GB-1GB, each entry = 2MB block */
+    .rept 32
+    .quad 0
+    .endr
+    /* PMD[32-35]: IRAM0 (64MB-72MB area, Normal Memory) */
+    .quad 0x04000601
+    .quad 0x04200601
+    .quad 0x04400601
+    .quad 0x04600601
+    /* PMD[36-63]: Unused (72MB-128MB) */
+    .rept 28
+    .quad 0
+    .endr
+    /* PMD[64-71]: GIC Distributor (128MB area, Device Memory) */
+    .quad 0x08000602
+    .quad 0x08200602
+    .quad 0x08400602
+    .quad 0x08600602
+    .quad 0x08800602
+    .quad 0x08A00602
+    .quad 0x08C00602
+    .quad 0x08E00602
+    /* PMD[72-127]: Unused (144MB-256MB) */
+    .rept 56
+    .quad 0
+    .endr
+    /* PMD[128]: UART (256MB area, Device Memory) */
+    .quad 0x10000602
+    /* PMD[129-511]: Unused (rest of 1GB) */
+    .rept 383
+    .quad 0
+    .endr
 
 /* ===== Secondary CPU Spin Wait ===== */
 
@@ -594,26 +779,35 @@ sec_wait_waker:
     sub     x5, x5, #1               /* Secondary CPUs index 0-6 */
     lsl     x5, x5, #3               /* * 8 bytes per entry */
 
-    /* Spin table base in IRAM0 (constraint-compliant) */
-    ldr     x4, =0x0401FF00         /* mbox_address = IRAM0 spin table */
+    /* Spin table base — use linker symbol, not hardcoded 0x0401FF00 */
+    ldr     x4, =hp232x_spin_table
     add     x4, x4, x5              /* Current CPU's mbox entry */
+
+    /* CRITICAL: Clear mailbox to 0 to reject garbage from bootcode
+     * (e.g. 0x2323232323232323 left in .bss). Ensures secondary CPU
+     * only wakes up when primary CPU explicitly releases it. */
+    str     xzr, [x4]
+    dsb     sy
+    isb
 
 spin_wait_loop:
     wfe
     ldr     x1, [x4]                /* Read entry point */
     cbz     x1, spin_wait_loop      /* Zero means not released */
-    br      x1                       /* Jump to entry point when released */
+    /* Double-check: entry must be in IRAM0 (0x04000000-0x040FFFFF) */
+    /* Reject any residual garbage despite the clear above */
+    movz    x2, #0x0400
+    movk    x2, #0x0000, lsl #16
+    cmp     x1, x2
+    blt     spin_wait_loop
+    movz    x2, #0x0410
+    cmp     x1, x2
+    bge     spin_wait_loop
+    br      x1                       /* Safe to jump */
 
 /* ===== HP232X Data Sections ===== */
 
     .section .early_hp232x, "aw", @progbits
-
-/* HP232X temporary stack in IRAM0 (first 256KB, constraint-compliant) */
-    .align 12
-    .global hp232x_temp_stack_top
-hp232x_temp_stack:
-    .space 4096               /* 4KB temp stack in IRAM0 */
-hp232x_temp_stack_top:
 
 /* HP232X secondary CPU spin table - placed in IRAM0 first 256KB (constraint-compliant) */
     .align 12
@@ -685,6 +879,13 @@ exc_halt:
 
 #endif /* _HP232X_PRE_ENTRY_S_ */
 
+/* HP232X temporary stack in IRAM0 (last 256KB, constraint-compliant) */
+    .align 12
+    .global hp232x_temp_stack_top
+hp232x_temp_stack:
+    .space 32768              /* 32KB temp stack in IRAM0 */
+hp232x_temp_stack_top:
+
 #endif /* BSP_USING_HP232X */
 
 /*
@@ -721,7 +922,7 @@ hp232x_static_pud:
     .quad 0
 
     /* PUD[4]: IRAM1 @ 4GB (1GB block, Normal Memory) */
-    .quad 0x100000601                 /* (4 << 30) | 0x600 | 0x1 */
+    .quad 0x100000601 // VA 0x100000000 -> PA 0x100000000                 /* (4 << 30) | 0x600 | 0x1 */
 
 .align 12
 hp232x_static_pmd:
@@ -807,5 +1008,12 @@ hp232x_enable_mmu_static:
     ret
 
 #endif /* BSP_USING_HP232X_USE_STATIC_ASM - 方案A */
+
+/* HP232X temporary stack in IRAM0 (last 256KB, constraint-compliant) */
+    .align 12
+    .global hp232x_temp_stack_top
+hp232x_temp_stack:
+    .space 32768              /* 32KB temp stack in IRAM0 */
+hp232x_temp_stack_top:
 
 #endif /* BSP_USING_HP232X */

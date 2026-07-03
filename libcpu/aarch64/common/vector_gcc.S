@@ -15,14 +15,6 @@
 
 #include <rtconfig.h>
 
-#ifdef BSP_USING_HP232X_SPIN_TABLE
-    .extern hp232x_asm_dbg_trap
-#else
-    .extern hp232x_asm_dbg_putc
-    .extern hp232x_asm_dbg_puts
-    .extern hp232x_asm_dbg_hex64
-#endif
-
 .text
 .globl system_vectors
 .globl vector_exception
@@ -76,97 +68,115 @@ system_vectors:
 
 #include "include/vector_gcc.h"
 #define EFRAMEX x19
-
-#ifndef BSP_USING_HP232X_SPIN_TABLE
-    .macro hp232x_vec_puts label
-    ldr     x9, =\label
-    bl      hp232x_asm_dbg_puts
-    .endm
-
-    .macro hp232x_vec_puthex reg
-    mov     x9, \reg
-    bl      hp232x_asm_dbg_hex64
-    .endm
-
-    .macro hp232x_vec_dbg label
-    stp     x0, x1, [sp, #-16]!
-    stp     x2, x3, [sp, #-16]!
-    stp     x4, x5, [sp, #-16]!
-    stp     x9, x10, [sp, #-16]!
-
-    hp232x_vec_puts \label
-
-    mrs     x0, CurrentEL
-    lsr     x0, x0, #2
-    hp232x_vec_puts .Lhp232x_vec_el
-    hp232x_vec_puthex x0
-
-    mrs     x1, esr_el1
-    hp232x_vec_puts .Lhp232x_vec_esr
-    hp232x_vec_puthex x1
-
-    mrs     x2, elr_el1
-    hp232x_vec_puts .Lhp232x_vec_elr
-    hp232x_vec_puthex x2
-
-    mrs     x3, far_el1
-    hp232x_vec_puts .Lhp232x_vec_far
-    hp232x_vec_puthex x3
-
-    mov     x9, #'\n'
-    bl      hp232x_asm_dbg_putc
-
-    ldp     x9, x10, [sp], #16
-    ldp     x4, x5, [sp], #16
-    ldp     x2, x3, [sp], #16
-    ldp     x0, x1, [sp], #16
-    .endm
-#endif
+#define RT_HW_IRQ_EXIT_DEBUG
 
 START_POINT(vector_exception)
-#ifdef BSP_USING_HP232X_SPIN_TABLE
-    /* Minimal exception handler - just spin forever */
-1:
-    wfe
-    b       1b
-#else
-    /* Full exception handler with debug */
+    SAVE_IRQ_CONTEXT
+    mov     EFRAMEX, sp
+
+    mov     x0, #0x10
+    bl      rt_hw_entry_step_debug
+
+    SAVE_USER_CTX EFRAMEX, x0
+
+    mov     x0, #0x11
+    bl      rt_hw_entry_step_debug
+
+    bl      rt_hw_exception_entry_debug
+    mov     x0, EFRAMEX
+    bl      rt_hw_trap_exception
+
+    mov     x0, #0x12
+    bl      rt_hw_entry_step_debug
+
+    RESTORE_USER_CTX EFRAMEX, x0
+
+    mov     x0, #0x13
+    bl      rt_hw_entry_step_debug
+
+    /* do exception switch for IRQ/exception handlers */
+    EXCEPTION_SWITCH sp, x0
+
+    mov     x0, #0x14
+    bl      rt_hw_entry_step_debug
+
+    RESTORE_IRQ_CONTEXT
+    eret
+START_POINT_END(vector_exception)
+
+START_POINT(vector_serror)
     SAVE_IRQ_CONTEXT
     mov     EFRAMEX, sp
 
     SAVE_USER_CTX EFRAMEX, x0
 
+    bl      rt_hw_serror_entry_debug
     mov     x0, EFRAMEX
-    bl      rt_hw_trap_exception
+    bl      rt_hw_trap_serror
+
     RESTORE_USER_CTX EFRAMEX, x0
 
-    /* do exception switch for IRQ/exception handlers */
-    EXCEPTION_SWITCH sp, x0
-
-    RESTORE_IRQ_CONTEXT
-    eret
-#endif
-START_POINT_END(vector_exception)
-
-START_POINT(vector_serror)
-    /* Minimal SError handler - just loop */
-1:
-    wfe
-    b       1b
+    NEVER_RETURN
 START_POINT_END(vector_serror)
 
 START_POINT(vector_irq)
-    /* Minimal IRQ handler - just loop */
-1:
-    wfe
-    b       1b
+    SAVE_IRQ_CONTEXT
+    mov     EFRAMEX, sp
+
+    /* debug IRQ entry early */
+    bl      rt_hw_irq_entry_debug
+
+    mov     x0, #1
+    bl      rt_hw_irq_entry_step_debug
+
+    /* trace IRQ level */
+    bl      rt_interrupt_enter
+
+    mov     x0, #2
+    bl      rt_hw_irq_entry_step_debug
+
+    SAVE_USER_CTX EFRAMEX, x0
+
+    mov     x0, #3
+    bl      rt_hw_irq_entry_step_debug
+
+    /* handline IRQ */
+    mov     x0, EFRAMEX
+    bl      rt_hw_trap_irq
+
+    mov     x0, #4
+    bl      rt_hw_irq_entry_step_debug
+
+    RESTORE_USER_CTX EFRAMEX, x0
+
+    mov     x0, #5
+    bl      rt_hw_irq_entry_step_debug
+
+    /* restore IRQ level */
+    bl      rt_interrupt_leave
+
+    mov     x0, #6
+    bl      rt_hw_irq_entry_step_debug
+
+    mov     x0, EFRAMEX
+    bl      rt_hw_vector_irq_sched
+
+    mov     x0, #7
+    bl      rt_hw_irq_entry_step_debug
+
+    b       rt_hw_irq_exit
 START_POINT_END(vector_irq)
 
-    .globl rt_hw_irq_exit
 rt_hw_irq_exit:
+    .globl rt_hw_irq_exit
+
     /* do exception switch for IRQ/exception handlers */
     EXCEPTION_SWITCH sp, x0
 
+    mrs     x0, elr_el1
+    mrs     x1, spsr_el1
+    mov     x2, sp
+    bl      rt_hw_irq_exit_debug
+
     RESTORE_IRQ_CONTEXT
     eret
-

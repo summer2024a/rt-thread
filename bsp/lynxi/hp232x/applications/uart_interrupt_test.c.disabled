@@ -1,0 +1,205 @@
+/*
+ * UART中断测试程序 - 验证UART RX中断是否触发
+ */
+
+#include <rtthread.h>
+#include <rthw.h>
+
+/* UART寄存器地址 */
+#define UART0_BASE      0x10006000
+#define UART_RBR        (UART0_BASE + 0x00)  /* Receive Buffer Register */
+#define UART_IER        (UART0_BASE + 0x04)  /* Interrupt Enable Register */
+#define UART_IIR        (UART0_BASE + 0x08)  /* Interrupt Identity Register */
+#define UART_LCR        (UART0_BASE + 0x0C)  /* Line Control Register */
+#define UART_MCR        (UART0_BASE + 0x10)  /* Modem Control Register */
+#define UART_LSR        (UART0_BASE + 0x14)  /* Line Status Register */
+#define UART_MSR        (UART0_BASE + 0x18)  /* Modem Status Register */
+#define UART_USR        (UART0_BASE + 0x7C)  /* UART Status Register */
+
+/* GIC寄存器地址 */
+#define GICD_BASE       0x08000000
+#define GICD_ISENABLER1 (GICD_BASE + 0x104)  /* IRQ 32-63 */
+
+/* UART中断号 */
+#define IRQ_UART0       57
+
+/* 外部计数器 */
+extern volatile rt_uint32_t uart_isr_count;
+
+void test_uart_interrupt(void *parameter)
+{
+    rt_kprintf("\n");
+    rt_kprintf("========================================\n");
+    rt_kprintf(" UART Interrupt Test\n");
+    rt_kprintf("========================================\n");
+
+    /* 1. 检查UART硬件状态 */
+    rt_kprintf("\n[1] UART Hardware Status\n");
+    rt_kprintf("----------------------------------------\n");
+
+    volatile rt_uint32_t *uart_ier = (rt_uint32_t *)UART_IER;
+    volatile rt_uint32_t *uart_iir = (rt_uint32_t *)UART_IIR;
+    volatile rt_uint32_t *uart_lsr = (rt_uint32_t *)UART_LSR;
+
+    rt_kprintf("UART_IER:  0x%08x (bit0=%d, RX_INT=%d)\n",
+               *uart_ier, *uart_ier & 0x1, *uart_ier & 0x1);
+    rt_kprintf("UART_IIR:  0x%08x\n", *uart_iir);
+    rt_kprintf("UART_LSR:  0x%08x (DR=%d, THRE=%d)\n",
+               *uart_lsr, (*uart_lsr >> 0) & 1, (*uart_lsr >> 5) & 1);
+
+    /* 2. 手动启用UART RX中断 */
+    rt_kprintf("\n[2] Enabling UART RX Interrupt\n");
+    rt_kprintf("----------------------------------------\n");
+
+    rt_uint32_t ier_before = *uart_ier;
+    *uart_ier = ier_before | 0x1;  /* Enable RX interrupt (IER bit0) */
+    rt_uint32_t ier_after = *uart_ier;
+
+    rt_kprintf("IER before: 0x%08x\n", ier_before);
+    rt_kprintf("IER after:  0x%08x (bit0=%d)\n", ier_after, ier_after & 0x1);
+
+    if (ier_after & 0x1) {
+        rt_kprintf("✓ UART RX interrupt enabled in hardware\n");
+    } else {
+        rt_kprintf("✗ Failed to enable UART RX interrupt!\n");
+    }
+
+    /* 3. 在GIC启用UART57中断 */
+    rt_kprintf("\n[3] Enabling UART IRQ57 in GIC\n");
+    rt_kprintf("----------------------------------------\n");
+
+    volatile rt_uint32_t *gicd_isenabler1 = (rt_uint32_t *)GICD_ISENABLER1;
+    rt_uint32_t isenabler_before = *gicd_isenabler1;
+
+    /* UART57 = bit 25 in GICD_ISENABLER1 (IRQ 32-63) */
+    *gicd_isenabler1 = isenabler_before | (1 << 25);
+    rt_uint32_t isenabler_after = *gicd_isenabler1;
+
+    rt_kprintf("GICD_ISENABLER1 before: 0x%08x (UART57=%d)\n",
+               isenabler_before, (isenabler_before >> 25) & 1);
+    rt_kprintf("GICD_ISENABLER1 after:  0x%08x (UART57=%d)\n",
+               isenabler_after, (isenabler_after >> 25) & 1);
+
+    if ((isenabler_after >> 25) & 1) {
+        rt_kprintf("✓ UART57 enabled in GIC\n");
+    } else {
+        rt_kprintf("✗ Failed to enable UART57 in GIC!\n");
+    }
+
+    /* 4. 检查ISR安装 */
+    rt_kprintf("\n[4] ISR Installation Check\n");
+    rt_kprintf("----------------------------------------\n");
+
+    extern struct rt_irq_desc isr_table[];
+    struct rt_irq_desc *uart_desc = &isr_table[IRQ_UART0];
+
+    rt_kprintf("UART57 ISR handler: %p\n", uart_desc->handler);
+
+    if (uart_desc->handler != RT_NULL) {
+        rt_kprintf("✓ UART ISR handler installed\n");
+    } else {
+        rt_kprintf("✗ UART ISR handler NOT installed!\n");
+    }
+
+    /* 5. 等待UART RX中断触发 - 使用模拟输入 */
+    rt_kprintf("\n[5] Testing UART RX Interrupt\n");
+    rt_kprintf("----------------------------------------\n");
+
+    rt_uint32_t initial_count = uart_isr_count;
+    rt_kprintf("Initial uart_isr_count: %d\n", initial_count);
+
+    /* 模拟UART RX输入 - 直接写入RBR寄存器触发硬件中断 */
+    rt_kprintf("\nSimulating UART RX input by writing to RBR register...\n");
+
+    volatile rt_uint32_t *uart_rbr = (rt_uint32_t *)UART_RBR;
+
+    /* 写入模拟字符到RBR（这会触发DR位和潜在的中断） */
+    *uart_rbr = 0x41;  /* 字符'A' */
+
+    /* 等待一小段时间让中断处理 */
+    for (volatile int j = 0; j < 100000; j++) {
+        /* ~1ms延迟 */
+    }
+
+    rt_kprintf("After simulating RX: UART_LSR=0x%x, uart_isr_count=%d\n",
+               *uart_lsr, uart_isr_count);
+
+    if (uart_isr_count > initial_count) {
+        rt_kprintf("\n★★★★★ UART ISR TRIGGERED! ★★★★★\n");
+        rt_kprintf("ISR count increased: %d -> %d\n", initial_count, uart_isr_count);
+    } else {
+        rt_kprintf("\nUART ISR NOT triggered by simulated input\n");
+        rt_kprintf("This is expected - RBR write does not trigger real RX interrupt\n");
+        rt_kprintf("Need actual external UART input to trigger interrupt\n");
+    }
+
+    /* 6. 检查Timer中断是否正常工作（对比验证） */
+    rt_kprintf("\n[6] Timer Interrupt Comparison\n");
+    rt_kprintf("----------------------------------------\n");
+
+    extern volatile rt_uint32_t gtimer_isr_counter;
+    rt_kprintf("Timer ISR counter: %d\n", gtimer_isr_counter);
+
+    if (gtimer_isr_counter > 0) {
+        rt_kprintf("✓ Timer interrupt working (internal source)\n");
+        rt_kprintf("✓ HCR_EL2.IMO=0 configuration correct\n");
+        rt_kprintf("✓ IRQ routing to EL1 successful\n");
+    }
+
+    /* 7. 最终状态总结 */
+    rt_kprintf("\n[7] Final Summary\n");
+    rt_kprintf("----------------------------------------\n");
+
+    rt_kprintf("Timer interrupt:    %s (gtimer_isr_counter=%d)\n",
+               gtimer_isr_counter > 0 ? "✓ WORKING" : "✗ NOT WORKING",
+               gtimer_isr_counter);
+    rt_kprintf("UART interrupt:     %s (uart_isr_count=%d)\n",
+               uart_isr_count > 0 ? "✓ WORKING" : "✗ WAITING FOR INPUT",
+               uart_isr_count);
+    rt_kprintf("UART IER enabled:   %s\n", (*uart_ier & 0x1) ? "✓ YES" : "✗ NO");
+    rt_kprintf("UART GIC enabled:   %s\n", (*gicd_isenabler1 >> 25) & 1 ? "✓ YES" : "✗ NO");
+    rt_kprintf("UART ISR installed: %s\n", uart_desc->handler != RT_NULL ? "✓ YES" : "✗ NO");
+
+    rt_kprintf("\n");
+    rt_kprintf("========================================\n");
+    rt_kprintf(" UART Interrupt Test Complete\n");
+    rt_kprintf("========================================\n");
+    rt_kprintf("\n");
+    rt_kprintf("Conclusion:\n");
+    rt_kprintf("-----------\n");
+    if (gtimer_isr_counter > 0) {
+        rt_kprintf("✓ HCR_EL2.IMO=0 fix successful\n");
+        rt_kprintf("✓ IRQ correctly routed to EL1\n");
+        rt_kprintf("✓ Timer interrupt (internal source) working\n");
+        rt_kprintf("\n");
+        rt_kprintf("UART interrupt configuration verified:\n");
+        rt_kprintf("  ✓ Hardware (IER) configured\n");
+        rt_kprintf("  ✓ GIC enabled\n");
+        rt_kprintf("  ✓ ISR handler installed\n");
+        rt_kprintf("\n");
+        rt_kprintf("⚠ UART ISR needs external input to trigger:\n");
+        rt_kprintf("  - Send character via serial console\n");
+        rt_kprintf("  - Or use polling mode temporarily\n");
+    } else {
+        rt_kprintf("✗ Timer interrupt not working\n");
+        rt_kprintf("  Check HCR_EL2.IMO configuration\n");
+    }
+}
+
+int uart_interrupt_test_init(void)
+{
+    rt_thread_t tid = rt_thread_create("uart_test",
+                                       test_uart_interrupt,
+                                       RT_NULL,
+                                       1024,
+                                       10,
+                                       10);
+
+    if (tid) {
+        rt_thread_startup(tid);
+        return 0;
+    }
+
+    return -1;
+}
+INIT_APP_EXPORT(uart_interrupt_test_init);

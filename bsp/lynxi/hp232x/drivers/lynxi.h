@@ -22,17 +22,26 @@
 /*
  * HP232X / KA200 memory layout (two IRAM segments only, no external DDR):
  *
- * IRAM0: 0x04000000 ~ 0x0407FFFF  (512KB, bootcode + rt-thread kernel)
- * IRAM1: 0x100000000 ~ 0x10007FFFF (512KB, stack top-down + heap bottom-up)
+ * IRAM0: 0x04000000 ~ 0x0403FFFF  (前256KB)
+ *   BL2_BOOT: kernel text + data + mmu_table (0x04000020)
+ *   BL3_BOOT: reserved for bootwrapper + SPL
+ * IRAM0: 0x04040000 ~ 0x0407FFFF  (后256KB)
+ *   BL2_BOOT: reserved
+ *   BL3_BOOT: kernel text + data + mmu_table (0x04040020)
  *
- * IRAM1 layout (consistent with hp640_arm SPL and bootwrapper):
- *   0x100000000        heap start (bottom-up)
- *   0x100040000        heap end / BSS boundary
- *   0x100040000+       secondary CPU stacks, page pool
- *   0x10007FFFC        stack top (SPL_STACK, grows downward)
+ * IRAM1: 0x100000000 ~ 0x10003FFFF (前256KB保留) — 不可使用
+ * IRAM1: 0x100040000 ~ 0x10007FFFF (后256KB可用) — stack + heap + page pool
  *
- * The chip boots directly from bootcode in IRAM0, then jumps to rt-thread.
- * No bootwrapper / SPL / u-boot is involved.
+ * IRAM1 layout:
+ *   0x100040000        CPU stacks + early data (~64KB)
+ *   0x100050000        .bss section start
+ *   0x100071000        page pool start (16KB)
+ *   0x100075000        heap start (32KB)
+ *   0x10007FFFC        stack top (IRAM1_STACK_TOP, grows downward)
+ *
+ * The chip boots from bootcode in IRAM0, then jumps to rt-thread.
+ * Bootwrapper (pre_entry.S) initializes GICv3 + EL3→EL2→EL1.
+ * No U-Boot SPL is used — bootwrapper directly boots RT-Thread kernel.
  */
 
 /* base address — peripherals sit at 0x08000000 (same interconnect as HE200) */

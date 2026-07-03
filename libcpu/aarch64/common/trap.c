@@ -16,6 +16,112 @@
 #include "interrupt.h"
 #include "mm_aspace.h"
 
+extern void early_putc_direct(char c);
+
+static void early_puts_direct(const char *str)
+{
+    while (*str)
+    {
+        early_putc_direct(*str++);
+    }
+}
+
+static void early_puthex64(unsigned long value)
+{
+    char hex[17];
+    hex[16] = '\0';
+
+    for (int i = 15; i >= 0; i--)
+    {
+        hex[i] = "0123456789abcdef"[value & 0xf];
+        value >>= 4;
+    }
+    early_puts_direct(hex);
+}
+
+void rt_hw_irq_entry_debug(void)
+{
+    early_puts_direct("IRQ entry\n");
+}
+
+void rt_hw_irq_entry_step_debug(unsigned long step)
+{
+    early_puts_direct("IRQ step=0x");
+    early_puthex64(step);
+    early_putc_direct('\n');
+}
+
+void rt_hw_entry_step_debug(unsigned long step)
+{
+    early_puts_direct("ENTRY step=0x");
+    early_puthex64(step);
+    early_putc_direct('\n');
+}
+
+extern unsigned long rt_interrupt_from_thread;
+extern unsigned long rt_interrupt_to_thread;
+extern unsigned long rt_thread_switch_interrupt_flag;
+
+void rt_hw_irq_exit_debug(unsigned long elr, unsigned long spsr, void *sp)
+{
+    unsigned long *stack = sp;
+
+    early_puts_direct("IRQ exit: ELR=0x");
+    early_puthex64(elr);
+    early_puts_direct(" SPSR=0x");
+    early_puthex64(spsr);
+    early_puts_direct(" SP=0x");
+    early_puthex64((unsigned long)sp);
+    early_putc_direct('\n');
+
+    early_puts_direct("stack[0..1]=0x");
+    early_puthex64(stack[0]);
+    early_puts_direct(" 0x");
+    early_puthex64(stack[1]);
+    early_putc_direct('\n');
+}
+
+void rt_hw_irq_sched_debug(unsigned long flag)
+{
+    early_puts_direct("irq_sched flag=0x");
+    early_puthex64(flag);
+    early_putc_direct('\n');
+}
+
+void rt_hw_context_switch_interrupt_before_debug(void)
+{
+    early_puts_direct("ctx_switch_irq before: flag=0x");
+    early_puthex64(rt_thread_switch_interrupt_flag);
+    early_puts_direct(" from=0x");
+    early_puthex64(rt_interrupt_from_thread);
+    early_puts_direct(" to=0x");
+    early_puthex64(rt_interrupt_to_thread);
+    early_putc_direct('\n');
+}
+
+void rt_hw_context_switch_interrupt_after_debug(void)
+{
+    early_puts_direct("ctx_switch_irq after:  flag=0x");
+    early_puthex64(rt_thread_switch_interrupt_flag);
+    early_puts_direct(" from=0x");
+    early_puthex64(rt_interrupt_from_thread);
+    early_puts_direct(" to=0x");
+    early_puthex64(rt_interrupt_to_thread);
+    early_putc_direct('\n');
+}
+
+void rt_hw_context_switch_interrupt_do_before_debug(void)
+{
+    early_puts_direct("ctx_switch_irq_do before\n");
+}
+
+void rt_hw_context_switch_interrupt_do_after_debug(unsigned long new_sp)
+{
+    early_puts_direct("ctx_switch_irq_do after new_sp=0x");
+    early_puthex64(new_sp);
+    early_putc_direct('\n');
+}
+
 #define DBG_TAG "libcpu.trap"
 #define DBG_LVL DBG_LOG
 #include <rtdbg.h>
@@ -237,11 +343,16 @@ static void _rt_hw_trap_irq(rt_interrupt_context_t irq_context)
     rt_isr_handler_t isr_func;
     extern struct rt_irq_desc isr_table[];
 
+    early_puts_direct("IRQ get_irq call\n");
     ir = rt_hw_interrupt_get_irq();
+    early_puts_direct("IRQ get_irq ret=0x");
+    early_puthex64(ir);
+    early_putc_direct('\n');
 
     if (ir == 1023)
     {
         /* Spurious interrupt */
+        early_puts_direct("IRQ spurious\n");
         return;
     }
 
@@ -260,12 +371,26 @@ static void _rt_hw_trap_irq(rt_interrupt_context_t irq_context)
     {
         /* Interrupt for myself. */
         param = isr_table[ir_self].param;
+
+        early_puts_direct("IRQ handler=0x");
+        early_puthex64((unsigned long)isr_func);
+        early_puts_direct(" irq=0x");
+        early_puthex64(ir_self);
+        early_putc_direct('\n');
+
         /* turn to interrupt service routine */
         isr_func(ir_self, param);
+
+        early_puts_direct("IRQ handler done\n");
+    }
+    else
+    {
+        early_puts_direct("IRQ no handler\n");
     }
 
     /* end of interrupt */
     rt_hw_interrupt_ack(ir);
+    early_puts_direct("IRQ ack done\n");
 #endif
 }
 #else
@@ -282,9 +407,21 @@ void rt_hw_trap_irq(struct rt_hw_exp_stack *regs)
         .node = RT_SLIST_OBJECT_INIT(this_ctx.node),
     };
 
+    early_puts_direct("IRQ trap enter\n");
     rt_interrupt_context_push(&this_ctx);
     _rt_hw_trap_irq(&this_ctx);
     rt_interrupt_context_pop();
+    early_puts_direct("IRQ trap exit\n");
+}
+
+void rt_hw_exception_entry_debug(void)
+{
+    early_puts_direct("EXC trap entry\n");
+}
+
+void rt_hw_serror_entry_debug(void)
+{
+    early_puts_direct("SError trap entry\n");
 }
 
 #ifdef RT_USING_SMART

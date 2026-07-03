@@ -14,28 +14,19 @@
 
 #include <stdint.h>
 #include "lynxi.h"
-#include "mmu.h"
 #include "ioremap.h"
 
 /*
- * HP232X / KA200 memory layout with constraints (Updated 2026-06-23):
+ * HP232X / KA200 memory layout with constraints (Updated 2026-06-30):
  *
- * Memory Constraints:
- *   IRAM0 (512KB @ 0x04000000): Only use FIRST 256KB (0x04000000-0x0403FFFF)
- *   IRAM0 (512KB @ 0x04000000): LAST 256KB (0x04040000-0x0407FFFF) RESERVED
- *   IRAM1 (512KB @ 0x100000000): FIRST 256KB (0x100000000-0x10003FFFF) RESERVED
- *   IRAM1 (512KB @ 0x100000000): Only use LAST 256KB (0x100040000-0x10007FFFF)
+ * IRAM0 (512KB @ 0x04000000):
+ *   BL21_BOOT mode:  FIRST 256KB (0x04000000-0x0403FFFF) USABLE
+ *   BL22_BOOT mode:  LAST  256KB (0x04040000-0x0407FFFF) USABLE
+ *   Other half is RESERVED for bootcode/SPL space.
  *
- * IRAM0 Usage (0x04000000-0x0403FFFF, 256KB):
- *   0x04000000-0x0400001F: PCIe Boot Header (32B)
- *   0x04000020-...: kernel text + rodata + data + mmu_table (~240KB)
- *
- * IRAM1 Usage (0x100040000-0x10007FFFF, 256KB):
- *   0x100040000-0x10004FFFF: CPU stacks + early data (~64KB)
- *   0x100050000-...: .bss section (linked)
- *   page pool: 16KB (after .bss)
- *   heap: 48KB (after page pool)
- *   stack top: 0x10007FFFC (grows downward)
+ * IRAM1 (512MB @ 0x100000000):
+ *   FIRST  256KB (0x100000000-0x10003FFFF) RESERVED
+ *   LAST   256KB (0x100040000-0x10007FFFF) USABLE
  *
  * No external DDR; the chip boots directly from bootcode in IRAM0
  * and jumps to rt-thread at the entry point.
@@ -46,11 +37,18 @@
 #define IRAM0_SIZE      0x00080000UL   /* 512 KB */
 #define IRAM0_END       (IRAM0_START + IRAM0_SIZE)
 
-/* Memory Constraint: IRAM0 only use FIRST 256KB */
-#define IRAM0_USE_START 0x04000000UL
-#define IRAM0_USE_SIZE  0x00040000UL   /* 256 KB - usable */
-#define IRAM0_USE_END   (IRAM0_USE_START + IRAM0_USE_SIZE)
-#define IRAM0_RESERVED_START IRAM0_USE_END
+/* Memory Constraint: IRAM0 usable region controlled by BL1_BOOT macro */
+#ifdef BSP_USING_HP232X_BL21
+/* BL21 mode: kernel at 0x04000020, bootcode jumps directly */
+#define IRAM0_USE_START  0x04000000UL
+#define IRAM0_RESERVED_START (IRAM0_USE_START + IRAM0_USE_SIZE)
+#else
+/* BL22 mode: kernel at 0x04040020, reserved first 256KB for bootwrapper+SPL */
+#define IRAM0_USE_START  0x04040000UL
+#define IRAM0_RESERVED_START 0x04000000UL
+#endif
+#define IRAM0_USE_SIZE   0x00040000UL   /* 256 KB - usable */
+#define IRAM0_USE_END    (IRAM0_USE_START + IRAM0_USE_SIZE)
 #define IRAM0_RESERVED_SIZE 0x00040000UL   /* 256 KB - reserved */
 
 #define IRAM1_START     0x100000000ULL
@@ -66,11 +64,14 @@
 #define IRAM1_USE_END   (IRAM1_USE_START + IRAM1_USE_SIZE)
 
 /* IRAM1 detailed layout within usable 256KB (0x100040000-0x10007FFFF) */
-#define IRAM1_STACK_AREA_START 0x100040000ULL  /* CPU stacks + early data (~64KB) */
-#define IRAM1_BSS_START        0x100050000ULL  /* .bss section start */
-
-/* Stack configuration — MUST be in IRAM1 high 256KB (after 0x100040000) */
-#define IRAM1_STACK_TOP     0x10007FFFCULL   /* Stack top at IRAM1 end - 4 bytes, grows downward */
+/* Unified stack area: 0x100069000-0x10007FFF0 (92KB) — grows DOWN from top */
+/* Other segments unchanged: BSS, Page pool, Heap */
+#define IRAM1_BSS_START        0x100050000ULL  /* .bss section start (52KB) */
+#define IRAM1_PAGE_START       0x10005D000ULL  /* Page pool start (16KB) */
+#define IRAM1_HEAP_START       0x100061000ULL  /* Heap start (32KB) */
+#define IRAM1_HEAP_END         0x100069000ULL  /* Heap end = Stack bottom */
+#define IRAM1_STACK_BOTTOM     0x100069000ULL  /* Stack area starts here */
+#define IRAM1_STACK_TOP        0x10007FFF0ULL  /* Stack top (92KB, grows DOWN) */
 
 /* Mailbox for secondary CPU spin-table — in IRAM0 (bootwrapper mbox_address=0x401ff00) */
 #define MBOX_ADDRESS         0x0401FF00ULL    /* bootwrapper mbox in IRAM0, NOT IRAM1 */
@@ -82,10 +83,18 @@
 
 extern int __bss_end;
 
+/* Heap and page pool sizes — must fit within IRAM1 usable 256KB */
 #define PAGE_POOL_SIZE          0x4000UL    /* 16KB */
-#define HEAP_POOL_SIZE          0x24000UL    /* 144KB - maximum safe value */
+#define HEAP_POOL_SIZE          0x08000UL    /* 32KB */
 
-#define KERNEL_VADDR_START 0
+/* Kernel text/data base address — depends on BL2_BOOT macro */
+#ifdef BSP_USING_HP232X_BL21
+#define KERNEL_VADDR_START     0x04000020UL
+#define IRAM0_KERNEL_BASE      0x04000000UL
+#else
+#define KERNEL_VADDR_START     0x04040020UL
+#define IRAM0_KERNEL_BASE      0x04040000UL
+#endif
 
 void rt_hw_board_init(void);
 

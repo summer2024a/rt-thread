@@ -76,6 +76,9 @@ rt_hw_context_switch:
 rt_hw_context_switch_interrupt:
     ldr     x6, =rt_thread_switch_interrupt_flag
     ldr     x7, [x6]
+    mov     x0, x7
+    bl      rt_hw_context_switch_interrupt_before_debug
+    ldr     x7, [x6]
     cmp     x7, #1
     b.eq     _reswitch
 
@@ -96,6 +99,7 @@ rt_hw_context_switch_interrupt:
 _reswitch:
     ldr     x6, =rt_interrupt_to_thread     // set rt_interrupt_to_thread
     str     x1, [x6]
+    bl      rt_hw_context_switch_interrupt_after_debug
     ret
 
 .globl rt_hw_context_switch_interrupt_do
@@ -107,6 +111,8 @@ rt_hw_context_switch_interrupt_do:
     clrex
     SAVE_CONTEXT_SWITCH_FAST
 
+    bl      rt_hw_context_switch_interrupt_do_before_debug
+
     ldr     x3,  =rt_interrupt_from_thread
     ldr     x4,  [x3]
     mov     x0,  sp
@@ -115,6 +121,11 @@ rt_hw_context_switch_interrupt_do:
     ldr     x3,  =rt_interrupt_to_thread
     ldr     x4,  [x3]
     ldr     x0,  [x4]       // get new task's stack pointer
+    mov     x19, x0
+    mov     x0, x19
+    bl      rt_hw_context_switch_interrupt_do_after_debug
+    mov     x0, x19
+    mov     sp, x0
 
     RESTORE_CONTEXT_SWITCH x0
     NEVER_RETURN

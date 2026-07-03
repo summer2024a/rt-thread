@@ -21,7 +21,6 @@
 #include <rtconfig.h>
 #include "board.h"
 #include "drv_uart.h"
-#include "hp232x_mmu.h"
 
 #include "cp15.h"
 #include <mmu.h>
@@ -119,6 +118,30 @@ static void system_vectors_init(void)
 }
 #endif
 
+extern size_t MMUTable[];
+
+/* ===== HP232X专用MMU页表（放置在IRAM0） ===== */
+/*
+ * CRITICAL: 页表必须放在IRAM0的.mmu_table section
+ * 原因：IRAM0地址<4GB，MMU启用前后都可安全访问
+ * 虽然ARMv8-A在无MMU时可访问IRAM1（40-bit PA），但IRAM0更安全
+ */
+#define HP232X_PGD_SIZE   512   /* Level 0: 512 entries covering 512GB each */
+#define HP232X_PUD_SIZE   512   /* Level 1: 512 entries covering 1GB each */
+#define HP232X_PMD_SIZE   512   /* Level 2: 512 entries covering 2MB each */
+
+/* Level 0 page table (PGD) - in IRAM0 .mmu_table section */
+rt_size_t hp232x_pgd[HP232X_PGD_SIZE] __attribute__((section(".mmu_table"), aligned(4096)));
+
+/* Level 1 page table (PUD) for region 0 (0-512GB) - in IRAM0 */
+static rt_size_t pud_table_0[HP232X_PUD_SIZE] __attribute__((section(".mmu_table"), aligned(4096)));
+
+/* Level 2 page table (PMD) for fine-grained mapping of 0GB-1GB region
+ * Each entry covers 2MB, total 512 entries = 1GB
+ * This allows mixing Normal Memory (IRAM0) and Device Memory (GIC/UART)
+ */
+static rt_size_t pmd_table_0[HP232X_PMD_SIZE] __attribute__((section(".mmu_table"), aligned(4096)));
+
 static rt_region_t init_page_region = {0, 0};
 
 static rt_ubase_t hp232x_align_page(rt_ubase_t addr)
@@ -176,11 +199,196 @@ void rt_hw_board_init(void)
     init_page_region.start = page_start;
     init_page_region.end = page_end;
 
-    rt_kprintf("IRAM1: bss@%lx-%lx page@%lx-%lx heap@%lx-%lx",
+    LOG_I("IRAM1: bss@%lx-%lx page@%lx-%lx heap@%lx-%lx",
           bss_start, bss_end, page_start, page_end, heap_start, heap_end);
 
-    LOG_I("[board] STEP1: HP232X MMU initialization");
-    hp232x_mmu_init();
+    /* ===== MMU配置 - 简化方案 ===== */
+    LOG_I("[board] STEP1: Manual MMU setup (3-level page tables in IRAM0)");
+    /*
+     * HP232X MMU配置方案（简化版）
+     *
+     * Identity mapping策略：
+     *   IRAM0 (0x04000000, 64MB): PMD[32-63], NORMAL_MEM
+     *   GIC  (0x08000000, 128MB): PMD[64-127], DEVICE_MEM
+     *   UART (0x10006000, 256MB区域): PMD[128-255], DEVICE_MEM
+     *   IRAM1 (0x100000000, 4GB): PUD[4] 1GB block, NORMAL_MEM
+     *
+     * 页表存储：所有页表在IRAM0 .mmu_table section
+     */
+
+    rt_size_t *pgd = hp232x_pgd;
+    rt_memset(pgd, 0, sizeof(hp232x_pgd));
+    rt_memset(pud_table_0, 0, sizeof(pud_table_0));
+    rt_memset(pmd_table_0, 0, sizeof(pmd_table_0));
+
+    /* Step 1: PGD → PUD links
+     * ARMv8-A page table addressing (4KB granule):
+     *   PGD index = (VA >> 39) & 0x1FF  (bits [47:39], each covers 512GB)
+     *   PUD index = (VA >> 30) & 0x1FF  (bits [38:30], each covers 1GB)
+     *   PMD index = (VA >> 21) & 0x1FF  (bits [29:21], each covers 2MB)
+     *
+     * IRAM1 @ 0x100000000 (4GB):
+     *   PGD index = (4GB >> 39) = 0 → 在PGD[0]范围(0-512GB)
+     *   PUD index = (4GB >> 30) & 0x1FF = 4 → 在pud_table_0[4]位置
+     */
+    pgd[0] = ((rt_size_t)pud_table_0 & ~0x3FFUL) | MMU_TYPE_TABLE;  /* VA 0-512GB */
+    LOG_D("pgd[0]=0x%lx → pud_table_0 @ 0x%lx", pgd[0], (rt_size_t)pud_table_0);
+
+    /* Step 2: PUD[0] → PMD link (VA 0-1GB, mixed attributes) */
+    pud_table_0[0] = ((rt_size_t)pmd_table_0 & ~0x3FFUL) | MMU_TYPE_TABLE;
+    LOG_D("pud_table_0[0]=0x%lx → pmd_table_0 @ 0x%lx", pud_table_0[0], (rt_size_t)pmd_table_0);
+
+    /* Step 3: PMD entries for VA 0-1GB region
+     * Each PMD entry covers 2MB block
+     * PMD index = phys_addr / 2MB
+     *
+     * Descriptor format:
+     *   descriptor = (pmd_index << 21) | attrs | MMU_TYPE_BLOCK
+     */
+
+    /* PMD[0-31]: VA 0-64MB, DEVICE (unused) */
+    for (int i = 0; i < 32; i++) {
+        pmd_table_0[i] = ((rt_size_t)i << 21) | MMU_MAP_K_DEVICE | MMU_TYPE_BLOCK;
+    }
+
+    /* PMD[32-63]: VA 64-128MB (IRAM0 @ 0x04000000), NORMAL_MEM */
+    for (int i = 32; i < 64; i++) {
+        pmd_table_0[i] = ((rt_size_t)i << 21) | MMU_MAP_K_RWCB | MMU_TYPE_BLOCK;
+    }
+    LOG_D("pmd[32]=0x%lx (IRAM0 start)", pmd_table_0[32]);
+
+    /* PMD[64-127]: VA 128-256MB (GIC @ 0x08000000), DEVICE_MEM */
+    for (int i = 64; i < 128; i++) {
+        pmd_table_0[i] = ((rt_size_t)i << 21) | MMU_MAP_K_DEVICE | MMU_TYPE_BLOCK;
+    }
+    LOG_D("pmd[64]=0x%lx (GIC start)", pmd_table_0[64]);
+
+    /* PMD[128-255]: VA 256-512MB (Peripherals including UART @ 0x10006000), DEVICE_MEM */
+    for (int i = 128; i < 256; i++) {
+        pmd_table_0[i] = ((rt_size_t)i << 21) | MMU_MAP_K_DEVICE | MMU_TYPE_BLOCK;
+    }
+    LOG_D("pmd[128]=0x%lx (UART area)", pmd_table_0[128]);
+
+    /* PMD[256-511]: VA 512MB-1GB, DEVICE (unused) */
+    for (int i = 256; i < 512; i++) {
+        pmd_table_0[i] = ((rt_size_t)i << 21) | MMU_MAP_K_DEVICE | MMU_TYPE_BLOCK;
+    }
+
+    /* Step 4: PUD[1-3]: VA 1-4GB, DEVICE (unused) */
+    for (int i = 1; i < 4; i++) {
+        pud_table_0[i] = ((rt_size_t)i << 30) | MMU_MAP_K_DEVICE | MMU_TYPE_BLOCK;
+    }
+
+    /* Step 5: PUD[4]: VA 4-5GB → PA 4-5GB (IRAM1 @ 0x100000000), NORMAL_MEM
+     * CRITICAL: IRAM1在VA 4GB，位于PGD[0]范围
+     *
+     * VA calculation (ARMv8-A 4KB granule):
+     *   IRAM1 @ 0x100000000 = 4GB (虚拟地址，identity mapping)
+     *   PGD index = (4GB >> 39) & 0x1FF = 0 → 在PGD[0]范围(0-512GB)
+     *   PUD index = (4GB >> 30) & 0x1FF = 4 → 在pud_table_0[4]位置
+     *
+     * Descriptor format (1GB block):
+     *   OA field = bits [47:30] = physical_address_GB_index << 30
+     *   IRAM1物理地址 = 0x100000000 = 4GB
+     *   Physical GB index = 4
+     *
+     * Descriptor = (物理GB_index << 30) | attrs | MMU_TYPE_BLOCK
+     *             = (4 << 30) | MMU_MAP_K_RWCB | 0x1
+     *             = 0x100000601 (期望值)
+     */
+    pud_table_0[4] = (4ULL << 30) | MMU_MAP_K_RWCB | MMU_TYPE_BLOCK;
+    LOG_I("pud_table_0[4]=0x%llx (VA 4GB → PA 4GB, IRAM1)", pud_table_0[4]);
+
+    /* PUD[5-511]: VA 5-512GB, DEVICE (unused) */
+    for (int i = 5; i < 512; i++) {
+        pud_table_0[i] = ((rt_size_t)i << 30) | MMU_MAP_K_DEVICE | MMU_TYPE_BLOCK;
+    }
+
+    /* Verify key descriptors */
+    LOG_I("Page table setup complete:");
+    LOG_I("  pgd[0]=0x%lx (links to pud)", pgd[0]);
+    LOG_I("  pud[0]=0x%lx (links to pmd)", pud_table_0[0]);
+    LOG_I("  pud[4]=0x%llx (IRAM1 block)", pud_table_0[4]);
+    LOG_I("  pmd[32]=0x%lx pmd[64]=0x%lx pmd[128]=0x%lx",
+          pmd_table_0[32], pmd_table_0[64], pmd_table_0[128]);
+
+/* Step 6: Configure MAIR_EL1 (Memory Attribute Indirection Register) */
+    LOG_I("[board] STEP2: Configure MMU registers");
+
+    unsigned long mair = 0x00447fUL;  /* RT-Thread standard value */
+    __asm__ volatile("msr mair_el1, %0" :: "r"(mair) : "memory");
+    __asm__ volatile("isb" ::: "memory");
+
+    /* Verify MAIR_EL1 */
+    unsigned long mair_verify;
+    __asm__ volatile("mrs %0, mair_el1" : "=r"(mair_verify));
+    LOG_I("MAIR_EL1: written=0x%lx read=0x%lx", mair, mair_verify);
+
+    /* Step 7: Configure TCR_EL1 (Translation Control Register)
+     * IPS=2 (40-bit PA, supports IRAM1 @ 4GB)
+     * TG0=0 (4KB granule), SH0=3 (Inner Shareable)
+     * ORGN0=1, IRGN0=1 (Cacheable)
+     */
+    unsigned long tcr = (2UL << 32)    /* IPS=2: 40-bit PA */
+                      | (0UL << 14)    /* TG0=0: 4KB granule */
+                      | (3UL << 12)    /* SH0=3: Inner shareable */
+                      | (1UL << 10)    /* ORGN0=1: Outer Cacheable */
+                      | (1UL << 8)     /* IRGN0=1: Inner Cacheable */
+                      | (0UL << 0);    /* T0SZ=0: 64-bit VA */
+    __asm__ volatile("msr tcr_el1, %0" :: "r"(tcr) : "memory");
+    __asm__ volatile("isb" ::: "memory");
+    LOG_I("TCR_EL1 configured: 0x%lx", tcr);
+
+    /* Step 8: Set TTBR0_EL1 (Translation Table Base Register) */
+    __asm__ volatile("msr ttbr0_el1, %0" :: "r"((unsigned long)pgd) : "memory");
+    __asm__ volatile("isb" ::: "memory");
+    LOG_I("TTBR0_EL1 set to pgd @ 0x%lx", (unsigned long)pgd);
+
+    /* Step 9: Data Synchronization Barrier */
+    __asm__ volatile("dsb sy" ::: "memory");
+
+    /* Step 10: Enable MMU (Phase 1: MMU only, no caches) */
+    LOG_I("[board] STEP3: Enable MMU");
+    unsigned long sctlr;
+    __asm__ volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
+    LOG_I("SCTLR_EL1 before: 0x%lx (M=%d C=%d I=%d)",
+          sctlr, (sctlr & 1) ? 1 : 0, (sctlr & 4) ? 1 : 0, (sctlr & 0x1000) ? 1 : 0);
+
+    sctlr |= 0x1UL;      /* Enable MMU */
+    sctlr &= ~0x4UL;     /* Disable data cache (for safety) */
+    sctlr &= ~0x1000UL;  /* Disable instruction cache */
+
+    LOG_I("Enabling MMU: SCTLR=0x%lx", sctlr);
+    __asm__ volatile("msr sctlr_el1, %0" :: "r"(sctlr));
+    __asm__ volatile("isb" ::: "memory");
+
+    LOG_I("MMU enabled successfully!");
+
+    /* Step 11: Verify MMU and test IRAM1 access */
+    __asm__ volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
+    LOG_I("SCTLR after MMU enable: 0x%lx (M=%d C=%d I=%d)",
+          sctlr, (sctlr & 1) ? 1 : 0, (sctlr & 4) ? 1 : 0, (sctlr & 0x1000) ? 1 : 0);
+
+    /* Test IRAM1 access through MMU */
+    volatile unsigned long *iram1_test = (volatile unsigned long *)0x100040000;
+    (void )*iram1_test;  /* Read to ensure access is valid */
+    LOG_I("IRAM1 test: read 0x%lx from 0x100040000", (unsigned long)*iram1_test);
+
+    /* Step 12: Enable caches (Phase 2) */
+    LOG_I("[board] STEP4: Enable caches");
+    sctlr |= 0x4UL;     /* Enable data cache */
+    sctlr |= 0x1000UL;  /* Enable instruction cache */
+
+    LOG_I("Enabling caches: SCTLR=0x%lx", sctlr);
+    __asm__ volatile("msr sctlr_el1, %0" :: "r"(sctlr));
+    __asm__ volatile("isb" ::: "memory");
+
+    LOG_I("MMU + caches fully enabled!");
+
+    /* Final verification */
+    __asm__ volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
+    LOG_I("Final SCTLR_EL1: 0x%lx (M=%d C=%d I=%d)",
+          sctlr, (sctlr & 1) ? 1 : 0, (sctlr & 4) ? 1 : 0, (sctlr & 0x1000) ? 1 : 0);
 
     LOG_I("[board] MMU initialization complete - proceeding to heap setup");
 

@@ -5,6 +5,49 @@ import rtconfig
 from rtconfig import RTT_ROOT
 
 sys.path = sys.path + [os.path.join(RTT_ROOT, 'tools')]
+
+# Auto-detect boot mode from rtconfig.h BEFORE importing building
+# BL21: kernel in first 256KB of IRAM0 (0x04000020), IRAM1 last 256KB
+# BL22: kernel in last 256KB of IRAM0 (0x04040020), IRAM1 last 256KB
+_bl22 = False
+_bl21 = False
+try:
+    with open('rtconfig.h', 'r') as f:
+        for line in f:
+            if 'BSP_USING_HP232X_BL22' in line:
+                _bl22 = True
+            if 'BSP_USING_HP232X_BL21' in line and not _bl21:
+                _bl21 = True
+except:
+    pass
+
+if _bl22:
+    IRAM0_KERNEL_BASE = 0x04040020
+    IRAM1_BASE = 0x100050000
+    HEADER_DEST_ADDR = 0x04040000
+    NEXT_OFFSET = 0x0
+    MODE_DESC = "BL22 (kernel at 0x04040020, IRAM1 last 256KB)"
+elif _bl21:
+    IRAM0_KERNEL_BASE = 0x04000020
+    IRAM1_BASE = 0x100050000
+    HEADER_DEST_ADDR = 0x04000020
+    NEXT_OFFSET = 0x20000
+    MODE_DESC = "BL21 (kernel at 0x04000020, IRAM1 last 256KB)"
+else:
+    # Default: BL21 mode
+    IRAM0_KERNEL_BASE = 0x04000020
+    IRAM1_BASE = 0x100050000
+    HEADER_DEST_ADDR = 0x04000020
+    NEXT_OFFSET = 0x20000
+    MODE_DESC = "BL2 (default)"
+
+print(f"\n{'='*60}")
+print(f"  HP232X Boot Mode: {MODE_DESC}")
+print(f"  IRAM0_KERNEL_BASE: 0x{IRAM0_KERNEL_BASE:08X}")
+print(f"  IRAM1_BASE:        0x{IRAM1_BASE:08X}")
+print(f"  Header dest addr:  0x{HEADER_DEST_ADDR:08X}")
+print(f"{'='*60}\n")
+
 from building import *
 
 TARGET = 'rtthread.' + rtconfig.TARGET_EXT
@@ -17,8 +60,8 @@ env = Environment(tools = ['mingw'],
     AR   = rtconfig.AR, ARFLAGS = '-rc',
     LINK = rtconfig.LINK, LINKFLAGS = rtconfig.LFLAGS)
 env.PrependENVPath('PATH', rtconfig.EXEC_PATH)
-env['ASCOM'] = env['ASPPCOM']
-env['LINKCOM'] = '$LINK -o $TARGET $LINKFLAGS $__RPATH $SOURCES $_LIBDIRFLAGS -Wl,--start-group $_LIBFLAGS -Wl,--end-group'
+
+env['LINKCOM'] = '$LINK -o $TARGET $LINKFLAGS $__RPATH $SOURCES $_LIBDIRFLAGS -Wl,--defsym,IRAM0_KERNEL_BASE=0x{:X} -Wl,--defsym,IRAM1_BASE=0x{:X} -Wl,--start-group $_LIBFLAGS -Wl,--end-group'.format(IRAM0_KERNEL_BASE, IRAM1_BASE)
 
 Export('RTT_ROOT')
 Export('rtconfig')
@@ -31,7 +74,9 @@ DoBuilding(TARGET, objs)
 
 image_cmd = (
     "python3 mkimage.py rtthread.bin rtthread-header.bin "
-    "--dest-addr 0x04000020 --next-offset 0x20000 "
+    "--dest-addr 0x{:X} --next-offset 0x{:X} ".format(HEADER_DEST_ADDR, NEXT_OFFSET) +
     "--elf rtthread.elf"
 )
+print(f"[SConstruct] image_cmd: {image_cmd}")
 env.AddPostAction(TARGET, image_cmd)
+

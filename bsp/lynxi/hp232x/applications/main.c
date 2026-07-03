@@ -14,7 +14,8 @@
 
 int main(int argc, char** argv)
 {
-    rt_kprintf("Hi, this is RT-Thread!!\n");
+    rt_kprintf("\nHi, this is RT-Thread!\n");
     rt_thread_yield();
+
     return 0;
 }

@@ -4,6 +4,11 @@
 /* HP232X BSP - two segment IRAM KA200 */
 #define BSP_USING_HP232X
 
+/* Boot mode: BL21 or BL22 (mutually exclusive)
+ * BL21: kernel runs in first 256KB of IRAM0 (0x04000020), IRAM1 last 256KB
+ * BL22: kernel runs in last 256KB of IRAM0 (0x04040020), IRAM1 last 256KB */
+#define BSP_USING_HP232X_BL22
+
 /* Enable UART debug for boot process tracking */
 #define BSP_USING_HP232X_DEBUG_UART
 
@@ -13,7 +18,9 @@
 /* #define RT_DEBUGING_ASSERT */
 
 /* Use simple spin table for secondary CPUs */
-#define BSP_USING_HP232X_SPIN_TABLE
+/* CRITICAL: This macro disables full IRQ handler, causing interrupts to fail */
+/* DISABLE this to enable proper interrupt handling */
+/* #define BSP_USING_HP232X_SPIN_TABLE */
 
 /* RT-Thread Kernel */
 
@@ -86,8 +93,8 @@
 #define RT_USING_HOOK
 #define RT_HOOK_USING_FUNC_PTR
 /* RT_USING_IDLE_HOOK — disabled to save stack/BSS */
-#define IDLE_THREAD_STACK_SIZE 512
-#define SYSTEM_THREAD_STACK_SIZE 512
+#define IDLE_THREAD_STACK_SIZE 2048  /* CRITICAL: Increased from 512 to prevent Timer ISR stack overflow */
+#define SYSTEM_THREAD_STACK_SIZE 2048  /* Increased from 512 for Timer ISR safety */
 /* RT_USING_TIMER_SOFT — disabled to save code/BSS */
 
 /* kservice options */
@@ -134,7 +141,7 @@
 
 #define ARCH_TEXT_OFFSET 0x0
 #define ARCH_RAM_OFFSET 0x04000000
-#define ARCH_SECONDARY_CPU_STACK_SIZE 768
+#define ARCH_SECONDARY_CPU_STACK_SIZE 4096
 #define ARCH_HAVE_EFFICIENT_UNALIGNED_ACCESS
 #define ARCH_HEAP_SIZE 0x0C000      /* 48KB heap */
 #define ARCH_INIT_PAGE_SIZE 0x04000 /* 16KB page pool */
@@ -153,22 +160,23 @@
 
 #define RT_USING_COMPONENTS_INIT
 #define RT_USING_USER_MAIN
-#define RT_MAIN_THREAD_STACK_SIZE 2048  /* Increased from 1024 to prevent stack overflow with scheduling */
-#define RT_MAIN_THREAD_PRIORITY 10  /* Higher priority to complete init before shell runs */
-#define RT_USING_MSH
-#define RT_USING_FINSH
-#define FINSH_USING_MSH
-#define FINSH_THREAD_NAME "tshell"
-#define FINSH_THREAD_PRIORITY 20
-#define FINSH_THREAD_STACK_SIZE 2048  /* Increased from 1KB to 2KB for input handling */
-#define FINSH_USING_HISTORY
-#define FINSH_HISTORY_LINES 3
-#define FINSH_USING_SYMTAB
-#define FINSH_CMD_SIZE 64
-#define MSH_USING_BUILT_IN_COMMANDS
-/* FINSH_USING_DESCRIPTION — disabled to save rodata */
-#define FINSH_ARG_MAX 10
-/* FINSH_USING_OPTION_COMPLETION — disabled to save memory */
+#define RT_MAIN_THREAD_STACK_SIZE 4096  /* Increased from 2048 to accommodate rt_components_init + pmon thread creation */
+#define RT_MAIN_THREAD_PRIORITY 10
+/* Disable FINSH/Shell - UART RX interrupt not working */
+/* #define RT_USING_MSH */
+/* #define RT_USING_FINSH */
+/* #define FINSH_USING_MSH */
+/* #define FINSH_THREAD_NAME "tshell" */
+/* #define FINSH_THREAD_PRIORITY 21 */
+/* #define FINSH_THREAD_STACK_SIZE 2048 */
+/* #define FINSH_USING_HISTORY */
+/* #define FINSH_HISTORY_LINES 5 */
+/* #define FINSH_USING_SYMTAB */
+/* #define FINSH_CMD_SIZE 80 */
+/* #define MSH_USING_BUILT_IN_COMMANDS */
+/* #define FINSH_USING_DESCRIPTION */
+/* #define FINSH_ARG_MAX 10 */
+/* #define FINSH_USING_OPTION_COMPLETION */
 
 /* DFS — disabled; serial driver uses rt_device API directly, shell uses rt_device_read/write */
 
@@ -181,6 +189,7 @@
 #define RT_USING_SERIAL
 #define RT_USING_SERIAL_V1
 #define RT_SERIAL_RB_BUFSZ 128
+/* #define RT_USING_INTERRUPT_INFO */  /* Disabled: causes isr_table BSS overflow (2026-06-29 fix) */
 /* RT_USING_CLOCK_TIME — disabled to save code */
 /* RT_USING_NULL — disabled to save code */
 /* RT_USING_ZERO — disabled to save code */

@@ -3,19 +3,20 @@
 ## 内存约束
 
 ### HP232X硬件限制
-- IRAM0: 前256KB可用 (0x04000000-0x0403FFFF)
-- IRAM0: 后256KB保留 (0x04040000-0x0407FFFF)
-- IRAM1: 前256KB保留 (0x100000000-0x10003FFFF)
-- IRAM1: 后256KB可用 (0x100040000-0x10007FFFF)
+- IRAM0: 前256KB保留 (0x04000000-0x0403FFFF) — bootwrapper + SPL
+- IRAM0: 后256KB可用 (0x04040000-0x0407FFFF) — kernel text/data/mmu_table
+- IRAM1: 前256KB保留 (0x100000000-0x10003FFFF) — 不可使用
+- IRAM1: 后256KB可用 (0x100040000-0x10007FFFF) — BSS + heap + stack
 
 ### 页表位置要求
 - 页表必须放在IRAM0（避免跨4GB边界）
 - 需要12KB页表空间（PGD 4KB + PUD 4KB + PMD 4KB）
+- 页表放在 `.mmu_table` section，链接在 IRAM0 后256KB 内
 
 ## 页表配置方案
 
 ### Identity Mapping策略
-- IRAM0 @ 0x04000000：Normal Memory（WB Cache）
+- IRAM0 @ 0x04040000：Normal Memory（WB Cache）— **后256KB**
 - IRAM1 @ 0x100000000：Normal Memory（WB Cache）
 - GIC @ 0x08000000：Device Memory（nGnRnE）
 - UART @ 0x10006000：Device Memory
@@ -30,10 +31,15 @@ PUD (Level 1, 512 entries):
   PUD[4] → 1GB block for IRAM1 (VA 4GB, PA 4GB)
 
 PMD (Level 2, 512 entries):
-  PMD[32-35] → IRAM0 (64MB-72MB, Normal)
-  PMD[64-71] → GIC (128MB-144MB, Device)
-  PMD[128] → UART (256MB, Device)
+  PMD[258-259] → IRAM0 (0x04040000-0x04080000, Normal)
+  PMD[64-127] → GIC (128MB-256MB, Device)
+  PMD[128-255] → UART/peripherals (256MB-512MB, Device)
 ```
+
+**IRAM0 PMD索引计算**：
+- PMD index = VA >> 21（每个PMD条目覆盖2MB）
+- IRAM0 @ 0x04040000: PMD[258] = 0x04040000 >> 21
+- IRAM0 end @ 0x04080000: PMD[259]
 
 ## Descriptor格式
 
@@ -56,8 +62,8 @@ Type:
 // IRAM1 @ 4GB (1GB block)
 pud_table[4] = (4 << 30) | 0x600 | 0x1 = 0x100000601
 
-// IRAM0 @ 64MB (2MB block)
-pmd_table[32] = (32 << 21) | 0x600 | 0x1 = 0x04000601
+// IRAM0 @ 0x04040000 (2MB block, PMD[258])
+pmd_table[258] = (258 << 21) | 0x600 | 0x1 = 0x04080601
 
 // GIC @ 128MB (Device memory)
 pmd_table[64] = (64 << 21) | 0x602 | 0x1 = 0x08000602
@@ -87,7 +93,7 @@ MMU_MAP_K_DEVICE = AF=1, SH=Outer, AP=RW@EL1, MA=2
 ### Translation Control Register
 ```c
 TCR_EL1配置:
-  IPS=0: 32-bit Physical Address
+  IPS=2: 40-bit Physical Address (支持IRAM1 @ 0x100000000)
   TG0=4KB: Granule size
   SH0=InnerShareable: Shareability
   ORGN0/IRGN0=Normal WB: Cacheability
@@ -106,19 +112,19 @@ IRGN0 (bits [9:8]): Inner Cacheability
 
 ### 分阶段启用（避免异常）
 ```assembly
-// Phase 1: 设置TTBR0
-ldr     x0, =pgd_base
-msr     ttbr0_el1, x0
-isb
-
-// Phase 2: 设置MAIR_EL1
+// Phase 1: 设置MAIR_EL1
 ldr     x0, =0x00447f
 msr     mair_el1, x0
 isb
 
-// Phase 3: 设置TCR_EL1
+// Phase 2: 设置TCR_EL1 (IPS=2 for 40-bit PA)
 ldr     x0, =tcr_config
 msr     tcr_el1, x0
+isb
+
+// Phase 3: 设置TTBR0
+ldr     x0, =pgd_base
+msr     ttbr0_el1, x0
 isb
 
 // Phase 4: 启用MMU（不启用Cache）
@@ -133,13 +139,20 @@ orr     x0, x0, #0x4              /* Data Cache */
 orr     x0, x0, #0x1000           /* Instruction Cache */
 msr     sctlr_el1, x0
 isb
+
+// Phase 6: 切换IRAM1栈
+movz    x0, #0xfffc, lsl #0       /* bits 0-15 */
+movk    x0, #0x7, lsl #16         /* bits 16-31 */
+movk    x0, #0x1, lsl #32         /* bits 32-47 */
+mov     sp, x0                    /* sp = 0x10007FFFC */
+isb
 ```
 
 ## 调试要点
 
 ### 1. 页表对齐
 - PGD/PUD/PMD必须4KB对齐（.align 12）
-- 使用section(".mmu_table")确保位置
+- 使用section(".mmu_table")确保位置在IRAM0
 
 ### 2. Descriptor计算
 ```c
@@ -150,9 +163,10 @@ pud_table[4] = 0x100000000 | MMU_MAP_K_RWCB | MMU_TYPE_BLOCK;
 pud_table[4] = (4 << 30) | 0x600 | 0x1;
 ```
 
-### 3. IRAM1访问
-- CPU可以在MMU未启用时访问IRAM1（40-bit物理地址）
-- MMU启用后需要正确映射
+### 3. IRAM0地址变更
+- IRAM0 kernel 从 0x04000000 移到 0x04040000
+- PMD索引从 [32-63] 变为 [258-259]
+- 页表仍放在IRAM0 `.mmu_table` section
 
 ### 4. TLB维护
 ```assembly
@@ -164,19 +178,25 @@ isb
 
 ## 调试标记解读
 
-**board.c输出**：`IBKMPDUATB1RCG`
+**board.c输出**：`1ABCDEFGHIJKLMNOPQRSTXYABCDE...`
 
 | 标记 | 含义 | 检查点 |
 |------|------|--------|
-| I/B/K | LOG_I输出 | C代码执行 |
-| M | MMU初始化开始 | 页表配置 |
-| P/D | PMD配置完成 | 2MB块映射 |
-| U/A | PUD配置完成 | 1GB块映射 |
-| T | TCR_EL1配置 | Translation控制 |
-| B | MMU启用前 | SCTLR_EL1.M=0 |
-| 1 | MMU已启用 ✅ | SCTLR_EL1.M=1 |
-| R | IRAM1访问测试 | 4GB边界验证 |
-| C | Cache已启用 ✅ | SCTLR_EL1.C/I=1 |
+| 1 | MMU配置开始 | 页表清零 |
+| A/B/C/D | PMD配置 | IRAM0/GIC/UART映射 |
+| E | PUD loop完成 | |
+| F | IRAM1 PUD[4] | 4GB边界映射 |
+| G/J/K | 验证描述符 | |
+| L | MAIR_EL1 | 内存属性 |
+| M | MAIR验证 | |
+| N | TCR_EL1 | IPS=2 (40-bit PA) |
+| O | TTBR0_EL1 | 页表基址 |
+| P/Q | MMU Phase 1 | SCTLR_EL1.M=1 |
+| R/S | MMU启用完成 | |
+| T/X/Y | BSS清零 | IRAM1 40-bit PA |
+| A/B/C | 栈切换 | sp=0x10007FFFC |
+| D/E | Heap init | |
+| F/G/H | GIC init | |
 
 ## 常见问题
 
@@ -184,15 +204,19 @@ isb
 **原因**：页表Descriptor格式错误或未对齐
 **解决**：检查Descriptor计算和页表对齐
 
-### 2. 无法访问IRAM1
-**原因**：未正确映射4GB边界
-**解决**：PUD[4]配置1GB块映射
+### 2. 无法访问IRAM0新地址
+**原因**：PMD索引未更新（从32-63改为258-259）
+**解决**：确保 PMD[258-259] 映射 IRAM0 @ 0x04040000
 
-### 3. Cache启用后数据异常
+### 3. 无法访问IRAM1
+**原因**：未正确映射4GB边界
+**解决**：PUD[4]配置1GB块映射，TCR_EL1 IPS=2
+
+### 4. Cache启用后数据异常
 **原因**：Memory Attribute配置错误
 **解决**：检查MAIR_EL1和Descriptor MA field
 
 ## 参考文档
 - ARMv8-A Architecture Reference Manual
-- MMU_DESIGN.md（详细设计）
-- MMU_SUCCESS_SUMMARY.md（成功记录）
+- HANDOFF_SLIM.md（项目进展）
+- TEST_METHODOLOGY.md（测试方法）

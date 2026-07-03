@@ -46,6 +46,34 @@ def run_test():
         link_info = stdout.read().decode().strip()
         print(f"    Symlink: {link_info}")
 
+        # Patch boot-wrapper.bin spl_address based on BL21/BL22 mode
+        # bootcode loads kernel to spl_address, bootwrapper jumps to spl_address + headersize
+        # spl_address must be 4KB aligned (the header occupies the first 32 bytes)
+        print("\n[2b] Patching boot-wrapper.bin for BL2 mode...")
+        # Read dest_addr from the firmware header (offset 0x08, 4 bytes little-endian)
+        stdin, stdout, stderr = ssh.exec_command(
+            "python3 -c 'import struct; f=open(\"/mnt/49.20/rt-thread/bsp/lynxi/hp232x/rtthread-header.bin\",\"rb\"); "
+            "f.seek(8); d=struct.unpack(\"<I\",f.read(4))[0]; f.close(); print(f\"0x{d:08X}\")'"
+        )
+        dest_addr_str = stdout.read().decode().strip()
+        try:
+            dest_addr = int(dest_addr_str, 16)
+        except ValueError:
+            dest_addr = 0x04000000  # fallback to BL21
+        # Align to 4KB (strip lower 12 bits) — bootcode loads at this address,
+        # then jumps to spl_address + headersize (0x20)
+        spl_address = dest_addr & ~0xFFF
+        patch_cmd = f"echo '{SUDO_PASSWORD}' | sudo -S python3 -c 'import struct; f=open(\"/lib/firmware/lyn_drv/boot-wrapper.bin\",\"r+b\"); f.seek(8); f.write(struct.pack(\"<Q\",{spl_address})); f.close(); print(\"Patched spl_address to 0x{spl_address:08X}\")'"
+        stdin, stdout, stderr = ssh.exec_command(patch_cmd)
+        patch_result = stdout.read().decode().strip()
+        print(f"    Header dest_addr: 0x{dest_addr:08X}")
+        print(f"    spl_address (4KB aligned): 0x{spl_address:08X}")
+        print(f"    {patch_result}")
+        if not patch_result:
+            err = stderr.read().decode().strip()
+            if err:
+                print(f"    Error: {err}")
+
         # 清理串口占用
         print("\n[3] Cleaning serial port...")
         stdin, stdout, stderr = ssh.exec_command(
@@ -65,7 +93,7 @@ def run_test():
         transport = ssh.get_transport()
         session = transport.open_session()
         session.get_pty()
-        session.exec_command(f"echo '{SUDO_PASSWORD}' | sudo -S timeout 20 cat /dev/ttyUSB1")
+        session.exec_command(f"echo '{SUDO_PASSWORD}' | sudo -S timeout 30 cat /dev/ttyUSB1")
 
         # 等待监控启动
         time.sleep(2)
@@ -83,7 +111,7 @@ def run_test():
         print("\n[6] Capturing serial output...")
         full_output = ""
         start_time = time.time()
-        timeout = 25  # 20秒监控 + 5秒缓冲
+        timeout = 35  # 20秒监控 + 5秒缓冲
 
         while time.time() - start_time < timeout:
             try:

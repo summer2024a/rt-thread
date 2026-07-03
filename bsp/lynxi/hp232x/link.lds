@@ -10,21 +10,28 @@ PHDRS
 SECTIONS
 {
     /*
-     * HP232X / KA200 — two-segment IRAM layout (Memory Constraints Applied)
+     * HP232X / KA200 - two-segment IRAM layout (Memory Constraints Applied)
      *
-     * IRAM0: 0x04000000 ~ 0x0403FFFF (前256KB可用) — kernel text + data + mmu_table
-     * IRAM0: 0x04040000 ~ 0x0407FFFF (后256KB保留) — 不可使用
-     * IRAM1: 0x100000000 ~ 0x10003FFFF (前256KB保留) — 不可使用
-     * IRAM1: 0x100040000 ~ 0x10007FFFF (后256KB可用) — bss + heap + stack
+     * IRAM0: 0x04000000 ~ 0x0403FFFF (first 256KB)
+     *   BL2_BOOT:  kernel text + data + mmu_table (IRAM0_KERNEL_BASE)
+     *   BL3_BOOT:  RESERVED (bootwrapper + SPL space)
+     * IRAM0: 0x04040000 ~ 0x0407FFFF (last 256KB)
+     *   BL2_BOOT:  RESERVED
+     *   BL3_BOOT:  kernel text + data + mmu_table (IRAM0_KERNEL_BASE)
      *
-    * For EVB PCIe boot mode (non-HAPS):
-    * - Bootcode loads image at 0x04000000
-    * - 32-byte header for bootcode metadata/checks at 0x04000000
-    * - Actual code entry at 0x04000020 (TEXT_START = 0x4000020)
-    * - bootcode reads header, verifies, jumps to 0x04000020
+     * IRAM1: 0x100000000 ~ 0x10003FFFF (first 256KB reserved, unusable)
+     * IRAM1: 0x100040000 ~ 0x10007FFFF (last 256KB usable, bss + heap + stack)
+     *
+     * For EVB PCIe boot mode (BL2_BOOT):
+     * - Bootcode loads image at 0x04000000
+     * - 32-byte header for bootcode metadata/checks at 0x04000000
+     * - Actual code entry at 0x04000020
+     * - bootcode reads header, verifies, jumps to 0x04000020
      */
-    _text_offset = 0x20;
-    . = 0x04000000 + _text_offset;
+
+    /* Kernel base address: IRAM0_KERNEL_BASE passed via --defsym from build system.
+     * IRAM0_KERNEL_BASE already includes the 32-byte bootcode header offset (+0x20). */
+    . = IRAM0_KERNEL_BASE;
     .head :
     {
         KEEP(*(.text.entrypoint))
@@ -32,8 +39,8 @@ SECTIONS
     } :text
 
     /* Reserved space for bootcode header in EVB mode
-     * Skip 32 bytes (0x20) to allow bootcode to place header at 0x04000000
-     * Actual code starts at 0x04000020 for EVB/PCIe boot */
+     * Skip 32 bytes (0x20) to allow bootcode to place header at kernel base
+     * Actual code starts at KERNEL_VADDR_START for EVB/PCIe boot */
     . = . + 0x20;
 
     .text :
@@ -134,12 +141,12 @@ SECTIONS
     /* BSS placed in upper half of IRAM1, keep low 256KB (0x100000000-0x10003FFFF) empty */
     /* Memory constraint: only use IRAM1 upper 256KB (0x100040000-0x10007FFFF) */
     /* Layout: 0x100040000-0x10004FFFF for stacks/early_data, .bss starts at 0x100050000 */
-    .bss 0x100050000 :
+    .bss IRAM1_BASE :
     {
         PROVIDE(__bss_noclean_start = .);
-        EXCLUDE_FILE(*entry_point.o) *(.bss.noclean.*)
-        . = ALIGN(8);
+        *(.bss.noclean.*)
         PROVIDE(__bss_noclean_end = .);
+        . = ALIGN(8);
         PROVIDE(__bss_start = .);
         *(.bss)
         *(.bss.*)

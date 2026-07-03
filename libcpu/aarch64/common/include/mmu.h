@@ -95,7 +95,7 @@ struct mem_desc
 
 #define ARCH_MAP_FAILED ((void *)0x1ffffffffffff)
 
-#define ARCH_EARLY_MAP_SIZE         (0x10000000)
+#define ARCH_EARLY_MAP_SIZE         (0x40000000)
 /* this is big enough for even 16TB first-time mapping */
 #define ARCH_PAGE_INIT_THRESHOLD    (0x10000000)
 

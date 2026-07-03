@@ -1,0 +1,124 @@
+/*
+ * Polling Console - Shell交互的备选方案
+ * 不依赖UART RX中断，直接轮询UART_LSR.DR位
+ */
+
+#include <rtthread.h>
+#include <rthw.h>
+#include <rtdevice.h>
+
+#define UART0_BASE      0x10006000
+#define UART_RBR        (UART0_BASE + 0x00)
+#define UART_LSR        (UART0_BASE + 0x14)
+#define UART_LSR_DR     (1 << 0)  /* Data Ready */
+
+/* Shell输入缓冲区 */
+static char shell_input_buffer[256];
+static int input_index = 0;
+
+/* Polling读取函数 */
+static int polling_getchar(void)
+{
+    volatile rt_uint32_t *uart_lsr = (rt_uint32_t *)UART_LSR;
+    volatile rt_uint32_t *uart_rbr = (rt_uint32_t *)UART_RBR;
+
+    /* 检查是否有数据 */
+    if (*uart_lsr & UART_LSR_DR) {
+        return *uart_rbr & 0xFF;
+    }
+
+    return -1;  /* 无数据 */
+}
+
+/* Shell轮询线程 */
+static void polling_shell_thread(void *parameter)
+{
+    rt_kprintf("\nPolling Shell started.\n");
+    rt_kprintf("Type commands directly (no interrupt needed).\n");
+    rt_kprintf("Press Enter to execute.\n\n");
+
+    while (1) {
+        /* 轮询检查输入 */
+        int ch = polling_getchar();
+
+        if (ch >= 0) {
+            /* 有字符 */
+            if (ch == '\r' || ch == '\n') {
+                /* 回车：执行命令 */
+                if (input_index > 0) {
+                    shell_input_buffer[input_index] = '\0';
+                    rt_kprintf("\nExecuting: %s\n", shell_input_buffer);
+
+                    /* 简单命令处理 */
+                    if (rt_strcmp(shell_input_buffer, "help") == 0) {
+                        rt_kprintf("Available commands:\n");
+                        rt_kprintf("  help     - Show this help\n");
+                        rt_kprintf("  clear    - Clear input\n");
+                        rt_kprintf("  status   - Show system status\n");
+                        rt_kprintf("  threads  - Show thread count\n");
+                    }
+                    else if (rt_strcmp(shell_input_buffer, "clear") == 0) {
+                        input_index = 0;
+                        rt_kprintf("Input cleared.\n");
+                    }
+                    else if (rt_strcmp(shell_input_buffer, "status") == 0) {
+                        extern volatile rt_uint32_t gtimer_isr_counter;
+                        rt_kprintf("System status:\n");
+                        rt_kprintf("  Timer ISR count: %d\n", gtimer_isr_counter);
+                        rt_kprintf("  System tick: %d\n", rt_tick_get());
+                    }
+                    else if (rt_strcmp(shell_input_buffer, "threads") == 0) {
+                        rt_kprintf("Active threads: %d\n", rt_object_get_length(RT_Object_Class_Thread));
+                    }
+                    else {
+                        rt_kprintf("Unknown command: %s\n", shell_input_buffer);
+                        rt_kprintf("Type 'help' for available commands.\n");
+                    }
+
+                    input_index = 0;
+                    rt_kprintf("\nPolling> ");
+                }
+            }
+            else if (ch == 0x7F || ch == 0x08) {
+                /* Backspace/Delete */
+                if (input_index > 0) {
+                    input_index--;
+                    rt_kprintf("\b \b");  /* 回显删除 */
+                }
+            }
+            else if (ch >= ' ' && ch <= '~') {
+                /* 可打印字符 */
+                if (input_index < sizeof(shell_input_buffer) - 1) {
+                    shell_input_buffer[input_index++] = ch;
+                    rt_kprintf("%c", ch);  /* 回显 */
+                }
+            }
+        }
+
+        /* 短暂延迟避免占用CPU */
+        rt_thread_mdelay(10);
+    }
+}
+
+/* 初始化Polling Console */
+int polling_console_init(void)
+{
+    rt_thread_t tid = rt_thread_create("poll_shell",
+                                       polling_shell_thread,
+                                       RT_NULL,
+                                       512,
+                                       20,
+                                       10);
+
+    if (tid) {
+        rt_thread_startup(tid);
+        rt_kprintf("Polling Console thread created.\n");
+        return RT_EOK;
+    }
+
+    rt_kprintf("Failed to create polling console thread.\n");
+    return -RT_ERROR;
+}
+
+/* 自动初始化 */
+INIT_APP_EXPORT(polling_console_init);

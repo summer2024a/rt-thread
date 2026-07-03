@@ -1,0 +1,225 @@
+/*
+ * HP232X 调度器崩溃诊断程序
+ * 目的：追踪崩溃地址0x100100000的来源
+ */
+
+#include <rtthread.h>
+#include <rthw.h>
+#include "lynxi.h"
+#include <stdio.h>
+
+extern int __bss_start;
+extern int __bss_end;
+extern rt_list_t rt_thread_priority_table[];
+
+void diagnose_scheduler_crash(void)
+{
+    rt_kprintf("\n");
+    rt_kprintf("========================================\n");
+    rt_kprintf("  Scheduler Crash Address Diagnosis\n");
+    rt_kprintf("========================================\n");
+
+    /* 1. IRAM1内存布局验证 */
+    rt_kprintf("\n[1] IRAM1 Memory Layout\n");
+    rt_kprintf("----------------------------------------\n");
+
+    rt_kprintf("BSS section:\n");
+    rt_kprintf("  __bss_start: %p\n", &__bss_start);
+    rt_kprintf("  __bss_end:   %p\n", &__bss_end);
+    rt_kprintf("  BSS size:    %lu bytes (%lu KB)\n",
+               (rt_ubase_t)&__bss_end - (rt_ubase_t)&__bss_start,
+               ((rt_ubase_t)&__bss_end - (rt_ubase_t)&__bss_start) / 1024);
+
+    rt_ubase_t page_start = RT_ALIGN((rt_ubase_t)&__bss_end, 4096);
+    rt_ubase_t page_end = page_start + 0x4000;  /* PAGE_POOL_SIZE */
+    rt_ubase_t heap_start = page_end;
+    rt_ubase_t heap_end = heap_start + 0x24000; /* HEAP_POOL_SIZE */
+
+    rt_kprintf("\nCalculated memory regions:\n");
+    rt_kprintf("  page_start: %p\n", (void *)page_start);
+    rt_kprintf("  page_end:   %p\n", (void *)page_end);
+    rt_kprintf("  heap_start: %p\n", (void *)heap_start);
+    rt_kprintf("  heap_end:   %p\n", (void *)heap_end);
+    rt_kprintf("  HEAP size:  %lu bytes (%lu KB)\n",
+               heap_end - heap_start,
+               (heap_end - heap_start) / 1024);
+
+    rt_kprintf("\nIRAM1 limits:\n");
+    rt_kprintf("  IRAM1_START:     0x%lx\n", 0x100000000UL);
+    rt_kprintf("  IRAM1_END:       0x%lx\n", 0x100080000UL);
+    rt_kprintf("  IRAM1_USE_START: 0x%lx\n", 0x100040000UL);
+    rt_kprintf("  IRAM1_USE_END:   0x%lx\n", 0x100080000UL);
+
+    rt_kprintf("\nCrash address analysis:\n");
+    rt_kprintf("  Crash address:   0x%lx\n", 0x100100000UL);
+    rt_kprintf("  Distance from heap_end: %lu bytes (%lu KB)\n",
+               0x100100000UL - heap_end,
+               (0x100100000UL - heap_end) / 1024);
+    rt_kprintf("  Distance from IRAM1_END: %lu bytes (%lu KB)\n",
+               0x100100000UL - 0x100080000UL,
+               (0x100100000UL - 0x100080000UL) / 1024);
+
+    if (0x100100000UL > 0x100080000UL) {
+        rt_kprintf("\n⚠⚠⚠ CRITICAL: Crash address EXCEEDS IRAM1 physical range!\n");
+        rt_kprintf("  IRAM1 physical size: 512KB (0x100000000-0x10007FFFF)\n");
+        rt_kprintf("  Crash address: 0x100100000 (超出 %lu KB)\n",
+                   (0x100100000UL - 0x10007FFFFUL) / 1024);
+    }
+
+    /* 2. ★★★ 调度器优先级表链表状态检查 - 核心诊断 ★★★ */
+    rt_kprintf("\n[2] ★★★ Scheduler Priority Table List Status ★★★\n");
+    rt_kprintf("----------------------------------------\n");
+
+    rt_kprintf("Priority table address: %p\n", rt_thread_priority_table);
+    rt_kprintf("Priority table size:    %d entries (RT_THREAD_PRIORITY_MAX=%d)\n",
+               RT_THREAD_PRIORITY_MAX, RT_THREAD_PRIORITY_MAX);
+
+    rt_kprintf("\nChecking ALL priority table list nodes:\n");
+    int corrupted_nodes = 0;
+    for (int i = 0; i < RT_THREAD_PRIORITY_MAX; i++) {
+        rt_list_t *node = &rt_thread_priority_table[i];
+
+        /* 检查链表节点地址是否合法 */
+        if ((rt_ubase_t)node < 0x100050000 || (rt_ubase_t)node >= 0x100071000) {
+            rt_kprintf("  [%2d] ⚠⚠⚠ Node addr %p OUT OF BSS range!\n", i, node);
+            corrupted_nodes++;
+            continue;
+        }
+
+        /* 检查链表节点next指针 */
+        rt_list_t *next = node->next;
+        rt_list_t *prev = node->prev;
+
+        if (i < 5 || (next != node && next != (rt_list_t *)0)) {
+            rt_kprintf("  [%2d] node=%p  next=%p  prev=%p",
+                       i, node, next, prev);
+
+            /* 检查next指针是否指向自己（空链表的正确状态） */
+            if (next == node && prev == node) {
+                rt_kprintf("  ✓ Empty list (self-referencing)\n");
+            }
+            /* 检查next指针是否合法 */
+            else if ((rt_ubase_t)next == 0x100100000) {
+                rt_kprintf("  ⚠⚠⚠ CRASH ADDRESS FOUND!\n");
+                rt_kprintf("       This is the EXACT crash address!\n");
+                rt_kprintf("       Next pointer contains garbage value from uninitialized BSS!\n");
+                corrupted_nodes++;
+            }
+            else if ((rt_ubase_t)next < 0x100050000 || (rt_ubase_t)next >= 0x100080000) {
+                rt_kprintf("  ⚠ Invalid next pointer (out of IRAM1)\n");
+                corrupted_nodes++;
+            }
+            else {
+                rt_kprintf("  ⚠ Non-empty list (contains thread)\n");
+            }
+        }
+    }
+
+    rt_kprintf("\nPriority table list status summary:\n");
+    rt_kprintf("  Total nodes checked:    %d\n", RT_THREAD_PRIORITY_MAX);
+    rt_kprintf("  Corrupted nodes found:  %d\n", corrupted_nodes);
+
+    if (corrupted_nodes > 0) {
+        rt_kprintf("\n⚠⚠⚠ CRITICAL: Scheduler priority table INITIALIZATION FAILED!\n");
+        rt_kprintf("  rt_list_init() did not execute correctly for some nodes\n");
+        rt_kprintf("  or BSS was not properly cleared before rt_system_scheduler_init()\n");
+    } else {
+        rt_kprintf("\n✓ All priority table nodes initialized correctly\n");
+    }
+
+    /* 3. 线程栈地址检查 */
+    rt_kprintf("\n[3] Thread Stack Addresses\n");
+    rt_kprintf("----------------------------------------\n");
+
+    /* Note: rt_thread_idle is static, cannot access directly */
+    rt_kprintf("idle_thread: (static variable, cannot access)\n");
+
+    rt_thread_t current_thread = rt_thread_self();
+    if (current_thread) {
+        rt_kprintf("\ncurrent_thread:\n");
+        rt_kprintf("  name:          %s\n", current_thread->parent.name);
+        rt_kprintf("  thread object: %p\n", current_thread);
+        rt_kprintf("  stack_addr:    %p\n", current_thread->stack_addr);
+        rt_kprintf("  stack_size:    %lu\n", current_thread->stack_size);
+        rt_kprintf("  sp:            %p\n", (void *)current_thread->sp);
+        rt_kprintf("  thread_list_node: %p\n", &(RT_SCHED_CTX(current_thread).thread_list_node));
+    }
+
+    /* 4. 调度器数据结构地址 */
+    rt_kprintf("\n[4] Scheduler Data Structures\n");
+    rt_kprintf("----------------------------------------\n");
+
+    extern rt_ubase_t rt_thread_ready_priority_group;
+    extern rt_ubase_t rt_current_priority;
+
+    rt_kprintf("Priority table:\n");
+    rt_kprintf("  rt_thread_priority_table:        %p\n", (void *)rt_thread_priority_table);
+    rt_kprintf("  rt_thread_ready_priority_group:  %p (value=0x%lx)\n",
+               (void *)&rt_thread_ready_priority_group, rt_thread_ready_priority_group);
+    rt_kprintf("  rt_current_priority:             %p (value=%lu)\n",
+               (void *)&rt_current_priority, rt_current_priority);
+
+    /* 5. Heap分配器状态 */
+    rt_kprintf("\n[5] Heap Allocator State\n");
+    rt_kprintf("----------------------------------------\n");
+
+    rt_kprintf("System heap configured:\n");
+    rt_kprintf("  heap_start: %p (from board.c)\n", (void *)heap_start);
+    rt_kprintf("  heap_end:   %p (from board.c)\n", (void *)heap_end);
+
+    /* 检查heap是否已初始化 */
+    #ifdef RT_USING_HEAP
+    rt_kprintf("  Heap enabled: YES\n");
+
+    /* 尝试一个小分配测试 */
+    void *test_ptr = rt_malloc(64);
+    if (test_ptr) {
+        rt_kprintf("  Test allocation (64 bytes): %p\n", test_ptr);
+        rt_kprintf("  Within heap range: %s\n",
+                   ((rt_ubase_t)test_ptr >= heap_start && (rt_ubase_t)test_ptr < heap_end) ? "YES" : "NO");
+        rt_free(test_ptr);
+    } else {
+        rt_kprintf("  Test allocation FAILED!\n");
+    }
+    #else
+    rt_kprintf("  Heap disabled\n");
+    #endif
+
+    /* 6. 中断嵌套计数器 */
+    rt_kprintf("\n[6] Interrupt Nest Counter\n");
+    rt_kprintf("----------------------------------------\n");
+
+    rt_uint8_t nest = rt_interrupt_get_nest();
+    rt_kprintf("  rt_interrupt_nest: %d\n", nest);
+
+    /* 7. 崩溃场景推测 */
+    rt_kprintf("\n[7] Crash Scenario Analysis\n");
+    rt_kprintf("----------------------------------------\n");
+
+    rt_kprintf("Crash mechanism:\n");
+    rt_kprintf("  1. Timer ISR triggers with interrupt nesting counter\n");
+    rt_kprintf("  2. rt_tick_increase() → rt_sched_tick_increase()\n");
+    rt_kprintf("  3. Thread time slice exhausted, calls rt_schedule()\n");
+    rt_kprintf("  4. rt_schedule() → _scheduler_get_highest_priority_thread()\n");
+    rt_kprintf("  5. Access rt_thread_priority_table[prio].next\n");
+    rt_kprintf("  6. If next = 0x100100000 → RT_THREAD_LIST_NODE_ENTRY() macro:\n");
+    rt_kprintf("       rt_list_entry(0x100100000, rt_sched_thread_ctx, thread_list_node)\n");
+    rt_kprintf("       → Access memory at 0x100100000\n");
+    rt_kprintf("       → MMU translation fault (address not mapped)\n");
+    rt_kprintf("       → Data Abort exception!\n");
+
+    rt_kprintf("\nRoot cause:\n");
+    rt_kprintf("  0x100100000 is a GARBAGE VALUE from uninitialized BSS section!\n");
+    rt_kprintf("  board.c:189 comment confirms: isr_table[] can contain 0x100100000\n");
+    rt_kprintf("  This means rt_thread_priority_table[i].next might also contain it\n");
+    rt_kprintf("  if rt_list_init() failed to execute or BSS was not properly cleared\n");
+
+    rt_kprintf("\n========================================\n");
+}
+
+int scheduler_crash_diag_init(void)
+{
+    diagnose_scheduler_crash();
+    return 0;
+}
+INIT_APP_EXPORT(scheduler_crash_diag_init);

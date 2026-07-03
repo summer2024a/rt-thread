@@ -42,6 +42,10 @@ static rt_err_t uart_init(rt_ubase_t hw_base, rt_uint32_t baud_rate)
     DW_APB_REG_IIR(hw_base) = 0x0;  /* no fifo */
     DW_APB_REG_MCR(hw_base) = 0x3;  /* DTR + RTS */
 
+    /* Clear THR to ensure THRE=1 before returning */
+    while (!(DW_APB_REG_LSR(hw_base) & UART_LSR_THRE)) { }
+    DW_APB_REG_RBR(hw_base) = 0;
+
     c = DW_APB_REG_LCR(hw_base);
     DW_APB_REG_LCR(hw_base) = c | UART_LCR_DLAB;
     DW_APB_REG_RBR(hw_base) = ibrd & 0xff;
@@ -130,7 +134,8 @@ static const struct rt_uart_ops _uart_ops =
     uart_getc,
 };
 
-volatile void *earlycon_base = 0;
+// __attribute__((section(".data"))) volatile void *earlycon_base = (void *)0;
+volatile void *earlycon_base = (void *)0;
 const size_t earlycon_size = 0x1000;
 
 extern void early_putc(int c)
@@ -140,7 +145,7 @@ extern void early_putc(int c)
         early_putc('\r');
     }
 
-    while((DW_APB_REG_LSR(earlycon_base) & BOTH_EMPTY) != BOTH_EMPTY);
+    while((DW_APB_REG_LSR(earlycon_base) & UART_LSR_THRE) == 0);
     DW_APB_REG_RBR(earlycon_base) = c;
 }
 

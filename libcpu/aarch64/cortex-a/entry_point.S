@@ -78,14 +78,12 @@
 .endm
 
 .macro early_putc, char
-    /* Optimized: use pre-initialized x6/x7 registers */
-    /* x6 = UART LSR address (loaded by pre_entry.S) */
-    /* x7 = UART THR address (loaded by pre_entry.S) */
-1:  ldr     w8, [x6]              /* Read LSR (x6 pre-loaded by pre_entry.S) */
-    tst     w8, #0x20             /* Check THRE (Transmitter Holding Register Empty) */
-    b.eq    1b                    /* Wait if NOT ready */
-    mov     w8, #\char            /* Load character */
-    str     w8, [x7]              /* Write to THR (x7 pre-loaded by pre_entry.S) */
+ldr     x6, =0x10006000         /* UART0 base address (THR) */
+1:  ldr     w8, [x6, #0x14]      /* 读 LSR = base + 0x14 */
+    tst     w8, #0x20
+    b.eq    1b
+    mov     w8, \char
+    str     w8, [x6]             /* 写 THR = base + 0 */
 .endm
 
 /* Bootwrapper-style definitions for EL transition */
@@ -156,11 +154,19 @@ _start:
  *   x3 = 0 (reserved for future use)
  */
 
-#ifdef BSP_USING_HP232X
-    /* ===== CRITICAL: Set stack BEFORE bootwrapper call ===== */
-    /* Function call requires stack for return address (LR/x30) */
-    /* Without stack, bootwrapper init will crash on any stack operation */
-    ldr     stack_top, =hp232x_temp_stack_top
+    /* Save cpu stack */
+    get_phy stack_top, .boot_cpu_stack_top
+
+#ifdef BSP_USING_HP232X_BL22
+    /* BL22 mode: bootcode/bootwrapper already initialized UART, GIC, CCI.
+     * We are currently at EL1 (bootwrapper did EL3→EL1 transition).
+     * Stack already set up by bootwrapper.
+     * Skip bootwrapper init, go directly to common RT-Thread initialization. */
+#elif defined(BSP_USING_HP232X_BL21)
+    /* ===== IRAM1 unified stack @ 0x10007FFF0 (92KB contiguous area) ===== */
+    /* HP232X CPU supports 40-bit PA — proven by bootwrapper using 0x100020000.
+     * .boot_cpu_stack_top is in .bss.noclean.cpus_stack (0x100050000-0x10005a000).
+     * BSS section starts at 0x10005a000 (after noclean), so stack won't be zeroed. */
     mov     sp, stack_top
     isb
 
@@ -185,26 +191,16 @@ _start:
 #endif /* ARCH_USING_HW_THREAD_SELF */
     msr     tpidr_el1, xzr
 
-#ifdef BSP_USING_HP232X
-#ifdef BSP_USING_HP232X_DEBUG_UART
-    early_putc 'I'              /* Before init_cpu_el */
-#endif
-#endif
+    early_putc 'I'
     bl      init_cpu_el
 
-#ifdef BSP_USING_HP232X
-#ifdef BSP_USING_HP232X_DEBUG_UART
-    early_putc 'B'              /* Before init_kernel_bss */
-#endif
-#endif
+    early_putc 'B'
     bl      init_kernel_bss
 
-#ifdef BSP_USING_HP232X
-#ifdef BSP_USING_HP232X_DEBUG_UART
-    early_putc 'K'              /* Ready for kernel */
-#endif
-#endif
+    early_putc 'K'
     bl      init_cpu_stack_early
+
+    early_putc 'S'
 
 #ifdef RT_USING_OFW
     /* Save devicetree info */
@@ -216,6 +212,7 @@ _start:
 #ifdef BSP_USING_HP232X
     /* HP232X: Skip init_mmu_early, directly jump to rtthread_startup */
     ldr     kernel_entry, =rtthread_startup
+    early_putc 'U'
     b       kernel_start
 #else
     ldr     kernel_entry, =rtthread_startup
@@ -227,6 +224,7 @@ kernel_start:
     /* Jump to the PE's system entry */
     mov     x29, xzr
     mov     x30, kernel_entry
+    early_putc 'E'
     br      kernel_entry
 
 cpu_idle:
@@ -334,9 +332,23 @@ init_cpu_el:
     isb
 #endif /* BSP_USING_GICV3 */
 
-    mov     x0, #(1 << 31)          /* Enable AArch64 in EL1 */
-    orr     x0, x0, #(1 << 1)       /* SWIO hardwired */
+    /* Configure HCR_EL2: Route all interrupts to EL1 */
+    mov     x0, #(1 << 31)          /* RW=1: Enable AArch64 in EL1 */
+    orr     x0, x0, #(1 << 1)       /* SWIO=1: SWIO hardwired */
+    /* CRITICAL: Clear interrupt routing bits to route IRQ/FIQ/SError to EL1 */
+    bic     x0, x0, #(1 << 4)       /* IMO=0: IRQ route to EL1 (not EL2) */
+    bic     x0, x0, #(1 << 5)       /* FMO=0: FIQ route to EL1 (not EL2) */
+    bic     x0, x0, #(1 << 6)       /* AMO=0: SError route to EL1 (not EL2) */
+    bic     x0, x0, #(1 << 24)      /* TTC=0: Allow EL1 to write CNTP_CTL_EL0 */
+    bic     x0, x0, #(1 << 25)      /* TSC=0: Allow EL1 to access timer sysregs */
+    bic     x0, x0, #(1 << 26)      /* TWE=0: Allow EL1 WFI */
+    bic     x0, x0, #(1 << 27)      /* TWI=0: Allow EL1 WFE */
+    bic     x0, x0, #(1 << 28)      /* TPC=0: Allow EL1 to access physical counter */
+    bic     x0, x0, #(1 << 29)      /* TPIDRURO=0: Allow EL1 access to TPIDRURO */
+    bic     x0, x0, #(1 << 30)      /* TPIDRURW=0: Allow EL1 access to TPIDRURW */
+    /* TRVM (bit 31) must NOT be cleared — it conflicts with RW (bit 31) */
     msr     hcr_el2, x0
+    isb
 
     mov     x0, #5                  /* Next level is 0b0101->EL1h */
     orr     x0, x0, #(1 << 6)       /* Mask FIQ */
@@ -374,6 +386,15 @@ init_kernel_bss:
     get_phy x2, __bss_end
     sub     x2, x2, x1              /* Get bss size */
 
+    /*
+     * CRITICAL: Check if BSS address fits in 33-bit range (adrp limitation).
+     * adrp can only encode addresses up to 33 bits (bits [32:12] of address).
+     * If __bss_start has bit[32] set (address > 0x1FFFFFFFF), skip early BSS zero.
+     * BSS will be zeroed later by C code after MMU/page tables are set up.
+     */
+    and     x3, x1, #0x100000000    /* Check bit 32 of __bss_start */
+    cbnz    x3, .bss_skip_clean     /* If bit 32 set, skip early BSS zero */
+
     and     x3, x2, #7              /* x3 is < 7 */
     ldr     x4, =~0x7
     and     x2, x2, x4              /* Mask ~7 */
@@ -391,6 +412,10 @@ init_kernel_bss:
     b       .clean_bss_loop_byte
 
 .clean_bss_end:
+    ret
+
+.bss_skip_clean:
+    /* BSS in high memory (>33-bit), skip early zero. Will be zeroed by C code. */
     ret
 
 init_cpu_stack_early:
@@ -476,6 +501,13 @@ enable_mmu_early:
 .early_tbl1_page:
     /* Map 4G -> 2M * 512 entries */
     .space 4 * ARCH_PAGE_SIZE
+#ifdef BSP_USING_HP232X
+    /* HP232X doesn't use dynamic page allocation (board.c builds its own MMU tables).
+     * Shrink from 24 pages (96KB) to 4 pages (16KB) — just enough for fallback. */
+.early_page_array:
+    .space 4 * ARCH_PAGE_SIZE
+#else
 .early_page_array:
     .space 24 * ARCH_PAGE_SIZE
+#endif
 

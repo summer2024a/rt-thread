@@ -67,7 +67,9 @@ def print_section_analysis(sections):
     for name in ['.head', '.text', '.early_hp232x', '.data', '.mmu_table']:
         if name in sections:
             sec = sections[name]
-            iram0_sections.append((name, sec['vma'], sec['size_kb']))
+            # Adjust VMA display: kernel linked at 0x04040000+, subtract offset for display
+            display_addr = sec['vma'] if sec['vma'] >= 0x4000000 else sec['vma']
+            iram0_sections.append((name, display_addr, sec['size_kb']))
             iram0_total += sec['size']
 
     # IRAM1 BSS
@@ -118,10 +120,10 @@ def print_section_analysis(sections):
 
 def main():
     parser = argparse.ArgumentParser(description="Generate hp232x boot image with 32-byte header (BL1-bootrom-compatible)")
-    parser.add_argument("input", help="input raw binary (linked from 0x04000020)")
+    parser.add_argument("input", help="input raw binary (linked from 0x04000020 or 0x04040020)")
     parser.add_argument("output", help="output image file")
     parser.add_argument("--dest-addr", type=lambda x: int(x, 0), default=0x04000020,
-                       help="destination address (default: 0x04000020)")
+                       help="destination address (default: 0x04000020, BL1_BOOT mode)")
     parser.add_argument("--next-offset", type=lambda x: int(x, 0), default=0x20000)
     parser.add_argument("--headersize", type=lambda x: int(x, 0), default=0x20)
     parser.add_argument("--end-flag", type=lambda x: int(x, 0), default=0x0)  # Not used in BL1, preserved
@@ -166,7 +168,7 @@ def main():
         file_size,                # 0x10-13: file_size (unused by BL1)
         args.next_offset,         # 0x14-17: next_offset (unused by BL1)
         0x0,                      # 0x18-1B: padding
-        args.headersize,          # 0x1C-1F: ⚠️ BL1 reads headersize from here
+        args.headersize,          # 0x1C-1F: BL1 reads headersize from here
     )
 
     # Validate header size

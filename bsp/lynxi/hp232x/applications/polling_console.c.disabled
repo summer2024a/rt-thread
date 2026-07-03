@@ -1,0 +1,378 @@
+/*
+ * HP232X GIC/UART Monitor - Using rt_kprintf and 1 second interval
+ */
+
+#include <rtthread.h>
+#include "board.h"
+#include <gicv3.h>
+
+extern volatile rt_uint32_t uart_isr_count;
+
+static void printhex32(rt_uint32_t val)
+{
+    char buf[9];
+    for (int i = 7; i >= 0; i--) {
+        int d = (val >> (i*4)) & 0xF;
+        buf[7-i] = d < 10 ? '0'+d : 'A'+d-10;
+    }
+    buf[8] = '\0';
+    rt_kprintf("0x%s", buf);
+}
+
+static void printhex64(rt_uint64_t val)
+{
+    char buf[17];
+    for (int i = 15; i >= 0; i--) {
+        int d = (val >> (i*4)) & 0xF;
+        buf[15-i] = d < 10 ? '0'+d : 'A'+d-10;
+    }
+    buf[16] = '\0';
+    rt_kprintf("0x%s", buf);
+}
+
+/* Console thread - GIC monitoring with rt_kprintf */
+static void console_thread(void *param)
+{
+    rt_kprintf("\n========================================\n");
+    rt_kprintf("  HP232X GIC/UART Monitor (rt_kprintf)\n");
+    rt_kprintf("========================================\n\n");
+
+    /* ★★★ 手动启用Timer中断（PPI IRQ30）★★★ */
+    rt_kprintf("[TIMER] Manually enabling Timer IRQ30 in Redistributor...\n");
+
+    /* GICv3 Redistributor地址：
+     * - Redistributor base: 0x08100000
+     * - SGI_base (for PPI/SGI): base + 0x10000 = 0x08110000
+     * - GICR_ISENABLER0: SGI_base + 0x100 = 0x08110100
+     */
+    volatile rt_uint32_t *gicr_sgi_base = (volatile rt_uint32_t *)0x08110000;
+    volatile rt_uint32_t *gicr_isenabler0 = &gicr_sgi_base[0x100/4];  /* GICR_ISENABLER0 */
+
+    rt_uint32_t before = *gicr_isenabler0;
+    *gicr_isenabler0 = (1 << 30);  /* Enable Timer IRQ30 */
+    rt_uint32_t after = *gicr_isenabler0;
+
+    rt_kprintf("  GICR_ISENABLER0 @ 0x08110100\n");
+    rt_kprintf("  before: 0x%08x\n", before);
+    rt_kprintf("  after:  0x%08x (Timer30=%c)\n\n", after, (after >> 30) & 1 ? 'Y' : 'N');
+
+    /* 启用UART RX中断 */
+    rt_kprintf("[UART] Enabling RX interrupt...\n");
+    volatile rt_uint32_t *ier = (volatile rt_uint32_t *)(UART0_BASE + 0x04);
+    *ier |= 0x01;
+    rt_kprintf("  IER=0x%08x (RX_INT=%d)\n\n", *ier, (*ier & 1));
+
+    rt_kprintf("Starting GIC register monitoring (1 second interval)...\n\n");
+
+    int counter = 0;
+
+    while (1) {
+        counter++;
+
+        rt_kprintf("\n========================================\n");
+        rt_kprintf("[GIC REGS #%d] Time: %d seconds\n", counter, counter);
+        rt_kprintf("========================================\n");
+
+        /* GIC Distributor基地址 */
+        volatile rt_uint32_t *gicd_base = (volatile rt_uint32_t *)GIC_PL500_DISTRIBUTOR_PPTR;
+
+        /* === GIC Distributor控制寄存器 === */
+        rt_uint32_t gicd_ctlr = gicd_base[0x000/4];
+        rt_kprintf("GICD_CTLR:     ");
+        printhex32(gicd_ctlr);
+        rt_kprintf(" (EnableGrp1NS=%d ARE_NS=%d)\n",
+                   (gicd_ctlr >> 1) & 1, (gicd_ctlr >> 4) & 1);
+
+        rt_uint32_t gicd_typer = gicd_base[0x004/4];
+        rt_kprintf("GICD_TYPER:    ");
+        printhex32(gicd_typer);
+        rt_kprintf(" (IRQ_lines=%d)\n", ((gicd_typer >> 0) & 0x1F) * 32);
+
+        /* === 中断启用寄存器 === */
+        rt_uint32_t isenabler0 = gicd_base[0x100/4];
+        rt_uint32_t isenabler1 = gicd_base[0x104/4];
+        rt_uint32_t isenabler2 = gicd_base[0x108/4];
+
+        rt_kprintf("ISENABLER[0]:  ");
+        printhex32(isenabler0);
+        rt_kprintf(" (IRQ0-31)\n");
+
+        rt_kprintf("ISENABLER[1]:  ");
+        printhex32(isenabler1);
+        rt_kprintf(" (UART57=%c Timer30=%c)\n",
+                   (isenabler1 >> 25) & 1 ? 'Y' : 'N',
+                   (isenabler1 >> 30) & 1 ? 'Y' : 'N');
+
+        rt_kprintf("ISENABLER[2]:  ");
+        printhex32(isenabler2);
+        rt_kprintf(" (IRQ64-95)\n");
+
+        /* === 中断pending寄存器 === */
+        rt_uint32_t ispendr0 = gicd_base[0x200/4];
+        rt_uint32_t ispendr1 = gicd_base[0x204/4];
+        rt_uint32_t ispendr2 = gicd_base[0x208/4];
+
+        rt_kprintf("ISPENDR[0]:    ");
+        printhex32(ispendr0);
+        rt_kprintf("\n");
+
+        rt_kprintf("ISPENDR[1]:    ");
+        printhex32(ispendr1);
+        rt_kprintf(" (UART57=%c)\n", (ispendr1 >> 25) & 1 ? 'Y' : 'N');
+
+        rt_kprintf("ISPENDR[2]:    ");
+        printhex32(ispendr2);
+        rt_kprintf("\n");
+
+        /* === 中断活跃寄存器 === */
+        rt_uint32_t isactiver0 = gicd_base[0x300/4];
+        rt_uint32_t isactiver1 = gicd_base[0x304/4];
+        rt_uint32_t isactiver2 = gicd_base[0x308/4];
+
+        rt_kprintf("ISACTIVER[0]:  ");
+        printhex32(isactiver0);
+        rt_kprintf("\n");
+
+        rt_kprintf("ISACTIVER[1]:  ");
+        printhex32(isactiver1);
+        rt_kprintf(" (UART57=%c)\n", (isactiver1 >> 25) & 1 ? 'Y' : 'N');
+
+        rt_kprintf("ISACTIVER[2]:  ");
+        printhex32(isactiver2);
+        rt_kprintf("\n");
+
+        /* === GIC CPU Interface系统寄存器 === */
+        rt_uint64_t icc_igrpen1 = 0;
+        asm volatile("mrs %0, " ICC_IGRPEN1_EL1 : "=r"(icc_igrpen1));
+        rt_kprintf("ICC_IGRPEN1_EL1: ");
+        printhex64(icc_igrpen1);
+        rt_kprintf(" (Enable=%d)\n", (icc_igrpen1 >> 0) & 1);
+
+        rt_uint64_t icc_ctlr = 0;
+        asm volatile("mrs %0, " ICC_CTLR_EL1 : "=r"(icc_ctlr));
+        rt_kprintf("ICC_CTLR_EL1:    ");
+        printhex64(icc_ctlr);
+        rt_kprintf("\n");
+
+        /* 检查Redistributor基地址（关键！） */
+        rt_kprintf("\n[DEBUG] Checking Redistributor configuration...\n");
+
+        /* 正确地址：SGI_base = 0x08110000, GICR_ISENABLER0 = SGI_base + 0x100 */
+        volatile rt_uint32_t *gicr_sgi_base = (volatile rt_uint32_t *)0x08110000;
+        rt_uint32_t gicr_isenabler0 = gicr_sgi_base[0x100/4];  /* GICR_ISENABLER0 */
+        rt_kprintf("GICR_ISENABLER0 @ 0x08110100: ");
+        printhex32(gicr_isenabler0);
+        rt_kprintf(" (Timer30=%c UART0=%c)\n",
+                   (gicr_isenabler0 >> 30) & 1 ? 'Y' : 'N',
+                   (gicr_isenabler0 >> 0) & 1 ? 'Y' : 'N');
+
+        /* 检查CPU ID */
+        extern int rt_hw_cpu_id(void);
+        int cpu_id = rt_hw_cpu_id();
+        rt_kprintf("CPU ID: %d\n", cpu_id);
+
+        rt_kprintf("========================================\n");
+        rt_kprintf("[UART REGS]\n");
+        rt_kprintf("========================================\n");
+
+        /* === UART寄存器详情 === */
+        volatile rt_uint32_t *uart_base = (volatile rt_uint32_t *)UART0_BASE;
+
+        rt_uint32_t uart_ier_val = uart_base[0x04/4];
+        rt_kprintf("UART_IER:      ");
+        printhex32(uart_ier_val);
+        rt_kprintf(" (RX_INT=%d TX_INT=%d)\n",
+                   (uart_ier_val >> 0) & 1, (uart_ier_val >> 1) & 1);
+
+        rt_uint32_t uart_iir = uart_base[0x08/4];
+        rt_kprintf("UART_IIR:      ");
+        printhex32(uart_iir);
+        rt_kprintf(" (NO_INT=%d INT_ID=%d)\n",
+                   (uart_iir >> 0) & 1, (uart_iir >> 1) & 0x7);
+
+        rt_uint32_t uart_lsr = uart_base[0x14/4];
+        rt_kprintf("UART_LSR:      ");
+        printhex32(uart_lsr);
+        rt_kprintf(" (DR=%d THRE=%d)\n",
+                   (uart_lsr >> 0) & 1, (uart_lsr >> 5) & 1);
+
+        rt_uint32_t uart_rfl = uart_base[0x84/4];
+        rt_kprintf("UART_RFL:      0x%02x (RX FIFO bytes)\n", uart_rfl & 0xFF);
+
+        rt_kprintf("========================================\n");
+        rt_kprintf("[TIMER HW STATE]\n");
+        rt_kprintf("========================================\n");
+
+        /* 检查Timer硬件状态 */
+        rt_uint64_t cntp_ctl = 0, cntp_tval = 0, cntp_cval = 0, cntpct = 0;
+        asm volatile("mrs %0, CNTP_CTL_EL0" : "=r"(cntp_ctl));
+        asm volatile("mrs %0, CNTP_TVAL_EL0" : "=r"(cntp_tval));
+        asm volatile("mrs %0, CNTP_CVAL_EL0" : "=r"(cntp_cval));
+        asm volatile("mrs %0, CNTPCT_EL0" : "=r"(cntpct));
+
+        rt_kprintf("CNTP_CTL_EL0:  ");
+        printhex64(cntp_ctl);
+        rt_kprintf(" (ENABLE=%d IMASK=%d ISTATUS=%d)\n",
+                   (cntp_ctl >> 0) & 1, (cntp_ctl >> 1) & 1, (cntp_ctl >> 2) & 1);
+        rt_kprintf("CNTP_TVAL_EL0: ");
+        printhex64(cntp_tval);
+        rt_kprintf("\n");
+        rt_kprintf("CNTP_CVAL_EL0: ");
+        printhex64(cntp_cval);
+        rt_kprintf("\n");
+        rt_kprintf("CNTPCT_EL0:    ");
+        printhex64(cntpct);
+        rt_kprintf(" (current count)\n");
+
+        /* 检查Timer频率 */
+        rt_uint64_t cntfrq = 0;
+        asm volatile("mrs %0, CNTFRQ_EL0" : "=r"(cntfrq));
+        rt_kprintf("CNTFRQ_EL0:    ");
+        printhex64(cntfrq);
+        rt_kprintf(" (Timer frequency)\n");
+
+        if (cntfrq > 0) {
+            rt_kprintf("  TVAL time: %d ms (until next timer tick)\n",
+                       (int)((cntp_tval * 1000) / cntfrq));
+        }
+
+        rt_kprintf("========================================\n");
+        rt_kprintf("ISR_count: %d\n", uart_isr_count);
+        rt_kprintf("System tick: %d\n", rt_tick_get());
+        rt_kprintf("========================================\n\n");
+
+        /* 检查CPU中断屏蔽状态 */
+        rt_kprintf("[CPU INTERRUPT STATE]\n");
+        rt_uint64_t daif = 0;
+        asm volatile("mrs %0, DAIF" : "=r"(daif));
+        rt_kprintf("DAIF:          ");
+        printhex64(daif);
+        rt_kprintf(" (D=%d A=%d I=%d F=%d)\n",
+                   (daif >> 7) & 1, (daif >> 6) & 1, (daif >> 8) & 1, (daif >> 9) & 1);
+
+        /* PSTATE.I是关键：如果为1，CPU屏蔽所有IRQ */
+        rt_uint64_t pstate = 0;
+        asm volatile("mrs %0, NZCV" : "=r"(pstate));  /* 读取PSTATE的部分信息 */
+        rt_kprintf("PSTATE NZCV:   ");
+        printhex64(pstate);
+        rt_kprintf("\n");
+
+        /* 检查当前EL */
+        rt_uint64_t currentel = 0;
+        asm volatile("mrs %0, CurrentEL" : "=r"(currentel));
+        rt_kprintf("CurrentEL:     ");
+        printhex64(currentel);
+        rt_kprintf(" (EL=%d)\n", (currentel >> 2) & 3);
+
+        /* 检查VBAR_EL1（异常向量表基地址） */
+        rt_uint64_t vbar_el1 = 0;
+        asm volatile("mrs %0, VBAR_EL1" : "=r"(vbar_el1));
+        rt_kprintf("VBAR_EL1:      ");
+        printhex64(vbar_el1);
+        rt_kprintf(" (Vector table base)\n");
+
+        /* 检查ICC_PMR_EL1（中断优先级屏蔽） */
+        rt_uint64_t icc_pmr = 0;
+        asm volatile("mrs %0, " ICC_PMR_EL1 : "=r"(icc_pmr));
+        rt_kprintf("ICC_PMR_EL1:   ");
+        printhex64(icc_pmr);
+        rt_kprintf(" (Priority mask, 0xFF=all enabled)\n");
+
+        /* 检查Timer优先级设置（关键！） */
+        volatile rt_uint8_t *gicr_ipriorityr = (volatile rt_uint8_t *)(0x08110000 + 0x400);  /* GICR_IPRIORITYR */
+
+        rt_uint8_t timer_priority = gicr_ipriorityr[30];  /* Timer IRQ30优先级 */
+        rt_uint8_t uart0_priority = gicr_ipriorityr[0];   /* UART0 IRQ0优先级（如果有） */
+
+        rt_kprintf("Timer IRQ30 priority: 0x%02x (%d)\n", timer_priority, timer_priority);
+        rt_kprintf("UART0 IRQ0 priority:   0x%02x (%d)\n", uart0_priority, uart0_priority);
+        rt_kprintf("PMR threshold:         0x%02x (%d)\n", (int)icc_pmr, (int)icc_pmr);
+
+        /* GICv3优先级规则：数值越小优先级越高 */
+        if (timer_priority >= icc_pmr) {
+            rt_kprintf("\n⚠ Timer priority %d >= PMR %d, BLOCKED!\n", timer_priority, (int)icc_pmr);
+            rt_kprintf("Timer needs priority < PMR to trigger!\n");
+        } else {
+            rt_kprintf("\n✓ Timer priority %d < PMR %d, should work!\n", timer_priority, (int)icc_pmr);
+        }
+
+        /* 启用全局中断 */
+        asm volatile("msr DAIFclr, #0xF" ::: "memory");  /* Clear all interrupt masks */
+        asm volatile("isb");
+
+        rt_kprintf("[FIX] Enable interrupts globally...\n");
+        rt_uint64_t daif_after = 0;
+        asm volatile("mrs %0, DAIF" : "=r"(daif_after));
+        rt_kprintf("  DAIF after: 0x%02x (I=%d)\n\n", (int)daif_after, (daif_after >> 7) & 1);
+
+        /* ★★★ 检查GICR组别配置（关键！）★★★ */
+        rt_kprintf("\n========================================\n");
+        rt_kprintf("[GICR GROUP - CRITICAL]\n");
+        rt_kprintf("========================================\n");
+
+        /* GICR_IGROUPR0 - PPI组别配置 */
+        volatile rt_uint32_t *gicr_igroupr0 = (volatile rt_uint32_t *)(0x08110000 + 0x80);
+        rt_uint32_t igroup0 = *gicr_igroupr0;
+
+        rt_kprintf("GICR_IGROUPR0: 0x");
+        printhex32(igroup0);
+        rt_kprintf("\n");
+        rt_kprintf("Timer30 Group: %d ", (igroup0 >> 30) & 1);
+        if (((igroup0 >> 30) & 1) == 0) {
+            rt_kprintf("← Group0 Secure (WRONG for NS EL1)!\n");
+            rt_kprintf("\n★★★ FIXING: Set Timer30 to Group1 NS ★★★\n");
+            *gicr_igroupr0 |= (1 << 30);
+            rt_uint32_t igroup0_after = *gicr_igroupr0;
+            rt_kprintf("After fix: 0x");
+            printhex32(igroup0_after);
+            rt_kprintf(" Timer30=%d\n", (igroup0_after >> 30) & 1);
+        } else {
+            rt_kprintf("← Group1 NS (CORRECT)\n");
+        }
+
+        rt_kprintf("========================================\n\n");
+
+        /* 检测关键变化 */
+        if (ispendr1 & (1 << 25)) {
+            rt_kprintf("★★★ UART IRQ57 PENDING! ★★★\n");
+        }
+
+        if (isactiver1 & (1 << 25)) {
+            rt_kprintf("★★★ UART IRQ57 ACTIVE! ISR running! ★★★\n");
+        }
+
+        if (uart_lsr & 0x01) {
+            rt_kprintf("★★★ UART RX DATA READY! ★★★\n");
+            rt_uint32_t data = uart_base[0x00/4];
+            rt_kprintf("  RX char: 0x%02x\n", data & 0xFF);
+        }
+
+        /* 忙等待1秒（不依赖timer） */
+        // volatile int count = 0;
+        // while (count < 1000000) {
+        //     count++;
+        //     asm volatile("nop");
+        // }
+        rt_thread_mdelay(1000);
+    }
+}
+
+/* Initialize */
+int polling_console_init(void)
+{
+    rt_thread_t tid = rt_thread_create("console",
+                                       console_thread,
+                                       RT_NULL,
+                                       2048,
+                                       20,
+                                       20);
+
+    if (tid) {
+        rt_thread_startup(tid);
+        rt_kprintf("[Console] GIC monitor started\n");
+        return 0;
+    }
+
+    rt_kprintf("[Console] Failed to create thread\n");
+    return -1;
+}

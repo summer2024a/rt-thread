@@ -1,0 +1,69 @@
+/*
+ * Timer运行状态检查 - 验证Timer物理计数器是否在增长（无延迟版本）
+ */
+
+#include <rtthread.h>
+#include <rthw.h>
+
+void check_timer_running(void)
+{
+    rt_kprintf("\n");
+    rt_kprintf("========================================\n");
+    rt_kprintf(" Timer Running Status Check\n");
+    rt_kprintf("========================================\n");
+
+    rt_uint64_t cntfrq = 0;
+    asm volatile("mrs %0, CNTFRQ_EL0" : "=r"(cntfrq));
+    rt_kprintf("Timer frequency: %lld Hz (%lld MHz)\n", cntfrq, cntfrq / 1000000);
+
+    /* 检查物理计数器是否在增长 - 无延迟版本 */
+    rt_kprintf("\nChecking CNTPCT_EL0 (physical counter, no delay)...\n");
+
+    rt_uint64_t cntpct[5];
+    for (int i = 0; i < 5; i++) {
+        asm volatile("mrs %0, CNTPCT_EL0" : "=r"(cntpct[i]));
+        asm volatile("isb");
+
+        rt_kprintf("[%d] CNTPCT_EL0: 0x%llx\n", i, cntpct[i]);
+
+        if (i > 0) {
+            rt_uint64_t delta = cntpct[i] - cntpct[i-1];
+            rt_uint64_t delta_us = (delta * 1000000) / cntfrq;
+            rt_kprintf("    Delta: %lld ticks (%lld us)\n", delta, delta_us);
+
+            if (delta == 0) {
+                rt_kprintf("    ⚠ WARNING: Counter NOT incrementing!\n");
+            } else {
+                rt_kprintf("    ✓ Counter running (%lld ticks/iter)\n", delta);
+            }
+        }
+
+        /* 简单延迟循环（避免rt_thread_mdelay导致异常） */
+        for (volatile int j = 0; j < 1000000; j++) {
+            asm volatile("isb");
+        }
+    }
+
+    rt_kprintf("\n========================================\n");
+    rt_kprintf("Timer check complete.\n");
+    rt_kprintf("If ISR triggered, system interrupts working!\n");
+    rt_kprintf("========================================\n");
+}
+
+int timer_running_check_init(void)
+{
+    rt_thread_t tid = rt_thread_create("timer_chk",
+                                       check_timer_running,
+                                       RT_NULL,
+                                       1024,
+                                       10,
+                                       10);
+
+    if (tid) {
+        rt_thread_startup(tid);
+        return 0;
+    }
+
+    return -1;
+}
+INIT_APP_EXPORT(timer_running_check_init);

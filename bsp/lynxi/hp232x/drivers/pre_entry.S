@@ -392,21 +392,41 @@ cci_init_done:
     /* Step 5: Disable coprocessor traps to EL3 (boot.S:55) */
     msr     cptr_el3, xzr
 
-    /* Step 6: Set timer frequency (boot.S:75-77) */
+    /* Step 6: Configure platform generic timer clock, same as lynxi-bootwrapper boot.S */
+    ldr     x1, =0x08600000
+    ldr     x0, =0x1
+    str     w0, [x1]
+
+    ldr     x1, =0x08600008
+    ldr     x0, =0xf
+    str     w0, [x1]
+
+    ldr     x1, =0x0860000c
+    ldr     x0, =0xf
+    str     w0, [x1]
+
+    ldr     x1, =0x08600020
+    ldr     x0, =0x01dcd650        /* 31250000 */
+    str     w0, [x1]
+
+    dsb     sy
+    isb
+
+    /* Step 7: Set timer frequency (boot.S:75-77) */
     ldr     x0, =31250000           /* cnt_freq value */
     msr     cntfrq_el0, x0
 
-    /* Step 7: Set SCTLR_EL2 (spin.S:22-23) */
+    /* Step 8: Set SCTLR_EL2 (spin.S:22-23) */
     ldr     x0, =(3 << 28 | 3 << 22 | 1 << 18 | 1 << 16 | 1 << 11 | 3 << 4)  /* SCTLR_EL2_RESET */
     msr     sctlr_el2, x0
 
-    /* Step 8: Set SPSR_EL3 and ELR_EL3 for eret (spin.S:24-26) */
+    /* Step 9: Set SPSR_EL3 and ELR_EL3 for eret (spin.S:24-26) */
     adr     x0, .hp232x_after_eret   /* Return address after eret */
     mov     x1, #(9 | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 9))  /* SPSR_KERNEL: EL2h + all exceptions masked */
     msr     elr_el3, x0
     msr     spsr_el3, x1
 
-    /* Step 9: Execute eret */
+    /* Step 10: Execute eret */
     eret
 
 .hp232x_after_eret:

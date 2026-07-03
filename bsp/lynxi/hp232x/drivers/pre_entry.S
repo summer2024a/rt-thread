@@ -827,19 +827,12 @@ spin_wait_loop:
 
 /* ===== HP232X Data Sections ===== */
 
-    .section .early_hp232x, "aw", @progbits
-
-/* HP232X secondary CPU spin table - placed in IRAM0 first 256KB (constraint-compliant) */
+/* HP232X secondary CPU spin table - placed in .bss.noclean (IRAM1, not zeroed) */
+    .section .bss.noclean.hp232x_spin, "aw", @nobits
     .align 12
 hp232x_spin_table:
     .space 64                   /* Spin table for up to 8 CPUs */
 hp232x_spin_table_end:
-
-/* HP232X stack area - placed in IRAM1 last 256KB (constraint-compliant) */
-    .align 4
-hp232x_stack_bottom:
-    .space 256                  /* 256 bytes per CPU (bootwrapper STACK_SIZE) */
-hp232x_stack_top:
 
 /* ===== HP232X Exception Vector Table Section (executable) ===== */
     .section .hp232x_vectors, "ax", @progbits
@@ -899,12 +892,10 @@ exc_halt:
 
 #endif /* _HP232X_PRE_ENTRY_S_ */
 
-/* HP232X temporary stack in IRAM0 (last 256KB, constraint-compliant) */
-    .align 12
-    .global hp232x_temp_stack_top
-hp232x_temp_stack:
-    .space 32768              /* 32KB temp stack in IRAM0 */
-hp232x_temp_stack_top:
+/* Note: hp232x_temp_stack (32KB) removed - never used.
+ * BL22 mode: bootwrapper sets stack.
+ * BL21 mode: entry_point.S uses .boot_cpu_stack_top (IRAM1 noclean bss).
+ */
 
 #endif /* BSP_USING_HP232X */
 
@@ -1029,11 +1020,9 @@ hp232x_enable_mmu_static:
 
 #endif /* BSP_USING_HP232X_USE_STATIC_ASM - 方案A */
 
-/* HP232X temporary stack in IRAM0 (last 256KB, constraint-compliant) */
-    .align 12
-    .global hp232x_temp_stack_top
-hp232x_temp_stack:
-    .space 32768              /* 32KB temp stack in IRAM0 */
-hp232x_temp_stack_top:
+/* Note: hp232x_temp_stack (32KB) removed - never used.
+ * BL22 mode: bootwrapper sets stack.
+ * BL21 mode: entry_point.S uses .boot_cpu_stack_top (IRAM1 noclean bss).
+ */
 
 #endif /* BSP_USING_HP232X */

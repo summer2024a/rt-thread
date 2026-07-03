@@ -78,18 +78,8 @@ SECTIONS
         PROVIDE(__text_end = .);
     } :text
 
-    /* HP232X: Early MMU page tables must be in IRAM0 (accessible before MMU enable) */
-    .early_hp232x :
-    {
-        . = ALIGN(4096);
-        PROVIDE(__early_tbl_start = .);
-        KEEP(*(.early_hp232x))
-        . = ALIGN(4096);
-        PROVIDE(__early_tbl_end = .);
-    } :text
-
-    /* HP232X: Match bootwrapper layout - no MMU tables needed */
-    /* bootwrapper has .text at 0x4000020, .stack at 0x100020000 */
+    /* HP232X BL22 mode: .early_hp232x not needed (bootwrapper handles EL transition) */
+    /* HP232X BL21 mode: spin_table/stack will be in .bss if pre_entry.S compiled */
 
     .eh_frame_hdr :
     {

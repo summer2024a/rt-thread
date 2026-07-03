@@ -8,6 +8,10 @@ src     = Glob('*.c') + Glob('*.cpp') + Glob('*.S')
 if GetDepend('BSP_USING_HP232X_BL22'):
     SrcRemove(src, ['pre_entry.S'])
 
+# gic_group_config.c only needed for GIC debug mode
+if GetDepend('RT_BSP_GIC_DBG') == False:
+    SrcRemove(src, ['gic_group_config.c'])
+
 CPPPATH = [cwd, str(Dir('#'))]
 
 group = DefineGroup('driver', src, depend = [''], CPPPATH = CPPPATH)

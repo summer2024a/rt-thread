@@ -259,6 +259,7 @@
 #define BSP_USING_GIC
 /* #define BSP_USING_GICV2 */
 #define BSP_USING_GICV3  /* Use GICv3 for KA200 SoC (GIC-500) */
+/* #define RT_BSP_GIC_DBG */  /* GIC group config debug - disabled by default */
 #define KERNEL_ASPACE_START 0x04000000
 /* ARM generic timer disabled as system tick when APB timer is selected. */
 /* #define BSP_USING_CORETIMER */

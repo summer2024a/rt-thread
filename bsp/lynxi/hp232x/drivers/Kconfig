@@ -35,6 +35,14 @@ menu "Hardware Drivers Config"
                     config BSP_USING_GICV3
                         bool "Enable GIC500(GICV3)"
                 endchoice
+
+                config RT_BSP_GIC_DBG
+                    bool "Enable GIC group config debug"
+                    default n
+                    help
+                        Enable GIC interrupt group configuration debug code.
+                        Useful for debugging GIC secure/non-secure routing.
+                        Disable to reduce code size.
             endif
 
         config KERNEL_ASPACE_START

@@ -675,3 +675,361 @@ orr     x0, x0, #0x1000     /* I-cache */
 msr     sctlr_el1, x0
 isb
 ```
+
+---
+
+## 14. SMP 多核 MMU 页表共享
+
+### 14.1 背景
+
+HP232X 是双核 SoC，需要支持 SMP（Symmetric Multi-Processing）。在 SMP 系统中，多核 MMU 页表的处理是一个关键问题。
+
+### 14.2 多核共用 MMU 页表的分析
+
+#### ✅ 通常没问题（主流 SMP 系统都这样做）
+
+| 系统 | 页表策略 |
+|------|----------|
+| Linux SMP | 所有 CPU 共享同一套内核页表 |
+| RT-Thread SMP | 所有 CPU 共享 `MMUTable` |
+
+#### 需要注意的关键点
+
+**1. TLB 一致性**
+
+当一个 CPU 修改页表后，其他 CPU 的 TLB 可能还有旧映射。需要：
+- 使用 **TLB broadcast**（Inner Shareable domain）
+- 或手动通知其他 CPU 刷新 TLB
+
+ARMv8 提供的机制：
+- `tlbi vmalle1is` - Inner Shareable domain TLB invalidate
+- `tlbi vmalle1` - 当前 CPU 的 TLB invalidate
+
+**2. 页表修改同步**
+
+动态修改页表时（如 mmap、内存分配）需要同步所有 CPU：
+- 典型的 TLB shootdown 机制
+- 通过 IPI（Inter-Processor Interrupt）通知其他 CPU 刷新 TLB
+
+**3. 共享属性配置**
+
+TCR_EL1 中的 SH0（Shareability attribute）必须正确设置：
+
+```c
+tcr |= (3UL << 12);      /* SH0 = Inner Shareable */
+```
+
+这确保：
+- 页表修改后，TLB invalidate broadcast 有效
+- 缓存一致性自动维护
+
+### 14.3 HP232X 当前 MMU 页表状态分析
+
+#### ELF 符号表分析（2026-07-03）
+
+```
+readelf -s rtthread.elf | grep -i "hp232x_mmu\|MMUTable"
+
+   395: 0x0406f000  4096 OBJECT  LOCAL  DEFAULT  5  hp232x_mmu_l1
+   396: 0x04070000  4096 OBJECT  LOCAL  DEFAULT  5  hp232x_mmu_l2_low
+   397: 0x04071000  4096 OBJECT  LOCAL  DEFAULT  5  hp232x_mmu_l2_ram1
+   398: 0x04072000  4096 OBJECT  LOCAL  DEFAULT  5  hp232x_mmu_l2_apu
+   399: 0x04073000  4096 OBJECT  LOCAL  DEFAULT  5  hp232x_mmu_l3_ram0
+   400: 0x04074000  4096 OBJECT  LOCAL  DEFAULT  5  hp232x_mmu_l3_ram1
+  1099: 0x04055c98   260 FUNC    GLOBAL DEFAULT  2  hp232x_mmu_init
+  1144: 0x10005b000 4096 OBJECT  GLOBAL DEFAULT  6  MMUTable
+```
+
+#### 问题发现
+
+| 符号 | 地址 | Section | 类型 | 使用者 |
+|------|------|----------|------|--------|
+| `hp232x_mmu_l1` | `0x0406f000` | `.mmu_table` (IRAM0) | **LOCAL (static)** | 主核 (CPU0) |
+| `hp232x_mmu_l2_*` | `0x0407xxxx` | `.mmu_table` (IRAM0) | LOCAL | 主核 |
+| `hp232x_mmu_l3_*` | `0x0407xxxx` | `.mmu_table` (IRAM0) | LOCAL | 主核 |
+| **`MMUTable`** | `0x10005b000` | `.bss` (IRAM1) | **GLOBAL** | board.c 引用 |
+
+**核心问题：主核和从核使用不同页表！**
+
+- 主核：`hp232x_mmu_init()` → 设置 `TTBR0_EL1 = hp232x_mmu_l1` (IRAM0)
+- 从核：`rt_hw_secondary_cpu_bsp_start()` → 调用 `rt_hw_mmu_ktbl_set(MMUTable)` (IRAM1)
+
+#### 问题根源
+
+**1. hp232x_mmu_l1 是 static 变量**
+
+```c
+// hp232x_mmu.c
+static uint64_t hp232x_mmu_l1[HP232X_MMU_ENTRIES]  // ← static，外部无法访问
+    __attribute__((aligned(4096), section(".mmu_table")));
+```
+
+**2. board.c SMP 代码引用通用 MMUTable**
+
+```c
+// board.c
+extern size_t MMUTable[];  // ← 来自 libcpu/aarch64/common/mmu.c
+
+void rt_hw_secondary_cpu_bsp_start(void)
+{
+    // ...
+    rt_hw_mmu_ktbl_set((unsigned long)MMUTable);  // ← 错误！应该用 hp232x_mmu_l1
+}
+```
+
+**3. entry_point.S 的 enable_mmu_early**
+
+```asm
+// entry_point.S:277
+b       enable_mmu_early   // ← 使用 .early_tbl0_page（通用页表）
+```
+
+从核入口走的是通用 MMU 流程，与 HP232X 自定义页表不兼容。
+
+### 14.4 SMP 启动流程分析
+
+#### 标准流程（entry_point.S）
+
+```
+Secondary CPU (CPU1) 入口:
+  entry_point.S: secondary CPU entry
+      ↓
+  init_cpu_el          // EL 初始化
+      ↓
+  init_cpu_stack_early // 设置栈
+      ↓
+  ldr kernel_entry, =rt_hw_secondary_cpu_bsp_start
+  b   enable_mmu_early  // ← 使用 .early_tbl0_page 通用页表！
+      ↓
+  rt_hw_secondary_cpu_bsp_start() (board.c)
+      ↓
+  rt_hw_mmu_ktbl_set(MMUTable)  // ← 又设置到 MMUTable！
+```
+
+#### 问题总结
+
+| 步骤 | 使用的页表 | 问题 |
+|------|-----------|------|
+| enable_mmu_early | `.early_tbl0_page` | 通用页表，与 hp232x_mmu_l1 不一致 |
+| rt_hw_mmu_ktbl_set | `MMUTable` (IRAM1) | 通用页表，与 hp232x_mmu_l1 不一致 |
+| 主核 hp232x_mmu_init | `hp232x_mmu_l1` (IRAM0) | HP232X 自定义页表 |
+
+**三套页表！这会导致从核启动失败。**
+
+### 14.5 解决方案：统一使用 hp232x_mmu_l1
+
+#### 方案概述
+
+让所有 CPU 共享同一套页表 `hp232x_mmu_l1`：
+
+| CPU | 页表 | TTBR0_EL1 |
+|-----|------|-----------|
+| CPU0 (主核) | `hp232x_mmu_l1` | `hp232x_mmu_init()` 设置 |
+| CPU1 (从核) | `hp232x_mmu_l1` (相同) | `rt_hw_secondary_cpu_bsp_start()` 设置 |
+
+#### 安全性验证
+
+HP232X 当前配置正确支持共享页表：
+
+```c
+// hp232x_mmu.c
+tcr |= (3UL << 12);         /* SH0 = Inner Shareable ✓ */
+
+// 页表属性
+ATTR_NORMAL_WB              /* Normal memory, Write-Back cacheable ✓ */
+```
+
+Inner Shareable 属性确保：
+- TLB broadcast 有效
+- 缓存一致性自动维护
+
+#### 实现要点
+
+**1. 导出 hp232x_mmu_l1**
+
+```c
+// hp232x_mmu.c - 移除 static
+uint64_t hp232x_mmu_l1[HP232X_MMU_ENTRIES]
+    __attribute__((aligned(4096), section(".mmu_table")));
+```
+
+或添加 getter 函数：
+
+```c
+// hp232x_mmu.c
+uint64_t *hp232x_mmu_get_l1_table(void)
+{
+    return hp232x_mmu_l1;
+}
+
+// hp232x_mmu.h
+uint64_t *hp232x_mmu_get_l1_table(void);
+```
+
+**2. 修改 board.c**
+
+```c
+// board.c
+#include "hp232x_mmu.h"
+
+void rt_hw_secondary_cpu_bsp_start(void)
+{
+    int cpu_id = rt_hw_cpu_id();
+    
+    system_vectors_init();
+    rt_hw_spin_lock(&_cpus_lock);
+    rt_hw_sysreg_read(mpidr_el1, rt_cpu_mpidr_table[cpu_id]);
+    
+    // 使用 HP232X 自定义页表而非通用 MMUTable
+    rt_hw_mmu_ktbl_set((unsigned long)hp232x_mmu_get_l1_table());
+    
+    // ... 其余代码
+}
+```
+
+**3. 可选：为 HP232X 添加独立的 secondary MMU 初始化**
+
+```c
+// hp232x_mmu.c
+void hp232x_mmu_secondary_init(void)
+{
+    /* 设置 TTBR0_EL1 到共享页表 */
+    __asm__ volatile("msr ttbr0_el1, %0" :: "r"((uint64_t)hp232x_mmu_l1));
+    __asm__ volatile("isb" ::: "memory");
+    
+    /* 刷新 TLB */
+    __asm__ volatile("tlbi vmalle1" ::: "memory");
+    __asm__ volatile("dsb sy" ::: "memory");
+    __asm__ volatile("isb" ::: "memory");
+    
+    /* 确保 MMU 已启用 */
+    uint64_t sctlr;
+    __asm__ volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
+    if (!(sctlr & 1)) {
+        sctlr |= 0x1UL;
+        __asm__ volatile("msr sctlr_el1, %0" :: "r"(sctlr));
+        __asm__ volatile("isb" ::: "memory");
+    }
+}
+```
+
+### 14.6 TLB 一致性维护
+
+#### 页表修改后的 TLB flush
+
+当需要修改页表时（如动态映射），需要通知所有 CPU 刷新 TLB：
+
+```c
+void hp232x_mmu_tlb_flush_all(void)
+{
+    /* Inner Shareable TLB invalidate - broadcast to all CPUs */
+    __asm__ volatile("tlbi vmalle1is" ::: "memory");
+    __asm__ volatile("dsb ish" ::: "memory");
+    __asm__ volatile("isb" ::: "memory");
+}
+```
+
+注意：
+- `vmalle1is` - Inner Shareable，会 broadcast 到所有 CPU
+- `vmalle1` - 只刷新当前 CPU 的 TLB
+
+#### RT-Thread SMP 的标准做法
+
+RT-Thread 使用 IPI 进行 TLB shootdown：
+
+```c
+// 发送 IPI 通知其他 CPU
+rt_hw_ipi_send(RT_TLB_IPI, cpu_mask);
+
+// 其他 CPU 收到 IPI 后执行
+void rt_hw_tlb_ipi_handler(void)
+{
+    rt_hw_mmu_ktbl_set(...);  // 或 tlbi vmalle1is
+}
+```
+
+### 14.7 总结
+
+| 项目 | 状态 |
+|------|------|
+| 多核共享页表 | ✅ 安全可行（Inner Shareable 属性正确） |
+| 当前问题 | ❌ 主核用 hp232x_mmu_l1，从核用 MMUTable（不一致） |
+| 解决方案 | 统一使用 hp232x_mmu_l1，导出变量并修改 board.c |
+| TLB 一致性 | ✅ Inner Shareable + tlbi vmalle1is broadcast |
+
+---
+
+## 15. SMP 调度器问题根因分析（2026-07-04）
+
+### 问题现象
+
+启用 SMP 模式后（`RT_USING_SMP`），系统在 `rt_system_scheduler_start()` 阶段卡住：
+- SMP 初始化成功完成
+- `rt_hw_context_switch_to()` 执行
+- 但 `eret` 后没有正确跳转到 `_thread_start`
+- 调试显示 `elr_el1 = 0x00000000`（应该是 `_thread_start` 地址）
+
+### 根因分析
+
+**MP 版本 `rt_hw_context_switch_to` 在设置栈后调用 C 函数，破坏栈内容！**
+
+```asm
+rt_hw_context_switch_to:           // MP 版本
+    ldr     x0, [x0]               # 加载栈指针
+    mov     sp, x0                 # 设置 SP ← sp 指向线程栈
+    update_tidr x1
+
+    mov     x19, x1                # 保存 to_thread
+    mov     x0, x19
+    bl      rt_cpus_lock_status_restore  # ← C 函数调用！使用栈！
+    b       _context_switch_exit
+```
+
+**问题**：
+1. `mov sp, x0` 设置栈指针指向线程栈（栈上已初始化好返回地址等）
+2. `bl rt_cpus_lock_status_restore` 调用 C 函数
+3. C 函数调用会在栈上压入返回地址、保存寄存器（x29, x30 等）
+4. **这破坏了栈上已初始化的 `elr_el1` 返回地址！**
+
+对比 UP 版本：
+```asm
+rt_hw_context_switch_to:           // UP 版本
+    clrex
+    ldr     x0, [x0]               # 加载栈指针
+    RESTORE_CONTEXT_SWITCH x0      # 直接恢复上下文，无 C 函数调用
+    NEVER_RETURN
+```
+
+UP 版本不调用 C 函数，直接恢复上下文，所以正常工作。
+
+### 验证实验
+
+单核配置对比：
+
+| 配置 | 结果 |
+|------|------|
+| `RT_USING_SMP` + `RT_CPUS_NR=1` | ❌ 卡住（使用 MP 版本 `rt_hw_context_switch_to`） |
+| 非 SMP（无 `RT_USING_SMP`） | ✅ 正常（使用 UP 版本 `rt_hw_context_switch_to`） |
+
+### 解决方案建议
+
+1. **短期**：保持单核非 SMP 模式运行
+2. **中期**：修改 `rt_hw_context_switch_to` 在设置 `sp` 前调用 C 函数
+3. **长期**：向 RT-Thread upstream 报告此架构问题
+
+### SMP MMU 代码完成状态
+
+| 修改 | 文件 | 状态 |
+|------|------|------|
+| `hp232x_mmu_get_l1_table()` | hp232x_mmu.c | ✅ 完成 |
+| `hp232x_mmu_secondary_init()` | hp232x_mmu.c | ✅ 完成 |
+| 从核跳过 enable_mmu_early | entry_point.S | ✅ 完成 |
+| 使用 identity mapping 地址 | board.c | ✅ 完成 |
+| trap.c SMP 兼容性修复 | trap.c | ✅ 完成 |
+
+**结论**：SMP MMU 代码已完成，但 RT-Thread SMP 调度器架构问题（`rt_hw_context_switch_to` 调用 C 函数破坏栈）需要在 upstream 层面解决。
+
+---
+
+**更新日期**: 2026-07-04  
+**新增章节**: 15. SMP 调度器问题根因分析

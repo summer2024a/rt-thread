@@ -98,4 +98,6 @@ extern int __bss_end;
 
 void rt_hw_board_init(void);
 
+void early_putc_direct(char c);
+
 #endif

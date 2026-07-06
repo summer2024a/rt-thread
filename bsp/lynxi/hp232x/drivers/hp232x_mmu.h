@@ -48,6 +48,31 @@ extern "C" {
 
 void hp232x_mmu_init(void);
 
+/**
+ * Get the L1 page table base address for SMP secondary CPU.
+ *
+ * In SMP mode, all CPUs share the same page table (hp232x_mmu_l1).
+ * Secondary CPU needs to call this function to get the page table
+ * address before calling rt_hw_mmu_ktbl_set().
+ *
+ * @return Physical address of the L1 page table
+ */
+uint64_t *hp232x_mmu_get_l1_table(void);
+
+/**
+ * Initialize MMU for secondary CPU in SMP mode.
+ *
+ * This function sets up the shared page table (hp232x_mmu_l1),
+ * flushes TLB, and ensures MMU is enabled. It replaces the
+ * standard rt_hw_mmu_ktbl_set() for HP232X BSP.
+ *
+ * Called from rt_hw_secondary_cpu_bsp_start() in board.c.
+ *
+ * NOTE: This function must be called with MMU either already enabled
+ * (by bootwrapper) or disabled. It handles both cases.
+ */
+void hp232x_mmu_secondary_init(void);
+
 #ifdef __cplusplus
 }
 #endif

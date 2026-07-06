@@ -43,7 +43,6 @@
 
 #define HP232X_CPU_STACK_BYTES 1024UL
 
-extern size_t MMUTable[];
 extern int __bss_start;
 extern int __bss_end;
 extern void *system_vectors;
@@ -85,14 +84,14 @@ void early_putc_direct(char c)
  * Note: IRAM0 and IRAM1 are NOT contiguous — IRAM1 is at 4GB boundary.
  * Both use identity mapping (vaddr == paddr). IRAM1 mapping restricted to high 256KB.
  */
-struct mem_desc platform_mem_desc[] = {
-    /* IRAM0 — identity mapping at 0x04000000 (first 256KB usable) */
-    {IRAM0_START, IRAM0_USE_END - 1, IRAM0_START, NORMAL_MEM},
-    /* IRAM1 — identity mapping at 0x100040000 (last 256KB usable) */
-    {IRAM1_USE_START, IRAM1_END - 1, IRAM1_USE_START, NORMAL_MEM},
-    /* Peripheral space (GIC, UART, timer, etc.) */
-    {INTC_BASE, INTC_BASE + 0x14000000UL - 1, INTC_BASE, DEVICE_MEM},
-};
+// struct mem_desc platform_mem_desc[] = {
+//     /* IRAM0 — identity mapping at 0x04000000 (first 256KB usable) */
+//     {IRAM0_START, IRAM0_USE_END - 1, IRAM0_START, NORMAL_MEM},
+//     /* IRAM1 — identity mapping at 0x100040000 (last 256KB usable) */
+//     {IRAM1_USE_START, IRAM1_END - 1, IRAM1_USE_START, NORMAL_MEM},
+//     /* Peripheral space (GIC, UART, timer, etc.) */
+//     {INTC_BASE, INTC_BASE + 0x14000000UL - 1, INTC_BASE, DEVICE_MEM},
+// };
 
 #ifdef BSP_USING_GICV3
 rt_uint64_t rt_cpu_mpidr_table[] =
@@ -106,7 +105,7 @@ rt_uint64_t rt_cpu_mpidr_table[] =
 };
 #endif
 
-const rt_uint32_t platform_mem_desc_size = sizeof(platform_mem_desc)/sizeof(platform_mem_desc[0]);
+// const rt_uint32_t platform_mem_desc_size = sizeof(platform_mem_desc)/sizeof(platform_mem_desc[0]);
 
 void idle_wfi(void)
 {
@@ -167,12 +166,21 @@ void rt_hw_board_init(void)
         - HP232X_CPU_STACK_BYTES * (RT_CPUS_NR - 1)
         - HP232X_CPU_STACK_BYTES;
 
-    /* HP232X places .bss in IRAM1 above 4GB. entry_point.S skips early
-     * zeroing for this high address, so clear it here before any BSS globals
-     * such as interrupt hooks, earlycon_base, and scheduler state are used. */
-    rt_memset((void *)bss_start, 0, bss_end - bss_start);
+    /* HP232X FIX: BSS is now zeroed in entry_point.S:198 init_kernel_bss using
+     * ldr (no adrp 33-bit limitation). This ensures BSS is clean BEFORE
+     * rtthread_startup calls rt_hw_spin_lock_init(&_cpus_lock) at line 246.
+     * The early zeroing prevents SMP spinlock corruption (garbage values).
+     *
+     * Previous issue: entry_point.S skipped high-address BSS (>4GB),
+     * causing rtthread_startup to initialize spinlocks with garbage.
+     * board.c's rt_memset was too late (after spinlock init).
+     *
+     * BSS variables: _cpus_lock, _syscon_lock, _prbuf_lock, _heap_spinlock, etc.
+     * Now safe: entry_point.S zeros them before any C code runs.
+     */
 
     rt_hw_earlycon_ioremap_early();
+    early_putc_direct('E');  /* E for earlycon ioremap done */
 
     RT_ASSERT(noclean_end >= IRAM1_USE_START);
     RT_ASSERT(bss_start >= IRAM1_USE_START);
@@ -182,11 +190,13 @@ void rt_hw_board_init(void)
     init_page_region.start = page_start;
     init_page_region.end = page_end;
 
-    rt_kprintf("IRAM1: bss@%lx-%lx page@%lx-%lx heap@%lx-%lx",
-          bss_start, bss_end, page_start, page_end, heap_start, heap_end);
-
+    /* Print IRAM1 layout using early_putc_direct (rt_kprintf may hang before MMU) */
+    early_putc_direct('I');  /* I for IRAM1 info */
+    /* Simplified: just print marker, skip full address dump for now */
+    early_putc_direct('M');  /* M for MMU init start */
     LOG_I("[board] STEP1: HP232X MMU initialization");
     hp232x_mmu_init();
+    early_putc_direct('R');  /* R for MMU init returned */
 
     LOG_I("[board] MMU initialization complete - proceeding to heap setup");
 
@@ -304,15 +314,24 @@ void rt_hw_board_init(void)
 #endif
 
 #ifdef RT_USING_SMP
-    LOG_I("[board] SKIP SMP initialization (GIC not initialized yet)");
-    // rt_smp_call_init();
-    // /* Install the IPI handle */
-    // rt_hw_ipi_handler_install(RT_SCHEDULE_IPI, rt_scheduler_ipi_handler);
-    // rt_hw_ipi_handler_install(RT_STOP_IPI, rt_scheduler_ipi_handler);
-    // rt_hw_ipi_handler_install(RT_SMP_CALL_IPI, rt_smp_call_ipi_handler);
-    // rt_hw_interrupt_umask(RT_SCHEDULE_IPI);
-    // rt_hw_interrupt_umask(RT_STOP_IPI);
-    // rt_hw_interrupt_umask(RT_SMP_CALL_IPI);
+    LOG_I("[board] Initializing SMP...");
+
+    /* SMP call initialization */
+    rt_smp_call_init();
+
+    /* Install the IPI handlers */
+    rt_hw_ipi_handler_install(RT_SCHEDULE_IPI, rt_scheduler_ipi_handler);
+    rt_hw_ipi_handler_install(RT_STOP_IPI, rt_scheduler_ipi_handler);
+    rt_hw_ipi_handler_install(RT_SMP_CALL_IPI, rt_smp_call_ipi_handler);
+
+    /* Enable IPI interrupts */
+    rt_hw_interrupt_umask(RT_SCHEDULE_IPI);
+    rt_hw_interrupt_umask(RT_STOP_IPI);
+    rt_hw_interrupt_umask(RT_SMP_CALL_IPI);
+
+    LOG_I("[board] SMP initialization complete");
+#else
+    LOG_I("[board] Non-SMP mode");
 #endif
 
     LOG_I("[board] ===== BOARD INIT COMPLETE =====");
@@ -345,7 +364,13 @@ void rt_hw_secondary_cpu_up(void)
 {
     int i;
     void *release_addr;
-    rt_uint64_t entry = (rt_uint64_t)rt_kmem_v2p(_secondary_cpu_entry);
+    /* HP232X uses identity mapping (VA == PA), so _secondary_cpu_entry
+     * physical address equals its virtual address.
+     * NOTE: rt_kmem_v2p requires rt_kernel_space to be initialized,
+     * but setup.c is excluded for HP232X, so rt_kernel_space.page_table
+     * is not set. For identity mapping, we use vaddr directly as paddr.
+     */
+    rt_uint64_t entry = (rt_uint64_t)_secondary_cpu_entry;  /* VA == PA for HP232X */
 
     for (i = 0; i < RT_CPUS_NR && cpu_release_paddr[i]; ++i)
     {
@@ -360,7 +385,7 @@ void rt_hw_secondary_cpu_up(void)
     {
         release_addr = (void *)cpu_release_paddr[i];
         __asm__ volatile ("str %0, [%1]"::"rZ"(entry), "r"(release_addr):"memory");
-        LOG_D("release_addr[%d]: %p, 0x%llx", i, release_addr, *(unsigned long *)release_addr);
+        LOG_I("release_addr[%d]: %p, entry=0x%llx", i, release_addr, entry);
         rt_hw_cpu_dcache_ops(RT_HW_CACHE_FLUSH, release_addr, sizeof(rt_uint64_t));
         rt_hw_barrier(dsb, sy);
         rt_hw_sev();
@@ -381,7 +406,13 @@ void rt_hw_secondary_cpu_bsp_start(void)
     /* Save all mpidr */
     rt_hw_sysreg_read(mpidr_el1, rt_cpu_mpidr_table[cpu_id]);
 
-    rt_hw_mmu_ktbl_set((unsigned long)MMUTable);
+    /* CRITICAL: Use HP232X custom MMU initialization instead of generic
+     * rt_hw_mmu_ktbl_set(). This ensures:
+     * 1. TTBR0_EL1 set to hp232x_mmu_l1 (shared page table)
+     * 2. TLB properly invalidated
+     * 3. MMU enabled (if not already enabled by bootwrapper)
+     * See doc/mmu_design.md section 14 for details. */
+    hp232x_mmu_secondary_init();
 
 #ifndef RT_CLOCK_TIME_ARM_ARCH
     /* initialize timer for os tick */

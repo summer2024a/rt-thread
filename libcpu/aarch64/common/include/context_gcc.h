@@ -54,7 +54,6 @@
     msr     elr_el1, x30
     msr     spsr_el1, x19
 
-
     /* restore NEON */
     ldp     x19, x20, [sp], #0x10
     msr     fpcr, x19
@@ -69,6 +68,8 @@
     ldp     x19, x20, [sp], #0x10
 
     RESTORE_FPU sp
+    dsb     sy
+    isb
     eret
 .endm
 

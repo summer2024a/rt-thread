@@ -30,12 +30,6 @@
 #define HP232X_APB_TIMER_CLOCK      50000000U
 #endif
 
-#ifndef HP232X_APB_TIMER_TICK_ID
-#define HP232X_APB_TIMER_TICK_ID    0U
-#endif
-
-#define HP232X_APB_TIMER_TICK_IRQ   (TIMER_IRQ_START + HP232X_APB_TIMER_TICK_ID)
-
 static rt_uint32_t apb_timer_read(rt_uint32_t offset)
 {
     return *((volatile rt_uint32_t *)((rt_ubase_t)STIMER_BASE + offset));
@@ -57,11 +51,15 @@ static void apb_timer_disable(rt_uint32_t id)
     (void)apb_timer_read(DW_TIMER_EOI(id));
 }
 
+volatile rt_uint32_t hp232x_apb_timer_isr_count;
+
 static void apb_timer_isr(int vector, void *parameter)
 {
     rt_uint32_t id = (rt_uint32_t)(rt_ubase_t)parameter;
 
     RT_UNUSED(vector);
+
+    hp232x_apb_timer_isr_count++;
 
     /* Reading TxEOI clears the DesignWare APB timer interrupt. */
     (void)apb_timer_read(DW_TIMER_EOI(id));

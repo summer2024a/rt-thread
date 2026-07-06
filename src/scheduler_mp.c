@@ -1235,7 +1235,7 @@ void rt_sched_post_ctx_switch(struct rt_thread *thread)
 
     RT_ASSERT(rt_hw_interrupt_is_disabled());
 
-    if (from_thread)
+    if (from_thread && SCHEDULER_LOCK_FLAG(pcpu))
     {
         RT_ASSERT(RT_SCHED_CTX(from_thread).critical_lock_nest == 1);
 

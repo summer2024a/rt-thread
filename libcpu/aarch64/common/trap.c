@@ -58,9 +58,11 @@ void rt_hw_entry_step_debug(unsigned long step)
     early_putc_direct('\n');
 }
 
+#ifndef RT_USING_SMP
 extern unsigned long rt_interrupt_from_thread;
 extern unsigned long rt_interrupt_to_thread;
 extern unsigned long rt_thread_switch_interrupt_flag;
+#endif
 
 void rt_hw_irq_exit_debug(unsigned long elr, unsigned long spsr, void *sp)
 {
@@ -88,6 +90,7 @@ void rt_hw_irq_sched_debug(unsigned long flag)
     early_putc_direct('\n');
 }
 
+#ifndef RT_USING_SMP
 void rt_hw_context_switch_interrupt_before_debug(void)
 {
     early_puts_direct("ctx_switch_irq before: flag=0x");
@@ -109,6 +112,7 @@ void rt_hw_context_switch_interrupt_after_debug(void)
     early_puthex64(rt_interrupt_to_thread);
     early_putc_direct('\n');
 }
+#endif
 
 void rt_hw_context_switch_interrupt_do_before_debug(void)
 {

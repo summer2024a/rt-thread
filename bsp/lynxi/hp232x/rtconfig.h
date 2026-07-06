@@ -84,6 +84,7 @@
 /* end of rt_strnlen options */
 /* end of klibc options */
 #define RT_NAME_MAX 24
+#define RT_USING_SMP
 #define RT_CPUS_NR 1
 #define RT_ALIGN_SIZE 8
 #define RT_THREAD_PRIORITY_32
@@ -124,8 +125,8 @@
 #define RT_USING_SMALL_MEM
 #define RT_USING_SMALL_MEM_AS_HEAP  /* CRITICAL: Use small_mem as system heap */
 /* RT_USING_MEMTRACE — disabled to save memory */
-/* RT_USING_HEAP_ISR — disabled: spinlock may not work before scheduler init */
 #define RT_USING_HEAP
+#define RT_USING_HEAP_ISR       /* SMP: spinlock heap lock (he200); mutex hangs in finsh rt_calloc */
 /* end of Memory Management */
 #define RT_USING_DEVICE
 #define RT_USING_DEVICE_OPS
@@ -135,7 +136,7 @@
 #define RT_CONSOLE_DEVICE_NAME "uart0"
 #define RT_USING_CONSOLE_OUTPUT_CTL
 #define RT_VER_NUM 0x50300
-/* RT_USING_STDC_ATOMIC — disabled if toolchain builtins are unnecessary */
+#define RT_USING_STDC_ATOMIC
 #define RT_BACKTRACE_LEVEL_MAX_NR 32
 /* end of RT-Thread Kernel */
 
@@ -170,7 +171,7 @@
 #define RT_USING_FINSH
 #define FINSH_USING_MSH
 #define FINSH_THREAD_NAME "tshell"
-#define FINSH_THREAD_PRIORITY 21
+#define FINSH_THREAD_PRIORITY 20
 #define FINSH_THREAD_STACK_SIZE 4096
 #define FINSH_USING_HISTORY
 #define FINSH_HISTORY_LINES 5
@@ -179,7 +180,6 @@
 #define MSH_USING_BUILT_IN_COMMANDS
 #define FINSH_USING_DESCRIPTION
 #define FINSH_ARG_MAX 10
-/* #define FINSH_USING_OPTION_COMPLETION */
 
 /* DFS — disabled; serial driver uses rt_device API directly, shell uses rt_device_read/write */
 

@@ -1013,7 +1013,9 @@ int finsh_system_init(void)
     finsh_set_prompt_mode(1);
 
     if (tid != NULL && result == RT_EOK)
+    {
         rt_thread_startup(tid);
+    }
     return 0;
 }
 INIT_APP_EXPORT(finsh_system_init);

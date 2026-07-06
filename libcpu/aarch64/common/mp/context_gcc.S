@@ -15,13 +15,13 @@
 #define __ASSEMBLY__
 #endif
 
-#include "context_gcc.h"
-#include "../include/vector_gcc.h"
-
 #include <rtconfig.h>
 #include <asm-generic.h>
 #include <asm-fpu.h>
 #include <armv8.h>
+
+#include "context_gcc.h"
+#include "../include/vector_gcc.h"
 
 .section .text
 
@@ -35,10 +35,11 @@
 
 /*
  * void rt_hw_context_switch_to(rt_uint3 to, struct rt_thread *to_thread);
- * X0 --> to (thread stack)
+ * X0 --> to (thread stack pointer address)
  * X1 --> to_thread
  */
 rt_hw_context_switch_to:
+    clrex
     ldr     x0, [x0]
     mov     sp, x0
     update_tidr x1
@@ -86,9 +87,9 @@ rt_hw_context_switch:
 .globl rt_hw_context_switch_interrupt
 
 #define EXP_FRAME   x19
-#define FROM_SPP    x20
-#define TO_SPP      x21
-#define TO_TCB      x22
+#define FROM_SPP    x23
+#define TO_SPP      x24
+#define TO_TCB      x25
 /*
  * void rt_hw_context_switch_interrupt(context, from sp, to sp, tp tcb)
  * X0 :interrupt context

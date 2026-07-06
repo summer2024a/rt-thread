@@ -86,6 +86,21 @@ ldr     x6, =0x10006000         /* UART0 base address (THR) */
     str     w8, [x6]             /* 写 THR = base + 0 */
 .endm
 
+.macro early_putc_reg, reg
+    /* Output register value as hex digit (低4位) */
+    ldr     x6, =0x10006000         /* UART0 base address */
+1:  ldr     w8, [x6, #0x14]         /* 读 LSR */
+    tst     w8, #0x20
+    b.eq    1b
+    and     x8, \reg, #0xf           /* 取低4位 (使用x寄存器) */
+    cmp     x8, #9
+    b.ls    2f
+    add     x8, x8, #'A' - 10        /* 10-15 输出 A-F */
+    b       3f
+2:  add     x8, x8, #'0'             /* 0-9 输出 0-9 */
+3:  str     w8, [x6]                 /* 写 THR (使用w寄存器) */
+.endm
+
 /* Bootwrapper-style definitions for EL transition */
 .macro drop_el_to_el2 mode addr
     msr     elr_el3, \addr
@@ -154,6 +169,12 @@ _start:
  *   x3 = 0 (reserved for future use)
  */
 
+/* Early full cache maintenance for HP232X to prevent SError on first eret/context switch.
+ * Must be done before any stack/BSS access or MMU-dependent code. */
+    ic      ialluis
+    dsb     sy
+    isb
+
     /* Save cpu stack */
     get_phy stack_top, .boot_cpu_stack_top
 
@@ -191,6 +212,23 @@ _start:
 #endif /* ARCH_USING_HW_THREAD_SELF */
     msr     tpidr_el1, xzr
 
+#ifdef BSP_USING_HP232X
+    /* ===== HP232X IPS验证：检查默认PA范围 ===== */
+    /* 读取ID_AA64MMFR0_EL1.PARange，确认是否支持40-bit PA */
+    early_putc 'P'     /* Print: checking PARange */
+    mrs     x10, ID_AA64MMFR0_EL1
+    and     x10, x10, #0xf    /* PARange in bits [3:0] */
+    early_putc_reg x10  /* 输出PARange值 */
+
+    /* 读取当前TCR_EL1.IPS值 */
+    mrs     x11, TCR_EL1
+    lsr     x11, x11, #32     /* IPS在bit[34:32] */
+    and     x11, x11, #7      /* 3-bit IPS field */
+    early_putc 'I'     /* IPS */
+    early_putc_reg x11
+    early_putc '\n'
+#endif
+
     early_putc 'I'
     bl      init_cpu_el
 
@@ -222,6 +260,10 @@ _start:
 
 kernel_start:
     /* Jump to the PE's system entry */
+    /* Final cache maintenance before jumping to rtthread_startup (prevents SError on first eret) */
+    ic      ialluis
+    dsb     sy
+    isb
     mov     x29, xzr
     mov     x30, kernel_entry
     early_putc 'E'
@@ -273,8 +315,17 @@ _secondary_cpu_entry:
     bl      init_cpu_stack_early
 
     /* secondary cpu start to startup */
+#ifdef BSP_USING_HP232X
+    /* HP232X: Skip enable_mmu_early (uses generic .early_tbl0_page).
+     * board.c:rt_hw_secondary_cpu_bsp_start() calls hp232x_mmu_secondary_init()
+     * which sets hp232x_mmu_l1 and enables MMU correctly.
+     * See doc/mmu_design.md section 14 for details. */
+    ldr     kernel_entry, =rt_hw_secondary_cpu_bsp_start
+    br      kernel_entry
+#else
     ldr     kernel_entry, =rt_hw_secondary_cpu_bsp_start
     b       enable_mmu_early
+#endif
 #endif /* RT_USING_SMP */
 
 /* ===== Common initialization functions (all platforms) ===== */
@@ -382,18 +433,19 @@ init_cpu_el:
     ret
 
 init_kernel_bss:
-    get_phy x1, __bss_start
-    get_phy x2, __bss_end
-    sub     x2, x2, x1              /* Get bss size */
-
-    /*
-     * CRITICAL: Check if BSS address fits in 33-bit range (adrp limitation).
-     * adrp can only encode addresses up to 33 bits (bits [32:12] of address).
-     * If __bss_start has bit[32] set (address > 0x1FFFFFFFF), skip early BSS zero.
-     * BSS will be zeroed later by C code after MMU/page tables are set up.
+    /* HP232X FIX: Use ldr to load absolute addresses instead of adrp-based get_phy.
+     * BSS is in IRAM1 at 0x10005a000 (>4GB, bit 32 set). adrp can only encode 33-bit
+     * addresses, so get_phy macro fails. ldr has no such limitation.
+     * This ensures BSS is zeroed BEFORE rtthread_startup calls rt_hw_spin_lock_init,
+     * which initializes _cpus_lock (a BSS variable used by SMP).
+     *
+     * Original issue: entry_point.S skipped BSS zeroing for high addresses,
+     * but rtthread_startup initialized spinlocks BEFORE rt_hw_board_init zeroed BSS.
+     * This caused _cpus_lock to contain garbage values, breaking SMP boot.
      */
-    and     x3, x1, #0x100000000    /* Check bit 32 of __bss_start */
-    cbnz    x3, .bss_skip_clean     /* If bit 32 set, skip early BSS zero */
+    ldr     x1, =__bss_start        /* Load absolute address (no adrp limitation) */
+    ldr     x2, =__bss_end
+    sub     x2, x2, x1              /* Get bss size */
 
     and     x3, x2, #7              /* x3 is < 7 */
     ldr     x4, =~0x7
@@ -412,10 +464,6 @@ init_kernel_bss:
     b       .clean_bss_loop_byte
 
 .clean_bss_end:
-    ret
-
-.bss_skip_clean:
-    /* BSS in high memory (>33-bit), skip early zero. Will be zeroed by C code. */
     ret
 
 init_cpu_stack_early:

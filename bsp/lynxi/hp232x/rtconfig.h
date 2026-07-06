@@ -22,6 +22,9 @@
 /* DISABLE this to enable proper interrupt handling */
 /* #define BSP_USING_HP232X_SPIN_TABLE */
 
+/* Enable rtdbg LOG_X macros (rtdbg.h); does not enable RT_DEBUGING_ASSERT. */
+#define DBG_ENABLE
+
 /* RT-Thread Kernel */
 
 /* klibc options — minimal, no float */
@@ -85,7 +88,7 @@
 /* end of klibc options */
 #define RT_NAME_MAX 24
 #define RT_USING_SMP
-#define RT_CPUS_NR 1
+#define RT_CPUS_NR 2
 #define RT_ALIGN_SIZE 8
 #define RT_THREAD_PRIORITY_32
 #define RT_THREAD_PRIORITY_MAX 32
@@ -135,6 +138,7 @@
 #define RT_CONSOLEBUF_SIZE 128
 #define RT_CONSOLE_DEVICE_NAME "uart0"
 #define RT_USING_CONSOLE_OUTPUT_CTL
+#define RT_USING_THREADSAFE_PRINTF
 #define RT_VER_NUM 0x50300
 #define RT_USING_STDC_ATOMIC
 #define RT_BACKTRACE_LEVEL_MAX_NR 32
@@ -192,7 +196,7 @@
 #define RT_USING_SERIAL
 #define RT_USING_SERIAL_V1
 #define RT_SERIAL_RB_BUFSZ 128
-/* #define RT_USING_INTERRUPT_INFO */  /* Disabled: causes isr_table BSS overflow (2026-06-29 fix) */
+#define RT_USING_INTERRUPT_INFO  /* list_isr + per-IRQ counter (~8KB IRAM1 BSS) */
 /* RT_USING_CLOCK_TIME — disabled to save code */
 /* RT_USING_NULL — disabled to save code */
 /* RT_USING_ZERO — disabled to save code */

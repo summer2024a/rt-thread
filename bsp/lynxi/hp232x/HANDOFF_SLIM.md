@@ -1,35 +1,78 @@
 # HP232X BSP Handoff 精简版
 
-## 当前状态（2026-07-05 13:00）
+## 当前状态（2026-07-06）
 
-### ✅ 单核模式（UP）完全成功
+### ✅ SMP 双核（RT_CPUS_NR=2）实板验证通过
 
-HP232X BL22 启动链已稳定运行，**msh shell 成功启动**（无调试输出）。
+BL22 启动链 + SMP 双核 + msh shell 已在测试板（192.168.49.81）验证：
 
 ```text
-ECO
-POK!
-IBKSUE
-BOOT
-IRAM1: bss@10005a000-10005cf20 page@10005d000-100061000 heap@100061000-100069000
-
- \ | /
-- RT -     Thread Operating System
- / | \     5.3.0 build Jul  5 2026 12:52:18
- 2006 - 2024 Copyright by RT-Thread team
-
-Hi, this is RT-Thread!
-msh >
+msh >help          # 串口输入正常
+[SMP] release CPU1 mbox=0x401ff00 entry=0x40401c0
+[SMP] CPU1 ready (idle=0x...)
+msh >list_isr      # apb_tick / uart0 / IPI 计数正常
 ```
 
-**内存占用**（UP模式）：
+**关键 fix（详见 [doc/smp_irq_debug.md](doc/smp_irq_debug.md) §8）**：
+
+| 问题 | Fix |
+|------|-----|
+| CPU1 mbox 偏移错误 | `HP232X_CPU_RELEASE_MBOX(cpu_id)`，CPU1 → +0 |
+| CPU1 读不到 release | mbox 写后 **dcache flush** + `dsb sy` + `SEV` |
+| 从核 MMU 不完整 | `hp232x_mmu_secondary_init()` 配齐 MAIR/TCR/TTBR |
+| 从核 GIC | `arm_gic_redist_init` + `arm_gic_cpu_init` |
+| 串口乱序 | `RT_USING_THREADSAFE_PRINTF` |
+| finsh 与 CPU1 竞争 | `rt_hw_secondary_cpu_up()` 前 **delay 1.5s**（权宜） |
+
+**当前 rtconfig 要点**：
+
+```c
+#define RT_USING_SMP
+#define RT_CPUS_NR 2
+#define DBG_ENABLE
+#define RT_USING_THREADSAFE_PRINTF
+#define RT_USING_INTERRUPT_INFO   /* list_isr，+~8KB IRAM1 BSS */
+```
+
+### ⚠️ 内存压力：IRAM0 仅剩 ~20 KB
+
+SMP 双核 + shell + IRQ 统计后，**IRAM0 是下一阶段的瓶颈**：
+
 ```text
-IRAM0 (File): 208.69 KB / 256 KB
-IRAM1 (BSS):   51.78 KB / 256 KB
-Total:        260.47 KB
+Section                   Size KB      End addr
+.head                        1.05  0x04040450
+.text+.rodata+symtab       205.34  0x04073D60
+.data                        3.35  0x04074C20
+.mmu_table                  24.00  0x0407B000   ← 已从 12KB 增至 24KB
+------------------------------------------------
+IRAM0 已用                  234.07 KB / 256 KB  (91.4%)
+IRAM0 剩余（连续）           20.00 KB
+IRAM1 BSS                    69.61 KB / 256 KB  (27.2%，尚有余量)
 ```
 
-### 🔥 SMP 模式调试进展（2026-07-05）
+BL22 内核链接窗口：`0x04040000` – `0x0407FFFF`（前 256KB `0x04000000–0x0403FFFF` 留给 bootwrapper）。
+
+构建后复查：
+
+```bash
+cd bsp/lynxi/hp232x && scons -j8
+python3 mkimage.py rtthread.bin rtthread-header.bin --dest-addr 0x04040000 --elf rtthread.elf
+```
+
+### 🔜 下一步：IRAM0 内存裁剪
+
+优先方向（见 [doc/system_trim_plan.md](doc/system_trim_plan.md)）：
+
+1. **`.text`（~205 KB）**：裁剪 finsh 命令、关闭未用组件、`-ffunction-sections` 已开则查 map 大符号
+2. **`.mmu_table`（24 KB）**：评估页表粒度/映射范围能否压缩
+3. **功能开关**：SMP 稳定后可评估是否关闭 `RT_USING_INTERRUPT_INFO`（省 ~8KB IRAM1，对 IRAM0 无直接帮助）
+4. **勿重复**：mm 组件移除已失败（见 [doc/mm_component_removal_attempt.md](doc/mm_component_removal_attempt.md)）
+
+目标：IRAM0 使用率降到 **≤85%**（留出 ≥38 KB 余量），以支撑后续驱动/功能扩展。
+
+---
+
+## 历史：单核 UP 基准（2026-07-05，仍有效）
 
 **关键发现**：
 
@@ -404,91 +447,36 @@ and x0, x0, #0xf   // PARange
 
 ---
 
-## 当前内存使用
+## 当前内存使用（2026-07-06，SMP 双核配置）
 
 ```text
-IRAM0 (File): 210.64 KB / 256 KB
-IRAM1 (BSS):   51.78 KB / 256 KB
-Total:        262.42 KB
+IRAM0 (File): 233.74 KB / 256 KB  (91.3%)  ← 瓶颈，剩 ~20 KB
+IRAM1 (BSS):   69.61 KB / 256 KB  (27.2%)
+Total:        303.35 KB
+
+主要增量来源（相对 UP 单核 ~209KB IRAM0）：
+  .text       +~25 KB   SMP 调度/上下文切换/双核 boot
+  .mmu_table  +12 KB    24 KB（原 12 KB）
+  IRAM1 BSS   +~18 KB   isr_table( INTERRUPT_INFO ) + SMP 结构
 ```
 
 ---
 
-## 下一步任务：多核启动（SMP）
+## SMP 双核 bring-up（已完成 2026-07-06）
 
-### 背景
-
-当前配置：
-```c
-#define RT_CPUS_NR 1  // 单核运行
-```
-
-HP232X 是双核 SoC，需要恢复 SMP 支持。
-
-### 关键文件
-
-| 文件 | 作用 |
-|------|------|
-| `entry_point.S:276` | `kernel_entry` - 主核入口 |
-| `entry_point.S:265-273` | secondary CPU 入口逻辑 |
-| `pre_entry.S:785-826` | `.hp232x_secondary_spin` - secondary CPU spin wait |
-| `board.c:344-368` | `rt_hw_secondary_cpu_up()` - 启动次核 |
-| `board.c:370-398` | `rt_hw_secondary_cpu_bsp_start()` - 次核初始化 |
-
-### SMP 启动流程
+原「下一步任务：多核启动」已完成。流程摘要：
 
 ```
-Primary CPU (CPU0):
-  entry_point.S: _start → kernel_entry → rtthread_startup
-                  ↓
-  board.c: rt_hw_secondary_cpu_up() → 写入 spin_table → SEV
-
-Secondary CPU (CPU1):
-  pre_entry.S: .hp232x_secondary_spin → WFE 等待
-                  ↓
-  spin_table[CPU1] != 0 → 跳转到 entry_point
-                  ↓
-  entry_point.S: secondary CPU 入口 → rt_hw_secondary_cpu_bsp_start()
+bootwrapper WFE @ MBOX 0x401ff00
+  → _secondary_cpu_entry (entry_point.S)
+  → hp232x_mmu_secondary_init + GIC redist
+  → rt_system_scheduler_start()
+CPU0: rt_hw_secondary_cpu_up() 写 mbox + flush + SEV
 ```
 
-### 启用 SMP 的修改点
+文档：[doc/smp_irq_debug.md](doc/smp_irq_debug.md)（§8 双核、缓存一致性、串口互斥、1.5s delay）
 
-1. **rtconfig.h**：
-   ```c
-   #define RT_CPUS_NR 2
-   #define RT_USING_SMP
-   ```
-
-2. **board.c**：
-   - 取消 `#ifdef RT_USING_SMP` 内的注释
-   - 启用 `rt_hw_secondary_cpu_up()` 调用
-
-3. **entry_point.S**：
-   - 验证 secondary CPU 入口路径正确
-
-4. **pre_entry.S**：
-   - BL21 模式：`.hp232x_secondary_spin` 已存在
-   - BL22 模式：需要确认 bootwrapper 是否处理次核
-
-### BL22 模式 SMP 注意事项
-
-BL22 模式下 bootwrapper 已完成：
-- EL3 → EL1 降级
-- GIC 初始化
-- CCI 初始化
-
-**问题**：bootwrapper 是否也释放了 secondary CPU？
-
-需要验证：
-1. bootwrapper 源码中是否有 spin-table 释放次核的逻辑
-2. 或者 RT-Thread 需要在 BL22 模式下自行释放次核
-
-### 建议调试顺序
-
-1. 先在 **BL21 模式** 测试 SMP（pre_entry.S 已有 spin wait 逻辑）
-2. 确认 `hp232x_spin_table` 地址和 bootwrapper mbox 地址匹配
-3. 验证 CPU1 能否正确响应 spin_table 写入
-4. 再迁移到 BL22 模式
+~~以下 BL21 调试顺序建议已过时，BL22 双核已 PASS。~~
 
 ---
 
@@ -501,7 +489,10 @@ BL22 模式下 bootwrapper 已完成：
 | `RT_BSP_GIC_DBG` | n | GIC 调试代码 |
 | `BSP_USING_APB_TIMER_AS_TICK` | y | APB Timer 作为 tick |
 | `RT_USING_MSH` | y | msh shell |
-| `RT_CPUS_NR` | 1 | CPU 数量（待改为 2） |
+| `RT_CPUS_NR` | 2 | 双核 SMP（已验证） |
+| `RT_USING_THREADSAFE_PRINTF` | y | SMP 串口互斥 |
+| `RT_USING_INTERRUPT_INFO` | y | list_isr（+~8KB IRAM1） |
+| `DBG_ENABLE` | y | LOG_X 宏可用 |
 
 ---
 
@@ -509,14 +500,24 @@ BL22 模式下 bootwrapper 已完成：
 
 ```bash
 cd /work/rt-thread/bsp/lynxi/hp232x
-rm -rf build && scons -j$(nproc)
-python3 remote_test.py
+export RTT_CC_PREFIX=.../aarch64-none-elf-
+scons -j8
+python3 remote_test.py              # boot 抓串口
+python3 test_msh_shell.py help      # msh 串口输入
+python3 test_msh_shell.py list_isr  # IRQ 表
+python3 test_msh_shell.py all       # 默认套件（各复位一次）
+python3 test_multi.py               # up/smp/pmon 模式切换（改 rtconfig）
 ```
+
+测试服务器：`192.168.49.81`，串口 `/dev/ttyUSB1`。
+
+**SMP 注意**：`msh >` 出现后尽早发命令；CPU1 release 日志可能紧随其后，等 CPU1 ready 后再发命令易被串口并发输出打断。
 
 ---
 
 ## 相关文档
 
+- [doc/smp_irq_debug.md](doc/smp_irq_debug.md) - SMP 单核/双核 + IRQ 调试
 - [TEST_METHODOLOGY.md](TEST_METHODOLOGY.md) - 测试方法
 - [doc/mm_component_removal_attempt.md](doc/mm_component_removal_attempt.md) - mm 移除尝试记录
 - [doc/system_trim_plan.md](doc/system_trim_plan.md) - 系统裁剪计划
@@ -524,6 +525,6 @@ python3 remote_test.py
 
 ---
 
-**更新日期**: 2026-07-04  
-**当前状态**: msh shell 正常启动，SMP理论分析完成  
-**下一步**: 验证IPS配置，添加调试输出定位SMP问题
+**更新日期**: 2026-07-06  
+**当前状态**: SMP 双核 + msh + list_isr 实板 PASS；IRAM0 剩 ~20 KB  
+**下一步**: IRAM0 内存裁剪（.text / .mmu_table），目标 ≤85% 占用

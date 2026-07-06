@@ -76,6 +76,10 @@
 /* Mailbox for secondary CPU spin-table — in IRAM0 (bootwrapper mbox_address=0x401ff00) */
 #define MBOX_ADDRESS         0x0401FF00ULL    /* bootwrapper mbox in IRAM0, NOT IRAM1 */
 
+/* bootwrapper spin.S: mbox offset = (linear_cpu_id - 1) * 8; CPU1 → +0, CPU2 → +8 */
+#define HP232X_CPU_RELEASE_MBOX(cpu_id) \
+    (MBOX_ADDRESS + (unsigned long)(((cpu_id) - 1ULL) * 8ULL))
+
 /* Kernel text/data in IRAM0 first 256KB, runtime data in IRAM1 last 256KB */
 #define MEM_PADDR_START IRAM1_USE_START  /* 0x100040000 */
 #define MEM_CACHE_SZ    (IRAM1_USE_END - IRAM1_BSS_START)  /* Space after .bss */

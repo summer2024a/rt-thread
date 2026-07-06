@@ -1,6 +1,6 @@
-# HP232X SMP 单核与 IRQ 调试指南
+# HP232X SMP 单核/双核与 IRQ 调试指南
 
-本文合并 HP232X **SMP 单核 bring-up** 与 **AArch64 IRQ/异常故障定位** 的排查方法、已验证根因与 fix。
+本文合并 HP232X **SMP 单核/双核 bring-up** 与 **AArch64 IRQ/异常故障定位** 的排查方法、已验证根因与 fix。
 
 适用场景：
 
@@ -119,7 +119,8 @@ Layer 5: 应用 / shell
 export RTT_CC_PREFIX=.../aarch64-none-elf-
 cd bsp/lynxi/hp232x && scons -j8
 python3 remote_test.py          # 自动复位 + 抓串口
-python3 test_msh_input.py       # 发 help，测串口输入
+python3 test_msh_shell.py help  # 发 help，测串口输入
+python3 test_msh_shell.py all   # help + list_isr（各复位一次）
 ```
 
 测试服务器：`192.168.49.81`，串口 `/dev/ttyUSB1`（见 [remote_test.py](../remote_test.py)）。
@@ -229,8 +230,9 @@ SMP 构建不应引用 `rt_thread_switch_interrupt_flag` 等 UP 变量。
 | UP + pmon tick | 每 500ms +50 tick/isr | ✅ |
 | SMP boot | `Hi, this is RT-Thread!` | ✅ |
 | SMP msh 提示符 | `msh >` | ✅ |
-| SMP 串口输入 | `test_msh_input.py` → `help` 列表 | ✅ |
+| SMP 串口输入 | `test_msh_shell.py help` → `help` 列表 | ✅ |
 | 无 Data abort @ 0x5 | 按键后稳定 | ✅（x23–x25 fix 后） |
+| SMP 双核 `RT_CPUS_NR=2` | CPU1 release + `[SMP] CPU1 ready` + msh 输入 | ✅（§8，2026-07-06） |
 
 ---
 
@@ -242,17 +244,106 @@ SMP 构建不应引用 `rt_thread_switch_interrupt_flag` 等 UP 变量。
 | BSP boot/MMU/GIC/IPI | [board.c](../drivers/board.c)、[entry_point.S](../../../libcpu/aarch64/cortex-a/entry_point.S)、[hp232x_mmu.c](../drivers/hp232x_mmu.c) |
 | 内核 fix | [scheduler_mp.c](../../../src/scheduler_mp.c)、[trap.c](../../../libcpu/aarch64/common/trap.c) |
 | 上下文切换 fix | [mp/context_gcc.S](../../../libcpu/aarch64/common/mp/context_gcc.S)、[include/context_gcc.h](../../../libcpu/aarch64/common/include/context_gcc.h) |
-| 测试 | [remote_test.py](../remote_test.py)、[test_msh_input.py](../test_msh_input.py)、[pmon_gic.c](../applications/pmon_gic.c) |
+| 测试 | [remote_test.py](../remote_test.py)、[test_msh_shell.py](../test_msh_shell.py)、[pmon_gic.c](../applications/pmon_gic.c) |
 | 参考 BSP | [he200/rtconfig.h](../../he200/rtconfig.h) |
 
 ---
 
-## 8. 后续：扩多核
+## 8. SMP 双核（RT_CPUS_NR=2）已验证要点
 
-1. `RT_CPUS_NR` 改为 2，确认 [board.c](../drivers/board.c) 中 `cpu_release_paddr`、`rt_hw_secondary_cpu_up()`；
-2. 勿启用 `BSP_USING_HP232X_SPIN_TABLE`（会削弱 IRQ 路径）；
-3. 仍保持 `RT_USING_STDC_ATOMIC` + `RT_USING_HEAP_ISR`；
-4. 多核下重复 `test_msh_input.py` 与 tick/pmon 观测。
+2026-07 实板（192.168.49.81，`test_msh_shell.py`）在 `RT_CPUS_NR=2` 下通过：
+
+- CPU0 启动到 `msh >`，`help` 串口输入正常；
+- CPU1 release：`mbox=0x401ff00 entry=0x40401c0`（`_secondary_cpu_entry`）；
+- `[SMP] CPU1 ready`（`main.c` 等待 idle 线程就绪）。
+
+### 8.1 rtconfig 补充（相对 §2 单核）
+
+```c
+#define RT_CPUS_NR 2
+#define DBG_ENABLE                  /* 否则 LOG_X 宏编译为空 */
+#define RT_USING_THREADSAFE_PRINTF  /* rt_kprintf SMP 互斥（见 §8.4） */
+#define RT_USING_MUTEX              /* THREADSAFE_PRINTF / heap 依赖 */
+```
+
+勿启用 `BSP_USING_HP232X_SPIN_TABLE`（会削弱 IRQ 路径）。
+
+### 8.2 spin-table 与多核缓存一致性
+
+BL22 从核在 bootwrapper `spin.S` 里 WFE 轮询 **`0x401ff00`**（与 [board.h](../drivers/board.h) `MBOX_ADDRESS` 一致）。
+
+| 项 | 说明 |
+|----|------|
+| CPU1 mbox 偏移 | **+0**（线性 ID 1 → `(1-1)*8=0`）；勿写成 `MBOX+0x8` |
+| 写入口 | `*(volatile uint64_t *)mbox = entry` |
+| **必须 dcache flush** | mbox 在 IRAM0，页表为 Normal WB；CPU0 写可能只在 cache，CPU1 读不到 |
+| 屏障 | `rt_hw_cpu_dcache_ops(FLUSH)` + `dsb sy`，再 `rt_hw_sev()` |
+| 重复写/SEV | 一次写 + flush + SEV 即可（不必 wrapper 函数） |
+
+实现见 [board.c](../drivers/board.c) `rt_hw_secondary_cpu_up()`。
+
+### 8.3 从核启动路径（与 MMU）
+
+```
+bootwrapper WFE @ 0x401ff00
+  → _secondary_cpu_entry (entry_point.S)
+  → init_cpu_el (EL2→EL1)
+  → init_cpu_stack_early（IRAM1 栈，MMU 仍关，物理直达）
+  → rt_hw_secondary_cpu_bsp_start (board.c)
+       → hp232x_mmu_secondary_init（MAIR/TCR/TTBR + 页表 flush）
+       → arm_gic_redist_init + arm_gic_cpu_init
+       → rt_system_scheduler_start()
+```
+
+要点：
+
+- **MMU 关时** 各核可用物理地址访问 IRAM1；`entry_point` 对 IRAM1 栈用 `ldr =.secondary_cpu_stack_top`（避免 adrp 33-bit 限制）。
+- **从核 MMU** 必须配齐 MAIR/TCR/TTBR，不能只做 `TTBR0`；页表由 CPU0 建好，从核 `dcache flush` 后再启用。
+
+### 8.4 串口互斥与 LOG_X
+
+**LOG 不打印**：`rtdbg.h` 中 `LOG_I/D/E` 依赖 `DBG_ENABLE`（或 `RT_USING_DEBUG`），与 `DBG_LVL` 无关。
+
+**SMP 串口乱序**：多核同时 `rt_kprintf` 会交错；内核 **`RT_USING_THREADSAFE_PRINTF`**（[kservice.c](../../../src/kservice.c) `_syscon_lock`）保证**单次** `rt_kprintf` 原子。
+
+限制：
+
+| 路径 | 是否互斥 |
+|------|----------|
+| `rt_kprintf` / `rt_kputs` | ✅（开 THREADSAFE_PRINTF 后） |
+| `LOG_I` 一条日志 | ⚠️ 内部 3 次 `rt_kprintf`，行内仍可能被插入 |
+| `early_putc_direct` | ❌ 直写 MMIO，boot 专用 |
+
+he200 可选 [rt_kprintf_threadsafe](../../../he200/packages/rt_kprintf_threadsafe-latest/rt_kprintf.c)（`rt_mutex` 包一层 `rt_kprintf`），与 `RT_USING_THREADSAFE_PRINTF` **二选一**；粒度同为「一次 rt_kprintf」，不能解决 LOG 多段问题。
+
+从核 boot 阶段避免 `rt_kprintf`/`LOG_*`，待 console 稳定后再打。
+
+### 8.5 release 前 delay 1.5s
+
+`components.c` 顺序：`rt_components_init()`（创建 finsh）→ **`rt_hw_secondary_cpu_up()`** → `main()`。
+
+若立刻 release CPU1，finsh 可能尚未打出 `msh >`，且 CPU1 的 LOG 与 finsh 输出字节级交错（即使有 console 锁）。
+
+**当前权宜**：`rt_hw_secondary_cpu_up()` 开头 `rt_thread_mdelay(1500)`，让 CPU0 先完成 finsh prompt，再 SEV 唤醒 CPU1。
+
+**后续可改**：等 `tshell` 就绪或 finsh 回调，替代固定 sleep。
+
+### 8.6 测试
+
+```bash
+cd bsp/lynxi/hp232x && scons -j8
+python3 test_msh_shell.py help     # msh + help
+python3 test_msh_shell.py list_isr # IRQ 表
+python3 test_msh_shell.py all      # 默认套件
+python3 remote_test.py             # 启动链
+```
+
+---
+
+## 9. （原 §8 后续项）
+
+1. 扩更多核时递增 `cpu_release_paddr[]` 与 bootwrapper mbox 步长（每核 +8）；
+2. 多核下重复 `test_msh_shell.py all` 与 tick/pmon 观测。
 
 ---
 
@@ -468,7 +559,7 @@ IRQ 能连续走完 step 1→7，ELR 回到 `.text` 合法地址。
 cd bsp/lynxi/hp232x && scons -j8 && python3 remote_test.py
 ```
 
-长期开启会掩盖真实竞态；SMP 串口输入测试请用 `test_msh_input.py` 在**关闭** IRQ 调试的前提下验证。
+长期开启会掩盖真实竞态；SMP 串口输入测试请用 `test_msh_shell.py` 在**关闭** IRQ 调试的前提下验证。
 
 ---
 
@@ -478,3 +569,4 @@ cd bsp/lynxi/hp232x && scons -j8 && python3 remote_test.py
 |------|------|
 | 2026-07-06 | 初版 SMP 单核 bring-up |
 | 2026-07-06 | 合并 IRQ 异常定位章节；文件名为 `smp_irq_debug.md` |
+| 2026-07-06 | §8 SMP 双核：spin-table 缓存一致性、dcache flush、串口 THREADSAFE_PRINTF、release 前 1.5s delay；实板 `test_msh_shell.py` PASS |

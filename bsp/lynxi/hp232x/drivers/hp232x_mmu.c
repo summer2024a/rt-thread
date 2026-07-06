@@ -3,6 +3,7 @@
 
 #include <rtdbg.h>
 #include <rtthread.h>
+#include <rthw.h>
 #include <stdint.h>
 
 #include "board.h"
@@ -193,45 +194,64 @@ uint64_t *hp232x_mmu_get_l1_table(void)
 
 void hp232x_mmu_secondary_init(void)
 {
+    uint64_t tcr;
     uint64_t sctlr;
+    uint64_t mair = 0x000044ffUL;
 
-    LOG_I("[mmu] Secondary CPU MMU init: set TTBR0_EL1 to %p", (void *)hp232x_mmu_l1);
+    /* Page tables were built on CPU0; ensure CPU1 sees coherent table contents. */
+    rt_hw_cpu_dcache_ops(RT_HW_CACHE_FLUSH, (void *)hp232x_mmu_l1, sizeof(hp232x_mmu_l1));
+    rt_hw_cpu_dcache_ops(RT_HW_CACHE_FLUSH, (void *)hp232x_mmu_l2_low, sizeof(hp232x_mmu_l2_low));
+    rt_hw_cpu_dcache_ops(RT_HW_CACHE_FLUSH, (void *)hp232x_mmu_l2_ram1, sizeof(hp232x_mmu_l2_ram1));
+    rt_hw_cpu_dcache_ops(RT_HW_CACHE_FLUSH, (void *)hp232x_mmu_l2_apu, sizeof(hp232x_mmu_l2_apu));
+    rt_hw_cpu_dcache_ops(RT_HW_CACHE_FLUSH, (void *)hp232x_mmu_l3_ram0, sizeof(hp232x_mmu_l3_ram0));
+    rt_hw_cpu_dcache_ops(RT_HW_CACHE_FLUSH, (void *)hp232x_mmu_l3_ram1, sizeof(hp232x_mmu_l3_ram1));
+    rt_hw_barrier(dsb, sy);
 
-    /* Set TTBR0_EL1 to the shared page table */
+    __asm__ volatile("msr mair_el1, %0" :: "r"(mair) : "memory");
+    __asm__ volatile("isb" ::: "memory");
+
+    tcr = 25UL;
+    tcr |= (1UL << 8);
+    tcr |= (1UL << 10);
+    tcr |= (3UL << 12);
+    tcr |= (2UL << 32);
+    __asm__ volatile("msr tcr_el1, %0" :: "r"(tcr) : "memory");
+    __asm__ volatile("isb" ::: "memory");
+
     __asm__ volatile("msr ttbr0_el1, %0" :: "r"((uint64_t)hp232x_mmu_l1) : "memory");
     __asm__ volatile("isb" ::: "memory");
 
-    /* Invalidate TLB */
     __asm__ volatile("tlbi vmalle1" ::: "memory");
     __asm__ volatile("dsb sy" ::: "memory");
     __asm__ volatile("isb" ::: "memory");
 
-    /* Invalidate instruction cache */
     __asm__ volatile("ic ialluis" ::: "memory");
     __asm__ volatile("dsb sy" ::: "memory");
     __asm__ volatile("isb" ::: "memory");
 
-    /* Check if MMU is already enabled */
     __asm__ volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
 
-    if (!(sctlr & 0x1UL)) {
-        /* MMU not enabled, enable it now */
-        LOG_I("[mmu] Secondary CPU: MMU not enabled, enabling...");
-
-        /* Enable MMU */
+    if (!(sctlr & 0x1UL))
+    {
         sctlr |= 0x1UL;
-
-        /* Enable caches (same as primary CPU) */
-        sctlr |= 0x4UL;     /* Data cache */
-        sctlr |= 0x1000UL;  /* Instruction cache */
-
+        sctlr &= ~0x4UL;
+        sctlr &= ~0x1000UL;
         __asm__ volatile("msr sctlr_el1, %0" :: "r"(sctlr));
         __asm__ volatile("isb" ::: "memory");
 
-        LOG_I("[mmu] Secondary CPU: MMU and caches enabled");
-    } else {
-        LOG_I("[mmu] Secondary CPU: MMU already enabled (SCTLR=0x%llx)", sctlr);
+        __asm__ volatile("tlbi vmalle1" ::: "memory");
+        __asm__ volatile("dsb sy" ::: "memory");
+        __asm__ volatile("ic ialluis" ::: "memory");
+        __asm__ volatile("dsb sy" ::: "memory");
+        __asm__ volatile("isb" ::: "memory");
     }
 
-    LOG_I("[mmu] Secondary CPU MMU init complete");
+    __asm__ volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
+    sctlr |= 0x4UL;
+    sctlr |= 0x1000UL;
+    __asm__ volatile("msr sctlr_el1, %0" :: "r"(sctlr));
+    __asm__ volatile("isb" ::: "memory");
+
+    LOG_I("[mmu] Secondary CPU MMU init complete (TTBR0=%p SCTLR=0x%llx)",
+          (void *)hp232x_mmu_l1, sctlr);
 }

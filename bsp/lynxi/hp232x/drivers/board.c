@@ -347,47 +347,36 @@ void _secondary_cpu_entry(void);
 /*
  * Mailbox addresses for secondary CPUs.
  *
- * Current scheme:
- * - primary CPU writes physical entry address to mailbox
- * - secondary CPU is released by SEV and enters _secondary_cpu_entry
- *
- * This is compatible with the bootwrapper spin-table idea at a high level,
- * but not yet the same as an early assembly-side WFE/WFI polling loop.
+ * bootwrapper spin.S uses (linear_id - 1) * 8 byte stride from MBOX_ADDRESS.
+ * Use HP232X_CPU_RELEASE_MBOX(cpu_id); release loop bound by RT_CPUS_NR.
  */
-static unsigned long cpu_release_paddr[] =
-{
-    [0] = MBOX_ADDRESS,       /* CPU0 (primary, unused) */
-    [1] = MBOX_ADDRESS + 0x8, /* CPU1 mailbox */
-};
 
 void rt_hw_secondary_cpu_up(void)
 {
     int i;
-    void *release_addr;
-    /* HP232X uses identity mapping (VA == PA), so _secondary_cpu_entry
-     * physical address equals its virtual address.
-     * NOTE: rt_kmem_v2p requires rt_kernel_space to be initialized,
-     * but setup.c is excluded for HP232X, so rt_kernel_space.page_table
-     * is not set. For identity mapping, we use vaddr directly as paddr.
-     */
-    rt_uint64_t entry = (rt_uint64_t)_secondary_cpu_entry;  /* VA == PA for HP232X */
+    volatile rt_uint64_t *mbox;
+    rt_uint64_t entry = (rt_uint64_t)_secondary_cpu_entry;
 
-    for (i = 0; i < RT_CPUS_NR && cpu_release_paddr[i]; ++i)
+    /* CPU0 finsh must finish first prompt; console lock is per-rt_kprintf, not per LOG line. */
+    rt_thread_mdelay(1500);
+
+    for (i = 1; i < RT_CPUS_NR; ++i)
     {
-        release_addr = (void *)cpu_release_paddr[i];
-        __asm__ volatile ("str xzr, [%0]"::"r"(release_addr):"memory");
-        rt_hw_cpu_dcache_ops(RT_HW_CACHE_FLUSH, release_addr, sizeof(rt_uint64_t));
+        mbox = (volatile rt_uint64_t *)(uintptr_t)HP232X_CPU_RELEASE_MBOX(i);
+        *mbox = 0;
+        rt_hw_cpu_dcache_ops(RT_HW_CACHE_FLUSH, (void *)mbox, sizeof(*mbox));
     }
 
     rt_hw_barrier(dsb, sy);
 
-    for (i = 1; i < RT_CPUS_NR && cpu_release_paddr[i]; ++i)
+    for (i = 1; i < RT_CPUS_NR; ++i)
     {
-        release_addr = (void *)cpu_release_paddr[i];
-        __asm__ volatile ("str %0, [%1]"::"rZ"(entry), "r"(release_addr):"memory");
-        LOG_I("release_addr[%d]: %p, entry=0x%llx", i, release_addr, entry);
-        rt_hw_cpu_dcache_ops(RT_HW_CACHE_FLUSH, release_addr, sizeof(rt_uint64_t));
+        mbox = (volatile rt_uint64_t *)(uintptr_t)HP232X_CPU_RELEASE_MBOX(i);
+        *mbox = entry;
+        rt_hw_cpu_dcache_ops(RT_HW_CACHE_FLUSH, (void *)mbox, sizeof(*mbox));
         rt_hw_barrier(dsb, sy);
+        rt_kprintf("[SMP] release CPU%d mbox=%p entry=0x%llx\n", i, (void *)mbox, entry);
+        LOG_I("release_addr[%d]: %p, entry=0x%llx", i, (void *)mbox, entry);
         rt_hw_sev();
     }
 }
@@ -406,16 +395,14 @@ void rt_hw_secondary_cpu_bsp_start(void)
     /* Save all mpidr */
     rt_hw_sysreg_read(mpidr_el1, rt_cpu_mpidr_table[cpu_id]);
 
-    /* CRITICAL: Use HP232X custom MMU initialization instead of generic
-     * rt_hw_mmu_ktbl_set(). This ensures:
-     * 1. TTBR0_EL1 set to hp232x_mmu_l1 (shared page table)
-     * 2. TLB properly invalidated
-     * 3. MMU enabled (if not already enabled by bootwrapper)
-     * See doc/mmu_design.md section 14 for details. */
     hp232x_mmu_secondary_init();
 
+#ifdef BSP_USING_GICV3
+    arm_gic_redist_init(0, GIC_PL500_REDISTRIBUTOR_PPTR);
+    arm_gic_cpu_init(0, 0);
+#endif
+
 #ifndef RT_CLOCK_TIME_ARM_ARCH
-    /* initialize timer for os tick */
     rt_hw_gtimer_local_enable();
 #endif /* !RT_CLOCK_TIME_ARM_ARCH */
 

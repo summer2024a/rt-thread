@@ -1,233 +1,368 @@
 #!/usr/bin/env python3
 """
-msh Shell命令执行测试
-通过SSH连接发送Shell命令，验证命令执行和响应
+HP232X msh shell remote board tests (192.168.49.81, /dev/ttyUSB1).
+
+Usage:
+  python3 test_msh_shell.py help       # help command / serial input
+  python3 test_msh_shell.py list_isr   # IRQ table (RT_USING_INTERRUPT_INFO)
+  python3 test_msh_shell.py ps         # thread list smoke test
+  python3 test_msh_shell.py all        # default suite (help + list_isr)
+  python3 test_msh_shell.py --list     # list test names
 """
 
-import paramiko
-import time
-import sys
-import re
+from __future__ import annotations
 
-# 测试服务器配置
+import argparse
+import json
+import sys
+import time
+from dataclasses import dataclass
+from typing import Callable, Iterable, List, Optional, Sequence, Tuple
+
+import paramiko
+
 SERVER = "192.168.49.81"
 USERNAME = "lynxi"
 PASSWORD = "1"
 SUDO_PASSWORD = "1"
 SERIAL_PORT = "/dev/ttyUSB1"
+REMOTE_SCRIPT_PATH = "/tmp/hp232x_msh_shell_test.py"
 
-def run_shell_command_test():
-    """执行Shell命令测试"""
+
+@dataclass
+class MshTestCase:
+    name: str
+    command: str
+    description: str
+    pre_delay: float = 1.0
+    post_delay: float = 3.0
+    wait_cpu1: bool = False
+    check: Callable[[str, str], Tuple[bool, str]] = lambda _text, _cmd: (True, "ok")
+
+
+def _no_exception(text: str, _cmd: str) -> Tuple[bool, str]:
+    if "Data abort" in text or "Execption" in text:
+        return False, "exception after input"
+    return True, "ok"
+
+
+def _check_help(text: str, cmd: str) -> Tuple[bool, str]:
+    ok, msg = _no_exception(text, cmd)
+    if not ok:
+        return ok, msg
+    tail = text.split(cmd)[-1] if cmd in text else text
+    if "command not found" in tail:
+        return False, "help command not found"
+    keywords = [
+        "RT-Thread shell commands",
+        "list_thread",
+        "clear",
+        "version",
+        "ps",
+    ]
+    found = [k for k in keywords if k in text]
+    if found:
+        return True, f"keywords: {found}"
+    return False, "no help response detected"
+
+
+def _check_list_isr(text: str, cmd: str) -> Tuple[bool, str]:
+    ok, msg = _no_exception(text, cmd)
+    if not ok:
+        return ok, msg
+    tail = text.split(cmd)[-1] if cmd in text else text
+    if "command not found" in tail:
+        return False, "list_isr command not found"
+    if "handler" in text and "counter" in text:
+        return True, "list_isr table header present"
+    if "IPI_HANDLER" in text or "apb_tick" in text:
+        return True, "IRQ entries present"
+    return False, "no list_isr response detected"
+
+
+def _check_ps(text: str, cmd: str) -> Tuple[bool, str]:
+    ok, msg = _no_exception(text, cmd)
+    if not ok:
+        return ok, msg
+    tail = text.split(cmd)[-1] if cmd in text else text
+    if "command not found" in tail:
+        return False, "ps command not found"
+    if "thread" in text.lower() and "priority" in text.lower():
+        return True, "ps table present"
+    if "tshell" in text or "tidle" in text:
+        return True, "thread names present"
+    return False, "no ps response detected"
+
+
+TEST_CASES: dict[str, MshTestCase] = {
+    "help": MshTestCase(
+        name="help",
+        command="help",
+        description="msh serial input + help listing",
+        pre_delay=1.0,
+        post_delay=3.0,
+        check=_check_help,
+    ),
+    "list_isr": MshTestCase(
+        name="list_isr",
+        command="list_isr",
+        description="IRQ handler table and counters",
+        pre_delay=1.0,
+        post_delay=4.0,
+        check=_check_list_isr,
+    ),
+    "ps": MshTestCase(
+        name="ps",
+        command="ps",
+        description="thread list smoke test",
+        pre_delay=1.0,
+        post_delay=3.0,
+        check=_check_ps,
+    ),
+}
+
+DEFAULT_SUITE = ("help", "list_isr")
+
+
+def _remote_script_payload(cases: Sequence[MshTestCase]) -> str:
+    spec = [
+        {
+            "name": c.name,
+            "command": c.command,
+            "pre_delay": c.pre_delay,
+            "post_delay": c.post_delay,
+            "wait_cpu1": c.wait_cpu1,
+        }
+        for c in cases
+    ]
+    cases_json = json.dumps(spec)
+    return f'''
+import json
+import os
+import select
+import subprocess
+import sys
+import time
+
+SUDO = {json.dumps(SUDO_PASSWORD)}
+TTY = {json.dumps(SERIAL_PORT)}
+CASES = json.loads({json.dumps(cases_json)})
+
+
+def sudo(cmd):
+    subprocess.run(
+        f"echo '{{SUDO}}' | sudo -S {{cmd}}",
+        shell=True,
+        capture_output=True,
+    )
+
+
+def wait_readable(fd, timeout):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        r, _, _ = select.select([fd], [], [], 0.2)
+        if r:
+            return os.read(fd, 4096)
+    return b""
+
+
+def drain(fd, timeout):
+    chunks = []
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        r, _, _ = select.select([fd], [], [], 0.2)
+        if not r:
+            continue
+        chunk = os.read(fd, 4096)
+        if chunk:
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
+sudo("pkill -9 -f ttyUSB1 2>/dev/null || true")
+time.sleep(1)
+sudo(f"stty -F {{TTY}} 115200 raw -echo")
+time.sleep(0.5)
+
+fd = os.open(TTY, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+results = []
+try:
+    sudo("lynd_hp run -d 0 -r wdt -o5")
+    time.sleep(0.5)
+    out = b""
+    deadline = time.time() + 35
+    while time.time() < deadline:
+        chunk = wait_readable(fd, 0.5)
+        if chunk:
+            out += chunk
+            sys.stdout.buffer.write(chunk)
+            sys.stdout.flush()
+            if b"msh" in out:
+                break
+    else:
+        print("\\n[TEST] msh prompt NOT seen", file=sys.stderr)
+        sys.exit(2)
+
+    for case in CASES:
+        name = case["name"]
+        cmd = case["command"]
+        if case.get("wait_cpu1"):
+            extra = b""
+            deadline = time.time() + 20
+            while time.time() < deadline:
+                chunk = wait_readable(fd, 0.5)
+                if chunk:
+                    extra += chunk
+                    out += chunk
+                    sys.stdout.buffer.write(chunk)
+                    sys.stdout.flush()
+                    if b"[SMP] CPU1 ready" in out:
+                        break
+            time.sleep(2.0)
+        else:
+            time.sleep(float(case.get("pre_delay", 1.0)))
+
+        os.write(fd, f"\\r\\n{{cmd}}\\r\\n".encode())
+        print(f"\\n[TEST] Sent: {{cmd}}", flush=True)
+        chunk = drain(fd, float(case.get("post_delay", 3.0)))
+        if chunk:
+            out += chunk
+            sys.stdout.buffer.write(chunk)
+            sys.stdout.flush()
+
+        results.append({{"name": name, "command": cmd}})
+
+    sys.stdout.buffer.write(b"\\n")
+    sys.stdout.flush()
+    with open("/tmp/hp232x_msh_shell_out.bin", "wb") as f:
+        f.write(out)
+    print("[TEST] --- remote done ---")
+finally:
+    os.close(fd)
+'''
+
+
+def _analyze_output(text: str, cases: Sequence[MshTestCase]) -> List[Tuple[str, bool, str]]:
+    report = []
+    for case in cases:
+        passed, detail = case.check(text, case.command)
+        report.append((case.name, passed, detail))
+    return report
+
+
+def run_tests(names: Iterable[str]) -> int:
+    name_list = list(names)
+    cases = []
+    for name in name_list:
+        if name not in TEST_CASES:
+            print(f"Unknown test: {name}", file=sys.stderr)
+            return 2
+        cases.append(TEST_CASES[name])
+
+    if len(cases) == 1:
+        return _run_remote_session(cases)
 
     print("=" * 60)
-    print(" msh Shell Command Execution Test")
+    print(" HP232X msh shell tests (multi-case, one reset each)")
     print("=" * 60)
+    print("Tests:", ", ".join(c.name for c in cases))
     print()
 
-    # 创建SSH客户端
+    exit_code = 0
+    for idx, case in enumerate(cases):
+        print(f"\n--- [{idx + 1}/{len(cases)}] {case.name} ---")
+        code = _run_remote_session([case])
+        if code != 0 and exit_code == 0:
+            exit_code = code
+    return exit_code
+
+
+def _run_remote_session(cases: Sequence[MshTestCase]) -> int:
+    if len(cases) == 1:
+        print("=" * 60)
+        print(" HP232X msh shell tests")
+        print("=" * 60)
+        print("Tests:", cases[0].name)
+        print()
+
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-    try:
-        # 连接服务器
-        print("[1] Connecting to server...")
         ssh.connect(SERVER, username=USERNAME, password=PASSWORD, timeout=10)
-        print("    ✓ Connected")
 
-        # 清理串口占用
-        print("\n[2] Cleaning serial port...")
-        stdin, stdout, stderr = ssh.exec_command(
-            f"echo '{SUDO_PASSWORD}' | sudo -S pkill -9 -f 'ttyUSB' 2>/dev/null || true"
-        )
-        time.sleep(2)
+    sftp = ssh.open_sftp()
+    with sftp.file(REMOTE_SCRIPT_PATH, "w") as remote_file:
+        remote_file.write(_remote_script_payload(cases))
+    sftp.close()
 
-        # 设置串口
-        print("[3] Configuring serial port...")
-        stdin, stdout, stderr = ssh.exec_command(
-            f"echo '{SUDO_PASSWORD}' | sudo -S stty -F {SERIAL_PORT} 115200 raw -echo && "
-            f"echo '{SUDO_PASSWORD}' | sudo -S chmod 666 {SERIAL_PORT}"
-        )
-        exit_status = stdout.channel.recv_exit_status()
-        if exit_status == 0:
-            print("    ✓ Serial port configured")
+    _, stdout, stderr = ssh.exec_command(
+        f"echo '{SUDO_PASSWORD}' | sudo -S python3 {REMOTE_SCRIPT_PATH}",
+        timeout=120,
+    )
+    captured: List[str] = []
+    while not stdout.channel.exit_status_ready():
+        if stdout.channel.recv_ready():
+            chunk = stdout.channel.recv(4096).decode(errors="ignore")
+            captured.append(chunk)
+            sys.stdout.write(chunk)
+            sys.stdout.flush()
+        time.sleep(0.05)
 
-        # 启动串口监控
-        print("\n[4] Starting serial monitor...")
-        transport = ssh.get_transport()
-        session = transport.open_session()
-        session.get_pty()
-        session.exec_command(f"echo '{SUDO_PASSWORD}' | sudo -S timeout 30 cat {SERIAL_PORT}")
-        time.sleep(2)
+    rest = stdout.read().decode(errors="ignore")
+    remote_err = stderr.read().decode(errors="ignore")
+    remote_code = stdout.channel.recv_exit_status()
+    if rest:
+        captured.append(rest)
+        sys.stdout.write(rest)
+    remote_out = "".join(captured)
+    if remote_err:
+        sys.stderr.write(remote_err)
 
-        # 复位设备
-        print("[5] Resetting device...")
-        stdin, stdout, stderr = ssh.exec_command(
-            f"echo '{SUDO_PASSWORD}' | sudo -S lynd_hp run -d 0 -r wdt -o5"
-        )
-        exit_status = stdout.channel.recv_exit_status()
-        if exit_status == 0:
-            print("    ✓ Reset command executed")
+    ssh.exec_command(f"rm -f {REMOTE_SCRIPT_PATH} /tmp/hp232x_msh_shell_out.bin")
+    ssh.close()
 
-        # 等待Shell启动
-        print("\n[6] Waiting for msh Shell startup...")
-        output = ""
-        shell_ready = False
-        timer_isr_count = 0
+    if remote_code != 0:
+        print(f"\nRemote runner failed with exit code {remote_code}")
+        return remote_code
 
-        start_time = time.time()
-        while time.time() - start_time < 20:
-            if session.recv_ready():
-                data = session.recv(1024).decode('utf-8', errors='ignore')
-                output += data
-                print(data, end='', flush=True)
+    text = remote_out
+    report = _analyze_output(text, cases)
 
-                # 检查Shell就绪
-                if "msh >" in output and not shell_ready:
-                    shell_ready = True
-                    print("\n    ✓ msh Shell ready!")
+    print("\n[TEST] --- analysis ---")
+    exit_code = 0
+    for idx, (name, passed, detail) in enumerate(report):
+        status = "PASS" if passed else "FAIL"
+        print(f"[TEST] {status}: {name} — {detail}")
+        if not passed:
+            exit_code = 10 + idx
 
-                # 检查Timer ISR
-                if "TIMER ISR" in output:
-                    matches = re.findall(r'TIMER ISR #(\d+)', output)
-                    if matches:
-                        timer_isr_count = int(matches[-1])
+    print(f"\nRemote exit code: {remote_code}")
+    return exit_code
 
-            time.sleep(0.1)
 
-        if not shell_ready:
-            print("\n    ⚠ Shell not ready, continuing anyway...")
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description="HP232X msh shell remote board tests")
+    parser.add_argument(
+        "tests",
+        nargs="*",
+        help=f"test name(s): {', '.join(TEST_CASES)} or all",
+    )
+    parser.add_argument("--list", action="store_true", help="list available tests")
+    args = parser.parse_args(argv)
 
-        # 等待Shell稳定
-        print("\n[7] Waiting for Shell to stabilize...")
-        time.sleep(3)
+    if args.list:
+        for name, case in TEST_CASES.items():
+            mark = "*" if name in DEFAULT_SUITE else " "
+            print(f"{mark} {name:10} {case.description}")
+        print("\n* included in 'all'")
+        return 0
 
-        # 发送Shell命令测试
-        print("\n[8] Testing Shell commands...")
-
-        test_commands = [
-            ('help', 'List all commands'),
-            ('list_thread', 'Show running threads'),
-            ('list_device', 'Show registered devices'),
-            ('ps', 'Process status'),
-            ('free', 'Memory usage'),
-        ]
-
-        command_results = []
-
-        for cmd, desc in test_commands:
-            print(f"\n[Testing] Command: '{cmd}' ({desc})")
-
-            # 发送命令
-            stdin, stdout, stderr = ssh.exec_command(
-                f"printf '{cmd}\r' > {SERIAL_PORT}"
-            )
-            stdout.channel.recv_exit_status()
-            print(f"    Sent: '{cmd}'")
-
-            # 等待响应
-            time.sleep(2)
-
-            # 收集输出
-            cmd_output = ""
-            start_time = time.time()
-            while time.time() - start_time < 3:
-                if session.recv_ready():
-                    data = session.recv(1024).decode('utf-8', errors='ignore')
-                    cmd_output += data
-                    print(data, end='', flush=True)
-                time.sleep(0.1)
-
-            # 分析响应
-            response_received = len(cmd_output) > 0
-            has_error = "error" in cmd_output.lower() or "unknown" in cmd_output.lower()
-            has_result = cmd in cmd_output and "msh >" in cmd_output
-
-            result = {
-                'command': cmd,
-                'description': desc,
-                'sent': True,
-                'response_received': response_received,
-                'has_result': has_result,
-                'has_error': has_error,
-                'output_length': len(cmd_output),
-                'output_preview': cmd_output[:200] if cmd_output else ""
-            }
-            command_results.append(result)
-
-            if has_result and not has_error:
-                print(f"    ✓ Command '{cmd}' executed successfully")
-            elif response_received:
-                print(f"    ⚠ Response received but execution unclear")
+    if not args.tests or args.tests == ["all"]:
+        names = list(DEFAULT_SUITE)
             else:
-                print(f"    ✗ No response for command '{cmd}'")
+        names = list(args.tests)
 
-        # 最终验证结果
-        print("\n" + "=" * 60)
-        print(" Test Results Summary")
-        print("=" * 60)
+    return run_tests(names)
 
-        print(f"\nTimer interrupt verification:")
-        print(f"  ISR triggered: {timer_isr_count} times")
-        if timer_isr_count > 0:
-            print(f"  ✓ Timer interrupt working (system tick active)")
 
-        print(f"\nShell status:")
-        print(f"  Shell ready: {shell_ready}")
-        if shell_ready:
-            print(f"  ✓ msh > prompt displayed")
-
-        print(f"\nCommand execution results:")
-        success_count = 0
-        for result in command_results:
-            status = "✓" if result['has_result'] and not result['has_error'] else "⚠"
-            print(f"  {status} {result['command']}: {result['description']}")
-            print(f"      Response: {result['output_length']} bytes")
-            if result['has_result']:
-                success_count += 1
-
-        print(f"\nOverall assessment:")
-        if success_count >= len(test_commands) * 0.8:
-            print(f"  ★★★ SUCCESS ★★★")
-            print(f"  ✓ Shell commands working ({success_count}/{len(test_commands)})")
-            print(f"  ✓ System fully functional")
-            print(f"  ✓ Timer + Shell + UART all working")
-            success = True
-        elif shell_ready and timer_isr_count > 0:
-            print(f"  ⚠ PARTIAL SUCCESS")
-            print(f"  ✓ Shell prompt displayed")
-            print(f"  ✓ Timer interrupt working")
-            print(f"  ⚠ Commands may need polling mode")
-            success = False
-        else:
-            print(f"  ✗ FAILED")
-            print(f"  Core systems not working properly")
-            success = False
-
-        print("\n" + "=" * 60)
-        print(" Test Complete")
-        print("=" * 60)
-
-        # 保存详细输出
-        with open('/tmp/shell_test_detail.log', 'w') as f:
-            f.write(f"Full output:\n{output}\n\n")
-            for result in command_results:
-                f.write(f"\nCommand: {result['command']}\n")
-                f.write(f"Output preview:\n{result['output_preview']}\n")
-
-        print("\nDetailed log saved to /tmp/shell_test_detail.log")
-
-        return success
-
-    except Exception as e:
-        print(f"\n✗ Test failed with error: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-    finally:
-        ssh.close()
-        print("\n[9] SSH connection closed")
-
-if __name__ == '__main__':
-    success = run_shell_command_test()
-    sys.exit(0 if success else 1)
+if __name__ == "__main__":
+    sys.exit(main())

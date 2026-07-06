@@ -308,18 +308,20 @@ _secondary_cpu_entry:
     /* Set current cpu's stack top */
     sub     x0, x0, #1
     mov     x1, #ARCH_SECONDARY_CPU_STACK_SIZE
+#ifdef BSP_USING_HP232X
+    /* IRAM1 stack: ldr avoids adrp 33-bit limitation (same as init_kernel_bss). */
+    ldr     x2, =.secondary_cpu_stack_top
+#else
     get_phy x2, .secondary_cpu_stack_top
+#endif
     msub    stack_top, x0, x1, x2
 
     bl      init_cpu_el
+
     bl      init_cpu_stack_early
 
     /* secondary cpu start to startup */
 #ifdef BSP_USING_HP232X
-    /* HP232X: Skip enable_mmu_early (uses generic .early_tbl0_page).
-     * board.c:rt_hw_secondary_cpu_bsp_start() calls hp232x_mmu_secondary_init()
-     * which sets hp232x_mmu_l1 and enables MMU correctly.
-     * See doc/mmu_design.md section 14 for details. */
     ldr     kernel_entry, =rt_hw_secondary_cpu_bsp_start
     br      kernel_entry
 #else

@@ -140,7 +140,7 @@ POK!
 ## Documentation
 
 ### 核心知识点文档 (doc/)
-- [SMP 与 IRQ 调试指南](doc/smp_irq_debug.md) - SMP 单核 bring-up、串口 msh、IRQ/异常定位
+- [SMP 与 IRQ 调试指南](doc/smp_irq_debug.md) - SMP 单核/双核 bring-up、spin-table 缓存一致性、串口互斥、IRQ/异常定位
 - [GIC调试要点](doc/gic_debug.md) - GICv3中断控制器配置
 - [MMU调试要点](doc/mmu_debug.md) - 页表配置和MMU启用
 - [EL降级要点](doc/el_transition.md) - EL3→EL2→EL1降级流程

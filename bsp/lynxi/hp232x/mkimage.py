@@ -42,7 +42,7 @@ def analyze_elf_sections(elf_path):
 
             # Filter relevant sections
             if name in ['.head', '.text', '.early_hp232x', '.eh_frame', '.data',
-                       '.mmu_table', '.bss', '.rodata', '.stack']:
+                       '.bss.noclean.mmu_table', '.mmu_table', '.bss', '.rodata', '.stack']:
                 sections[name] = {
                     'idx': idx,
                     'size': size,
@@ -64,7 +64,7 @@ def print_section_analysis(sections):
     iram0_sections = []
     iram0_total = 0
 
-    for name in ['.head', '.text', '.early_hp232x', '.data', '.mmu_table']:
+    for name in ['.head', '.text', '.early_hp232x', '.data']:
         if name in sections:
             sec = sections[name]
             # Adjust VMA display: kernel linked at 0x04040000+, subtract offset for display
@@ -72,12 +72,19 @@ def print_section_analysis(sections):
             iram0_sections.append((name, display_addr, sec['size_kb']))
             iram0_total += sec['size']
 
-    # IRAM1 BSS
+    # IRAM1: full .bss plus optional mmu_table sub-section
     iram1_bss = 0
+    iram1_mmu = 0
     bss_addr = 0
+    mmu_addr = 0
     if '.bss' in sections:
         iram1_bss = sections['.bss']['size']
         bss_addr = sections['.bss']['vma']
+    for name in ['.bss.noclean.mmu_table', '.mmu_table']:
+        if name in sections:
+            iram1_mmu = sections[name]['size']
+            mmu_addr = sections[name]['vma']
+            break
 
     # 打印精简表格
     print("\nSection Analysis:")
@@ -95,6 +102,8 @@ def print_section_analysis(sections):
     # IRAM1 BSS
     if iram1_bss:
         print(f".bss (IRAM1)         0x{bss_addr:016X}  {iram1_bss/1024:>10.2f}")
+    if iram1_mmu:
+        print(f"  mmu_table (noclean) 0x{mmu_addr:016X}  {iram1_mmu/1024:>10.2f}")
 
     print("-" * 60)
 

@@ -17,7 +17,7 @@ SECTIONS
      *   BL3_BOOT:  RESERVED (bootwrapper + SPL space)
      * IRAM0: 0x04040000 ~ 0x0407FFFF (last 256KB)
      *   BL2_BOOT:  RESERVED
-     *   BL3_BOOT:  kernel text + data + mmu_table (IRAM0_KERNEL_BASE)
+     *   BL3_BOOT:  kernel text + data (IRAM0_KERNEL_BASE)
      *
      * IRAM1: 0x100000000 ~ 0x10003FFFF (first 256KB reserved, unusable)
      * IRAM1: 0x100040000 ~ 0x10007FFFF (last 256KB usable, bss + heap + stack)
@@ -115,26 +115,19 @@ SECTIONS
         KEEP(*(.dtors))
         PROVIDE(__dtors_end__ = .);
     }
-    . = ALIGN(4096);
-
-    /* Page tables MUST be in IRAM0 (accessible before MMU enables IRAM1 access) */
-    .mmu_table :
-    {
-        PROVIDE(__mmu_table_start = .);
-        KEEP(*(.mmu_table))
-        *(.mmu_table.*)
-        . = ALIGN(4096);
-        PROVIDE(__mmu_table_end = .);
-    } :data
 
     . = ALIGN(16);
-    /* BSS placed in upper half of IRAM1, keep low 256KB (0x100000000-0x10003FFFF) empty */
-    /* Memory constraint: only use IRAM1 upper 256KB (0x100040000-0x10007FFFF) */
-    /* Layout: 0x100040000-0x10004FFFF for stacks/early_data, .bss starts at 0x100050000 */
+    /* IRAM1: noclean (stacks, early page, MMU tables) + zeroed bss/heap/stack */
     .bss IRAM1_BASE :
     {
         PROVIDE(__bss_noclean_start = .);
-        *(.bss.noclean.*)
+        *(.bss.noclean.cpus_stack)
+        *(.bss.noclean.early_page)
+        *(.bss.noclean.hp232x_spin)
+        PROVIDE(__mmu_table_start = .);
+        KEEP(*(.bss.noclean.mmu_table))
+        . = ALIGN(4096);
+        PROVIDE(__mmu_table_end = .);
         PROVIDE(__bss_noclean_end = .);
         . = ALIGN(8);
         PROVIDE(__bss_start = .);

@@ -4,6 +4,53 @@
 
 在 HP232X 仅 IRAM 运行约束下，持续移除未使用或重复的启动、调试、驱动路径，降低 IRAM0 代码体积和 IRAM1 BSS/栈压力，同时保持当前已验证的启动与系统 tick 行为。
 
+## 内存基线（2026-07-06，SMP 双核 + list_isr）
+
+BL22 模式，内核链接 IRAM0 后 256KB（`0x04040000–0x0407FFFF`），运行时数据在 IRAM1 后 256KB。
+
+| 区域 | 占用 | 预算 | 余量 | 说明 |
+|------|------|------|------|------|
+| **IRAM0 (File)** | **209.74 KB** | 256 KB | **~46 KB** | `.head` + `.text` + `.data` |
+| **IRAM1 (.bss)** | **93.61 KB** | 256 KB | **~162 KB** | noclean + 普通 BSS |
+| 镜像 payload | 211 KB | — | — | `rtthread-header.bin` |
+
+SMP 双核实板：`test_msh_shell.py all` PASS（help + list_isr）。
+
+构建后复查：
+
+```bash
+cd bsp/lynxi/hp232x && scons -j8
+python3 mkimage.py rtthread.bin rtthread-header.bin --dest-addr 0x04040000 --elf rtthread.elf
+```
+
+---
+
+## 已完成裁剪
+
+### ✅ P-mmu. 页表迁至 IRAM1 noclean（2026-07-06）
+
+**背景**：SMP 双核后 IRAM0 占用 **233.74 KB（91%）**，仅剩 ~20 KB；`.mmu_table` 占 **24 KB** 且与 IRAM0 代码竞争。
+
+**做法**：
+
+- `hp232x_mmu_l1` … `hp232x_mmu_l3_ram1` 改为 `section(".bss.noclean.mmu_table")`，链接在 IRAM1 noclean 区（`link.lds`）
+- MMU 关闭时 IRAM1 物理地址可访问（栈/BSS 已验证）；`hp232x_build_page_tables()` 在 `hp232x_mmu_init()` 内填表后再开 MMU
+- SMP 从核仍共享同一套页表，`hp232x_mmu_secondary_init()` 中 dcache flush 不变
+
+**结果**：
+
+| 指标 | 迁移前 | 迁移后 |
+|------|--------|--------|
+| IRAM0 | 233.74 KB | **209.74 KB**（−24 KB） |
+| IRAM1 BSS | 69.61 KB | **93.61 KB**（+24 KB） |
+| 页表 VA | `0x04075000` | **`0x10005b000`** |
+
+**验证**：192.168.49.81 实板 `test_msh_shell.py all` PASS。
+
+**涉及文件**：[link.lds](../link.lds)、[hp232x_mmu.c](../drivers/hp232x_mmu.c)、[mkimage.py](../mkimage.py)
+
+---
+
 ## 当前已确认事项
 
 ### APB Timer 已作为系统 tick 源
@@ -51,9 +98,25 @@ Hi, this is RT-Thread!
 
 因此运行时不再调用 `rt_hw_gtimer_init()`。
 
-## Plan 事项
+## Plan 事项（待做）
 
-### P0. APB timer 模式下从构建中移除 gtimer.c
+### P0. IRAM0 `.text` 体积优化（当前主瓶颈）
+
+IRAM0 余量 ~46 KB，后续功能扩展仍偏紧。优先查 `rtthread.map` 大符号：
+
+- finsh 命令 / symtab 表
+- 未使用的驱动或调试路径
+- SMP 相关是否可 `#ifdef` 裁剪单核配置
+
+目标：**IRAM0 ≤ 85%（≤218 KB）**，留 ≥38 KB 余量。
+
+### P1. IRAM1 noclean 中 `early_page` 评估（~20 KB）
+
+[entry_point.S](../../../libcpu/aarch64/cortex-a/entry_point.S) 中 `.bss.noclean.early_page`（`early_tbl*` + `early_page_array`）在 HP232X BL22 下**不走路** `init_mmu_early`，与 `hp232x_mmu_*` 重复。
+
+- 计划：BL22 专用缩小或 `#ifdef` 排除，释放 IRAM1 noclean 空间（对 IRAM0 无直接收益，但减轻 IRAM1 布局压力）
+
+### P2. APB timer 模式下从构建中移除 gtimer.c
 
 **背景**：
 
@@ -88,7 +151,7 @@ if GetDepend('RT_CLOCK_TIME_ARM_ARCH') == True or GetDepend('BSP_USING_APB_TIMER
 - 避免后续误以为 `gtimer.c` 仍参与系统 tick；
 - 减少 IRAM0 代码体积。
 
-### P1. 清理旧 ARM timer 调试/测试路径
+### P3. 清理旧 ARM timer 调试/测试路径
 
 **背景**：
 
@@ -100,7 +163,7 @@ if GetDepend('RT_CLOCK_TIME_ARM_ARCH') == True or GetDepend('BSP_USING_APB_TIMER
 - 确认不再需要后，可进一步删除或移入调试文档；
 - 保留必要结论：HP232X BL22 下 `CNTFRQ_EL0 = 31.25 MHz` 但 `CNTPCT_EL0` 实测约 `500 kHz`，不适合作为当前 system tick 默认源。
 
-### P2. 梳理 tick.c 是否仍需保留
+### P4. 梳理 tick.c 是否仍需保留
 
 **背景**：
 
@@ -115,7 +178,7 @@ if GetDepend('RT_CLOCK_TIME_ARM_ARCH') == True or GetDepend('BSP_USING_APB_TIMER
 - 若无引用，加入构建排除或删除计划；
 - 若保留，仅作为备用/历史参考，不参与默认固件。
 
-### P3. pmon_gic 监控输出保持轻量
+### P5. pmon_gic 监控输出保持轻量
 
 **背景**：
 
@@ -131,13 +194,13 @@ if GetDepend('RT_CLOCK_TIME_ARM_ARCH') == True or GetDepend('BSP_USING_APB_TIMER
 
 避免默认打印大量 GIC 寄存器、CNTPCT、dCNT 信息，防止串口输出影响调度和中断观察。
 
-### P4. 文档同步
+### P6. 文档同步
 
 **计划**：
 
 将以下文档后续同步到 APB timer tick 方案：
 
-- [HANDOFF_SLIM.md](../HANDOFF_SLIM.md)
+- [HANDOFF_SLIM.md](../HANDOFF_SLIM.md) — 已更新 SMP 双核与 IRAM0 基线（2026-07-06）
 - [TEST_METHODOLOGY.md](../TEST_METHODOLOGY.md)
 - [timer_blocking_diagnosis.md](timer_blocking_diagnosis.md)
 - [interrupt_group_config.md](interrupt_group_config.md)

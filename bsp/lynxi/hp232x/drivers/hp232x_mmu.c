@@ -10,17 +10,17 @@
 #include "hp232x_mmu.h"
 
 static uint64_t hp232x_mmu_l1[HP232X_MMU_ENTRIES]
-    __attribute__((aligned(4096), section(".mmu_table")));
+    __attribute__((aligned(4096), section(".bss.noclean.mmu_table")));
 static uint64_t hp232x_mmu_l2_low[HP232X_MMU_ENTRIES]
-    __attribute__((aligned(4096), section(".mmu_table")));
+    __attribute__((aligned(4096), section(".bss.noclean.mmu_table")));
 static uint64_t hp232x_mmu_l2_ram1[HP232X_MMU_ENTRIES]
-    __attribute__((aligned(4096), section(".mmu_table")));
+    __attribute__((aligned(4096), section(".bss.noclean.mmu_table")));
 static uint64_t hp232x_mmu_l2_apu[HP232X_MMU_ENTRIES]
-    __attribute__((aligned(4096), section(".mmu_table")));
+    __attribute__((aligned(4096), section(".bss.noclean.mmu_table")));
 static uint64_t hp232x_mmu_l3_ram0[HP232X_MMU_ENTRIES]
-    __attribute__((aligned(4096), section(".mmu_table")));
+    __attribute__((aligned(4096), section(".bss.noclean.mmu_table")));
 static uint64_t hp232x_mmu_l3_ram1[HP232X_MMU_ENTRIES]
-    __attribute__((aligned(4096), section(".mmu_table")));
+    __attribute__((aligned(4096), section(".bss.noclean.mmu_table")));
 
 static inline uint64_t hp232x_desc_table(uint64_t addr)
 {

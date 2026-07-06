@@ -287,7 +287,7 @@ def _run_remote_session(cases: Sequence[MshTestCase]) -> int:
 
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(SERVER, username=USERNAME, password=PASSWORD, timeout=10)
+    ssh.connect(SERVER, username=USERNAME, password=PASSWORD, timeout=10)
 
     sftp = ssh.open_sftp()
     with sftp.file(REMOTE_SCRIPT_PATH, "w") as remote_file:
@@ -358,7 +358,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     if not args.tests or args.tests == ["all"]:
         names = list(DEFAULT_SUITE)
-            else:
+    else:
         names = list(args.tests)
 
     return run_tests(names)

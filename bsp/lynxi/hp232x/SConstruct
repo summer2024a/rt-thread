@@ -11,7 +11,6 @@ sys.path = sys.path + [os.path.join(RTT_ROOT, 'tools')]
 # BL22: kernel in last 256KB of IRAM0 (0x04040020), IRAM1 last 256KB
 _bl22 = False
 _bl21 = False
-_bl22_uartsetup = False
 try:
     with open('rtconfig.h', 'r') as f:
         for line in f:

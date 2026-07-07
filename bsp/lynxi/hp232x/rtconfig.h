@@ -7,7 +7,7 @@
 /* Boot mode: BL21 or BL22 (mutually exclusive)
  * BL21: kernel runs in first 256KB of IRAM0 (0x04000020), IRAM1 last 256KB
  * BL22: kernel runs in last 256KB of IRAM0 (0x04040020), IRAM1 last 256KB */
-#define BSP_USING_HP232X_BL22
+#define BSP_USING_HP232X_UARTSETUP_BL22
 
 /* Enable UART debug for boot process tracking */
 #define BSP_USING_HP232X_DEBUG_UART
@@ -265,16 +265,13 @@
 #define BSP_USING_GICV3  /* Use GICv3 for KA200 SoC (GIC-500) */
 /* #define RT_BSP_GIC_DBG */  /* GIC group config debug - disabled by default */
 #define KERNEL_ASPACE_START 0x04000000
-/* ARM generic timer as system tick (CNTPCT verified 31.25MHz on BL22). */
-#define BSP_USING_CORETIMER
-/* #define BSP_USING_APB_TIMER */
-/* #define BSP_USING_APB_TIMER_AS_TICK */
+/* ARM generic timer disabled as system tick when APB timer is selected. */
+/* #define BSP_USING_CORETIMER */
+#define BSP_USING_APB_TIMER
+#define BSP_USING_APB_TIMER_AS_TICK
 #define HP232X_APB_TIMER_CLOCK 50000000
 #define HP232X_APB_TIMER_TICK_ID 0
-#define BSP_USING_SYSCTL_CLK
-#define BSP_USING_HP232X_ARCH_TIMER_PROBE
-#define RT_BSP_PMON_TEST
-#define BSP_USING_HP232X_PMON_BIND_CPU1
+/* #define RT_BSP_PMON_TEST */
 
 /* end of Hardware Drivers Config */
 

@@ -15,8 +15,6 @@ static uint64_t hp232x_mmu_l2_low[HP232X_MMU_ENTRIES]
     __attribute__((aligned(4096), section(".bss.noclean.mmu_table")));
 static uint64_t hp232x_mmu_l2_ram1[HP232X_MMU_ENTRIES]
     __attribute__((aligned(4096), section(".bss.noclean.mmu_table")));
-static uint64_t hp232x_mmu_l2_apu[HP232X_MMU_ENTRIES]
-    __attribute__((aligned(4096), section(".bss.noclean.mmu_table")));
 static uint64_t hp232x_mmu_l3_ram0[HP232X_MMU_ENTRIES]
     __attribute__((aligned(4096), section(".bss.noclean.mmu_table")));
 static uint64_t hp232x_mmu_l3_ram1[HP232X_MMU_ENTRIES]
@@ -30,6 +28,11 @@ static inline uint64_t hp232x_desc_table(uint64_t addr)
 static inline uint64_t hp232x_desc_block(uint64_t addr, uint64_t attr)
 {
     return (addr & ADDR_MASK_L2_BLOCK) | attr | DESC_BLOCK;
+}
+
+static inline uint64_t hp232x_desc_l1_block(uint64_t addr, uint64_t attr)
+{
+    return (addr & ADDR_MASK_L1_BLOCK) | attr | DESC_BLOCK;
 }
 
 static inline uint64_t hp232x_desc_page(uint64_t addr, uint64_t attr)
@@ -66,18 +69,40 @@ static void hp232x_map_l3_page_range(uint64_t *table,
     }
 }
 
+static void hp232x_map_l1_device(uint64_t pa_base)
+{
+    hp232x_mmu_l1[pa_base >> 30] = hp232x_desc_l1_block(pa_base, ATTR_DEVICE);
+}
+
+static void hp232x_map_apu_regions(void)
+{
+    static const uint64_t apu_bases[] =
+    {
+        HP232X_APU_NORM_BASE,      /* L1[80]: NORM/CR/MDBG */
+        HP232X_APU_CORECFG0_BASE,  /* L1[84]: apu_hw_init fix reg low */
+        HP232X_APU_CORECFG1_BASE,  /* L1[85]: apu_hw_init fix reg high */
+        HP232X_APU_NN_FIFO0_BASE,  /* L1[88]: SLV0 NN FIFO ch0-3 */
+        HP232X_APU_NN_FIFO1_BASE,  /* L1[89]: SLV0 NN FIFO ch4-7 */
+    };
+    rt_size_t i;
+
+    for (i = 0; i < sizeof(apu_bases) / sizeof(apu_bases[0]); i++)
+    {
+        hp232x_map_l1_device(apu_bases[i]);
+    }
+}
+
 static void hp232x_build_page_tables(void)
 {
     rt_memset(hp232x_mmu_l1, 0, sizeof(hp232x_mmu_l1));
     rt_memset(hp232x_mmu_l2_low, 0, sizeof(hp232x_mmu_l2_low));
     rt_memset(hp232x_mmu_l2_ram1, 0, sizeof(hp232x_mmu_l2_ram1));
-    rt_memset(hp232x_mmu_l2_apu, 0, sizeof(hp232x_mmu_l2_apu));
     rt_memset(hp232x_mmu_l3_ram0, 0, sizeof(hp232x_mmu_l3_ram0));
     rt_memset(hp232x_mmu_l3_ram1, 0, sizeof(hp232x_mmu_l3_ram1));
 
     hp232x_mmu_l1[0] = hp232x_desc_table((uint64_t)hp232x_mmu_l2_low);
     hp232x_mmu_l1[HP232X_MMU_L1_INDEX_RAM1] = hp232x_desc_table((uint64_t)hp232x_mmu_l2_ram1);
-    hp232x_mmu_l1[HP232X_MMU_L1_INDEX_APU] = hp232x_desc_table((uint64_t)hp232x_mmu_l2_apu);
+    hp232x_map_apu_regions();
 
     hp232x_map_l2_block_range(hp232x_mmu_l2_low,
                               0x00000000UL,
@@ -120,8 +145,6 @@ static void hp232x_build_page_tables(void)
                              IRAM1_START,
                              IRAM1_SIZE,
                              ATTR_NORMAL_WB);
-
-    hp232x_mmu_l2_apu[0] = hp232x_desc_block(0x1000000000UL, ATTR_DEVICE);
 }
 
 void hp232x_mmu_init(void)
@@ -202,7 +225,6 @@ void hp232x_mmu_secondary_init(void)
     rt_hw_cpu_dcache_ops(RT_HW_CACHE_FLUSH, (void *)hp232x_mmu_l1, sizeof(hp232x_mmu_l1));
     rt_hw_cpu_dcache_ops(RT_HW_CACHE_FLUSH, (void *)hp232x_mmu_l2_low, sizeof(hp232x_mmu_l2_low));
     rt_hw_cpu_dcache_ops(RT_HW_CACHE_FLUSH, (void *)hp232x_mmu_l2_ram1, sizeof(hp232x_mmu_l2_ram1));
-    rt_hw_cpu_dcache_ops(RT_HW_CACHE_FLUSH, (void *)hp232x_mmu_l2_apu, sizeof(hp232x_mmu_l2_apu));
     rt_hw_cpu_dcache_ops(RT_HW_CACHE_FLUSH, (void *)hp232x_mmu_l3_ram0, sizeof(hp232x_mmu_l3_ram0));
     rt_hw_cpu_dcache_ops(RT_HW_CACHE_FLUSH, (void *)hp232x_mmu_l3_ram1, sizeof(hp232x_mmu_l3_ram1));
     rt_hw_barrier(dsb, sy);

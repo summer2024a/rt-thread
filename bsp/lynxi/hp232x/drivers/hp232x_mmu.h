@@ -20,7 +20,24 @@ extern "C" {
 #define HP232X_MMU_ENTRIES          512
 #define HP232X_MMU_PAGE_SIZE        0x1000UL
 #define HP232X_MMU_L1_INDEX_RAM1    4
-#define HP232X_MMU_L1_INDEX_APU     64
+
+/*
+ * APU address map (lyn_apu v2 / lynchip-lite EVB, SLV0):
+ *   SLV0 + NORM     0x1400000000  CR/MDBG/cmd (APU_BASE_NORM_SIZE ~6MB)
+ *   + core tile     0x1511800134~0x156B800134  apu_hw_init fix reg
+ *   SLV0 NN FIFO    0x1600000000~0x1670000000  load/start inference
+ * CPR @ 0x12500000 is in L2_low, not here.
+ *
+ * Each 1GB slot uses one L1 block (no extra L2/L3 tables).
+ */
+#define HP232X_APU_NORM_BASE        0x1400000000UL
+#define HP232X_APU_CORECFG0_BASE    0x1500000000UL
+#define HP232X_APU_CORECFG1_BASE    0x1540000000UL
+#define HP232X_APU_NN_FIFO0_BASE    0x1600000000UL
+#define HP232X_APU_NN_FIFO1_BASE    0x1640000000UL
+
+#define HP232X_APU_BASE             HP232X_APU_NORM_BASE
+#define HP232X_MMU_L1_INDEX_APU     (HP232X_APU_NORM_BASE >> 30)
 
 #define DESC_VALID                  (1UL << 0)
 #define DESC_TABLE                  (DESC_VALID | (1UL << 1))
@@ -43,6 +60,7 @@ extern "C" {
 #define ATTR_DEVICE                 (ATTR_INDEX_DEVICE | DESC_AP_RW_EL1 | DESC_SH_OUTER | DESC_AF | DESC_PXN | DESC_UXN)
 
 #define ADDR_MASK_TABLE             0x0000fffffffff000UL
+#define ADDR_MASK_L1_BLOCK          0x0000fffffc000000UL
 #define ADDR_MASK_L2_BLOCK          0x0000ffffffe00000UL
 #define ADDR_MASK_L3_PAGE           0x0000fffffffff000UL
 

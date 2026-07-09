@@ -152,6 +152,15 @@ def main():
 
     file_size = len(payload)
 
+    # Bootwrapper loads image contiguously from dest_addr, then jumps to
+    # dest_addr + next_offset (when next_offset >= headersize) or dest + headersize.
+    # Insert file padding so payload lands at dest_addr + next_offset in IRAM:
+    #   [header @ dest][padding][payload @ dest + next_offset]
+    padding_size = 0
+    if args.next_offset > args.headersize:
+        padding_size = args.next_offset - args.headersize
+    entry_addr = args.dest_addr + (args.next_offset if args.next_offset else args.headersize)
+
     print(f"【Generating Boot Image】")
     print(f"  Input:       {args.input}")
     print(f"  Output:      {args.output}")
@@ -159,6 +168,11 @@ def main():
     print(f"  Dest Addr:   0x{args.dest_addr:08X}")
     print(f"  Next Offset: 0x{args.next_offset:X}")
     print(f"  Header Size: {args.headersize} bytes")
+    if padding_size:
+        print(f"  Padding:     {padding_size} bytes (0x{padding_size:X}) — gap before payload in image")
+        print(f"  Entry Addr:  0x{entry_addr:08X} (dest + next_offset)")
+    else:
+        print(f"  Entry Addr:  0x{entry_addr:08X} (dest + header, contiguous load)")
 
     # BL1 bootrom final jump logic (bl1_entrypoint.S line 185-187):
     #   bl boot_mem_select  # x2 = 0x04000000
@@ -188,9 +202,11 @@ def main():
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
     with open(args.output, "wb") as dst:
         dst.write(layout)
+        if padding_size:
+            dst.write(b"\x00" * padding_size)
         dst.write(payload)
 
-    total_size = len(layout) + len(payload)
+    total_size = len(layout) + padding_size + len(payload)
     print(f"  Total Size:  {total_size} bytes ({total_size / 1024:.2f} KB)")
     print(f"✅ Boot image generated successfully!\n")
 

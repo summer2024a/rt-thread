@@ -744,6 +744,17 @@ int arm_gic_redist_init(rt_uint64_t index, rt_uint64_t redist_base)
 
     RT_ASSERT(index < ARM_GIC_MAX_NR);
 
+#if defined(BSP_USING_HP232X) && defined(RT_USING_SMP)
+    /* Secondary CPU may see stale _gic_table from CPU0 dcache. */
+    if (cpu_id != 0)
+    {
+        rt_hw_cpu_dcache_ops(RT_HW_CACHE_INVALIDATE,
+                             (void *)&_gic_table[index].redist_hw_base[0],
+                             sizeof(_gic_table[index].redist_hw_base));
+        rt_hw_barrier(dsb, sy);
+    }
+#endif /* BSP_USING_HP232X && RT_USING_SMP */
+
     if (master_cpu_id < 0)
     {
         master_cpu_id = 0;

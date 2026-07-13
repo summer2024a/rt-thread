@@ -28,7 +28,10 @@ def patch_rtconfig(mode):
                 out.append("/* #define RT_USING_SMP */\n")
             continue
         if s.startswith("#define RT_CPUS_NR") or s.startswith("/* #define RT_CPUS_NR"):
-            out.append("#define RT_CPUS_NR 1\n")
+            if mode in ("smp_msh", "smp_pmon"):
+                out.append("#define RT_CPUS_NR 2\n")
+            else:
+                out.append("#define RT_CPUS_NR 1\n")
             continue
         if s.startswith("#define RT_USING_MSH") or s.startswith("/* #define RT_USING_MSH"):
             if mode.endswith("msh"):
@@ -37,7 +40,7 @@ def patch_rtconfig(mode):
                 out.append("/* #define RT_USING_MSH */\n")
             continue
         if s.startswith("#define RT_USING_FINSH") or s.startswith("/* #define RT_USING_FINSH"):
-            if mode.endswith("msh"):
+            if mode.endswith("msh") or mode == "smp_pmon":
                 out.append("#define RT_USING_FINSH\n")
             else:
                 out.append("/* #define RT_USING_FINSH */\n")
@@ -47,6 +50,12 @@ def patch_rtconfig(mode):
                 out.append("#define RT_BSP_PMON_TEST\n")
             else:
                 out.append("/* #define RT_BSP_PMON_TEST */\n")
+            continue
+        if s.startswith("#define BSP_USING_HP232X_PMON_BIND_CPU1") or s.startswith("/* #define BSP_USING_HP232X_PMON_BIND_CPU1"):
+            if mode == "smp_pmon":
+                out.append("#define BSP_USING_HP232X_PMON_BIND_CPU1\n")
+            else:
+                out.append("/* #define BSP_USING_HP232X_PMON_BIND_CPU1 */\n")
             continue
         out.append(line)
 
@@ -108,7 +117,9 @@ def run_board_test(mode, send_help=False):
         "ok": True,
         "msh": "msh" in out,
         "hi": "Hi, this is RT-Thread" in out,
-        "pmon": "[GIC Monitor]" in out or "[GIC]" in out,
+        "pmon": "[PMON]" in out,
+        "pmon_cpu1": "[PMON][CPU1]" in out,
+        "pmon_pass": "PASS: ran 20 samples on CPU1" in out,
         "help": "help" in out.lower() and ("RT-Thread shell commands" in out or "command" in out.lower()),
         "version": bool(re.search(r"5\.3\.0 build", out)),
     }

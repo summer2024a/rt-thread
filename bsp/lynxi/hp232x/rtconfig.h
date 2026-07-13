@@ -271,7 +271,8 @@
 #define BSP_USING_APB_TIMER_AS_TICK
 #define HP232X_APB_TIMER_CLOCK 50000000
 #define HP232X_APB_TIMER_TICK_ID 0
-/* #define RT_BSP_PMON_TEST */
+#define RT_BSP_PMON_TEST
+#define BSP_USING_HP232X_PMON_BIND_CPU1
 
 /* end of Hardware Drivers Config */
 

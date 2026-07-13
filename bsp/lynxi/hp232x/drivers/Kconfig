@@ -91,5 +91,22 @@ menu "Hardware Drivers Config"
                 status and system tick information every 2.5 seconds.
                 Useful for verifying system tick and interrupt functionality.
                 Disable to reduce code size and IRAM usage.
+
+        config BSP_USING_HP232X_PMON_BIND_CPU1
+            bool "Run PMON thread bound to CPU1 (SMP test)"
+            depends on RT_BSP_PMON_TEST && RT_USING_SMP
+            default n
+            help
+                Bind the PMON monitor thread to CPU1 and print rt_hw_cpu_id()
+                on each sample. Verifies IPI-driven scheduling on the secondary
+                core while system tick stays on CPU0 APB timer.
+
+        config BSP_USING_HP232X_SMP_BIND_TEST
+            bool "Enable SMP CPU1 bind self-test at boot"
+            depends on RT_USING_SMP
+            default n
+            help
+                Create a worker thread bound to CPU1 during main() and verify
+                that it runs. For bring-up/debug only; disable in release builds.
     endmenu
 endmenu

@@ -344,6 +344,25 @@ void rt_hw_board_init(void)
 void rt_hw_mmu_ktbl_set(unsigned long tbl);
 void _secondary_cpu_entry(void);
 
+#ifdef BSP_USING_HP232X
+static void hp232x_smp_secondary_cpu_prepare(int cpu_id)
+{
+    rt_uint64_t mpidr;
+
+    rt_hw_sysreg_read(mpidr_el1, mpidr);
+    rt_kprintf("[SMP] CPU%d start mpidr=0x%llx\n", cpu_id, mpidr);
+
+    rt_hw_vector_init();
+
+    /* MPIDR table used by GICv3 SGI affinity routing on CPU0. */
+    rt_hw_sysreg_read(mpidr_el1, rt_cpu_mpidr_table[cpu_id]);
+    rt_hw_cpu_dcache_ops(RT_HW_CACHE_FLUSH,
+                         &rt_cpu_mpidr_table[cpu_id],
+                         sizeof(rt_cpu_mpidr_table[cpu_id]));
+    rt_hw_barrier(dsb, sy);
+}
+#endif /* BSP_USING_HP232X */
+
 /*
  * Mailbox addresses for secondary CPUs.
  *
@@ -388,29 +407,50 @@ void rt_hw_secondary_cpu_bsp_start(void)
     LOG_D("cpu %d start", cpu_id);
 
     system_vectors_init();
+#ifdef BSP_USING_HP232X
+    hp232x_smp_secondary_cpu_prepare(cpu_id);
+#else
     LOG_D("system_vectors_init ok\n");
+#endif
 
     rt_hw_spin_lock(&_cpus_lock);
 
-    /* Save all mpidr */
+#ifndef BSP_USING_HP232X
     rt_hw_sysreg_read(mpidr_el1, rt_cpu_mpidr_table[cpu_id]);
+#endif
 
     hp232x_mmu_secondary_init();
 
 #ifdef BSP_USING_GICV3
+#ifdef BSP_USING_HP232X
+    /* he200 order: CPU interface first, then per-CPU redistributor. */
+    arm_gic_cpu_init(0, 0);
+    arm_gic_redist_init(0, GIC_PL500_REDISTRIBUTOR_PPTR);
+#else
     arm_gic_redist_init(0, GIC_PL500_REDISTRIBUTOR_PPTR);
     arm_gic_cpu_init(0, 0);
 #endif
+#endif
 
-#ifndef RT_CLOCK_TIME_ARM_ARCH
+#if defined(BSP_USING_HP232X) && defined(BSP_USING_APB_TIMER_AS_TICK)
+    /*
+     * Tick is APB timer on CPU0 only (drv_apb_timer.c). Do not enable CNTP PPI 30
+     * on secondary CPUs: rt_hw_gtimer_init() is skipped, so IRQ 30 has no handler
+     * and spurious timer interrupts block IPI-driven scheduling on CPU1.
+     */
+#elif !defined(RT_CLOCK_TIME_ARM_ARCH)
     rt_hw_gtimer_local_enable();
-#endif /* !RT_CLOCK_TIME_ARM_ARCH */
+#endif /* gtimer local tick */
 
     rt_hw_interrupt_umask(RT_SCHEDULE_IPI);
     rt_hw_interrupt_umask(RT_STOP_IPI);
     rt_hw_interrupt_umask(RT_SMP_CALL_IPI);
 
+#ifdef BSP_USING_HP232X
+    rt_kprintf("[SMP] CPU%d GIC/IPI ready, enter scheduler\n", cpu_id);
+#else
     LOG_I("Call cpu %d on %s", cpu_id, "success");
+#endif
 
     rt_system_scheduler_start();
 }

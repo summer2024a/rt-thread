@@ -35,6 +35,11 @@
 #define ARM_SPI_BIND_CPU_ID 0
 #endif
 
+/* ARM architected CNTP physical timer PPI (used when BSP_USING_CORETIMER). */
+#ifndef ARM_ARCH_TIMER_PPI
+#define ARM_ARCH_TIMER_PPI 30
+#endif
+
 #if !defined(RT_USING_SMP) && !defined(RT_USING_AMP)
 #define RT_CPUS_NR 1
 #else
@@ -795,6 +800,17 @@ int arm_gic_redist_init(rt_uint64_t index, rt_uint64_t redist_base)
 
     /* Trigger level for PPI interrupts*/
     GIC_RDISTSGI_ICFGR1(redist_base) = 0;
+
+#if defined(BSP_USING_CORETIMER)
+    /*
+     * arm_gic_redist_init() disables all PPI/SGI above; re-enable the arch
+     * timer PPI so CNTP tick works without board-specific GICR patches.
+     * Priority for IRQ 30 is already 0xa0 in the loop above.
+     */
+    GIC_RDISTSGI_ISENABLER0(redist_base) = (1U << ARM_ARCH_TIMER_PPI);
+    arm_gicv3_wait_rwp(0, ARM_ARCH_TIMER_PPI);
+#endif
+
     return 0;
 }
 

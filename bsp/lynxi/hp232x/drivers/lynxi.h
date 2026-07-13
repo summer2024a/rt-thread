@@ -55,8 +55,10 @@
 #define APB_UART0_BASE_OFFSET       (0x10006000)
 #define APB_UART1_BASE_OFFSET       (0x10007000)
 
-/* reset controller offset */
-#define RST_CTRL_BASE_OFFSET        (0x12500000)
+/* CPR / sysctl / reset controller */
+#define CPR_BASE_OFFSET             (0x12500000)
+#define RST_CTRL_BASE_OFFSET        CPR_BASE_OFFSET
+#define CPR_BASE                    (PER_BASE + CPR_BASE_OFFSET)
 
 /* GPIO */
 #define GPIO_BASE_ADDR              (PER_BASE + GPIO_BASE_OFFSET)

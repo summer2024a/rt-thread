@@ -54,6 +54,21 @@ menu "Hardware Drivers Config"
             select RT_USING_PIN
             default n
 
+        config BSP_USING_SYSCTL_CLK
+            bool "Lynxi Lite sysctl clock gates (CPR@0x12500000)"
+            default y
+            help
+                Open fabric/UART timer-related clock gates before arch timer
+                bring-up. Aligns with he200 lynxi_sysctl_lite_init().
+
+        config BSP_USING_HP232X_ARCH_TIMER_PROBE
+            bool "Print CNTPCT frequency before/after sysctl"
+            depends on BSP_USING_SYSCTL_CLK
+            default y
+            help
+                Measure CNTPCT delta over one reported second at board init.
+                For arch timer debug only; disable in release builds.
+
         config BSP_USING_CORETIMER
             bool "Using ARM generic core timer"
             select RT_USING_CORETIMER

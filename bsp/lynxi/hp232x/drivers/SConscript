@@ -14,6 +14,10 @@ if GetDepend('RT_BSP_GIC_DBG') == False:
 
 CPPPATH = [cwd, str(Dir('#'))]
 
+if GetDepend('BSP_USING_SYSCTL_CLK'):
+    src += ['clock/drv_sysctl_lite.c']
+    CPPPATH += [os.path.join(cwd, 'clock')]
+
 group = DefineGroup('driver', src, depend = [''], CPPPATH = CPPPATH)
 
 Return('group')

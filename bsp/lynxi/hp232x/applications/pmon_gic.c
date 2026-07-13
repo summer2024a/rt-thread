@@ -1,10 +1,12 @@
 /*
- * PMON thread - monitor system tick and APB timer IRQ activity.
+ * PMON thread - monitor system tick (and optional APB timer ISR activity).
  */
 
 #include <rtthread.h>
 #include <rthw.h>
+#ifdef BSP_USING_APB_TIMER_AS_TICK
 #include "drv_apb_timer.h"
+#endif
 
 #ifdef RT_BSP_PMON_TEST
 
@@ -31,7 +33,11 @@ static void pmon_gic_thread(void *parameter)
     while (1)
     {
         rt_tick_t now_tick = rt_tick_get();
+#ifdef BSP_USING_APB_TIMER_AS_TICK
         rt_uint32_t now_isr = hp232x_apb_timer_isr_count;
+#else
+        rt_uint32_t now_isr = 0;
+#endif
         rt_tick_t delta_tick = now_tick - last_tick;
         rt_uint32_t delta_isr = now_isr - last_isr;
 
@@ -103,7 +109,11 @@ int pmon_gic_init(void)
 #endif
 
     rt_thread_startup(tid);
+#ifdef BSP_USING_APB_TIMER_AS_TICK
     rt_kprintf("[PMON] thread started (APB timer tick monitor)\n");
+#else
+    rt_kprintf("[PMON] thread started (arch timer tick monitor)\n");
+#endif
     return RT_EOK;
 }
 

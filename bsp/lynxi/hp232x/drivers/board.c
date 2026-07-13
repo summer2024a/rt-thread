@@ -23,6 +23,9 @@
 #include "drv_uart.h"
 #include "drv_apb_timer.h"
 #include "hp232x_mmu.h"
+#ifdef BSP_USING_SYSCTL_CLK
+#include "clock/drv_sysctl_lite.h"
+#endif
 
 #include "cp15.h"
 #include <mmu.h>
@@ -48,6 +51,104 @@ extern int __bss_end;
 extern void *system_vectors;
 
 static int is_uart_initialized = 0;
+
+#ifdef BSP_USING_HP232X_ARCH_TIMER_PROBE
+static rt_uint64_t hp232x_read_cntpct(void)
+{
+    rt_uint64_t v;
+
+    __asm__ volatile("mrs %0, cntpct_el0" : "=r"(v));
+    return v;
+}
+
+static rt_uint64_t hp232x_read_cntfrq(void)
+{
+    rt_uint64_t v;
+
+    __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(v));
+    return v;
+}
+
+static void hp232x_core_timer_platform_init(void)
+{
+    volatile rt_uint32_t *base = (volatile rt_uint32_t *)0x08600000UL;
+
+    base[0] = 0x1;
+    base[2] = 0xf;
+    base[3] = 0xf;
+    base[8] = 31250000U;
+
+    __asm__ volatile("dsb sy" ::: "memory");
+    __asm__ volatile("isb" ::: "memory");
+    /* CNTFRQ_EL0 is written at EL3 by bootwrapper; do not msr here at EL1. */
+}
+
+static rt_uint64_t hp232x_arch_timer_sample_delta(void)
+{
+    rt_uint64_t start = hp232x_read_cntpct();
+    rt_uint64_t end;
+    volatile int i;
+
+    for (i = 0; i < 2000000; i++)
+    {
+        __asm__ volatile("nop");
+    }
+
+    end = hp232x_read_cntpct();
+    return end - start;
+}
+
+#define DW_TIMER_CONTROL_ENABLE     (1U << 0)
+#define DW_TIMER_CONTROL_MODE       (1U << 1)
+
+/*
+ * Measure CNTPCT delta over 100ms using DesignWare APB timer1 @ 50MHz.
+ * Expect ~3125000 ticks at 31.25MHz, ~50000 at 500kHz.
+ */
+static rt_uint64_t hp232x_arch_timer_wall_delta(void)
+{
+    const rt_uint32_t probe_id = 1u;
+    const rt_uint32_t apb_ticks = HP232X_APB_TIMER_CLOCK / 10u; /* 100ms */
+    volatile rt_uint32_t *base = (volatile rt_uint32_t *)(rt_ubase_t)STIMER_BASE;
+    rt_uint32_t load_off = probe_id * 5u;
+    rt_uint32_t cur_off = load_off + 1u;
+    rt_uint32_t ctl_off = load_off + 2u;
+    rt_uint32_t apb_start;
+    rt_uint32_t apb_now;
+    rt_uint32_t elapsed;
+    rt_uint64_t cnt_start;
+    rt_uint64_t cnt_end;
+    rt_uint32_t guard;
+
+    base[ctl_off] = 0u;
+    base[load_off] = 0xffffffffu;
+    base[ctl_off] = DW_TIMER_CONTROL_ENABLE; /* free-running, no auto-reload */
+
+    apb_start = base[cur_off];
+    cnt_start = hp232x_read_cntpct();
+
+    guard = 0u;
+    do
+    {
+        apb_now = base[cur_off];
+        elapsed = apb_start - apb_now;
+        guard++;
+        if (guard > 100000000u)
+        {
+            break;
+        }
+    } while (elapsed < apb_ticks);
+
+    cnt_end = hp232x_read_cntpct();
+    base[ctl_off] = 0u;
+
+    return cnt_end - cnt_start;
+}
+
+static rt_uint64_t hp232x_probe_pre_delta;
+static rt_uint64_t hp232x_probe_post_delta;
+static rt_uint64_t hp232x_probe_wall_delta;
+#endif /* BSP_USING_HP232X_ARCH_TIMER_PROBE */
 
 size_t gpio_base_addr = GPIO_BASE_ADDR;
 size_t uart_base_addr = UART_BASE;
@@ -200,6 +301,22 @@ void rt_hw_board_init(void)
 
     LOG_I("[board] MMU initialization complete - proceeding to heap setup");
 
+#ifdef BSP_USING_HP232X_ARCH_TIMER_PROBE
+    hp232x_probe_pre_delta = hp232x_arch_timer_sample_delta();
+    early_putc_direct('p');
+#endif
+
+#ifdef BSP_USING_SYSCTL_CLK
+    lynxi_sysctl_lite_init();
+    early_putc_direct('s');
+    LOG_I("[board] sysctl: PLL boot select + cpu_timer + fabric gates");
+#endif
+
+#ifdef BSP_USING_HP232X_ARCH_TIMER_PROBE
+    hp232x_probe_post_delta = hp232x_arch_timer_sample_delta();
+    early_putc_direct('q');
+#endif
+
 #ifdef RT_USING_HEAP
     rt_system_heap_init((void *)heap_start, (void *)heap_end);
 #endif
@@ -219,16 +336,6 @@ void rt_hw_board_init(void)
     uint32_t gicd_ctlr = *gicd_ctrl;
     rt_kprintf("  GICD_CTLR: 0x%x (ARE_NS view at EL1 NS)\n", gicd_ctlr);
 
-#ifdef BSP_USING_CORETIMER
-    volatile uint32_t *gicr_isenabler0 = (volatile uint32_t *)(0x08100000 + 0x1100);  // GICR_ISENABLER0
-    volatile uint8_t *gicr_ipriorityr = (volatile uint8_t *)(0x08100000 + 0x4100);    // GICR_IPRIORITYR base
-
-    LOG_I("  Timer IRQ30 enabled: bit30=%d (expect 1)",
-          (*gicr_isenabler0 >> 30) & 1);
-    LOG_I("  Timer IRQ30 priority: 0x%02x (expect 0xa0)",
-          gicr_ipriorityr[30]);
-#endif
-
     rt_kprintf("========================================\n\n");
 
     /* Check ICC_IGRPEN1_EL1 (Interrupt Group Enable) */
@@ -238,61 +345,52 @@ void rt_hw_board_init(void)
 
     LOG_I("[board] ===== GICv3 Initialization Complete =====");
 
-#ifdef BSP_USING_CORETIMER
-    /* ===== ARM generic timer interrupt test ===== */
-    LOG_I("[board] Testing Timer interrupt...");
-
-    /* Check CNTP timer configuration */
-    uint64_t cntp_ctl, cntp_cval, cntp_tval;
-    __asm__ volatile("mrs %0, CNTP_CTL_EL0" : "=r"(cntp_ctl));
-    __asm__ volatile("mrs %0, CNTP_CVAL_EL0" : "=r"(cntp_cval));
-    __asm__ volatile("mrs %0, CNTP_TVAL_EL0" : "=r"(cntp_tval));
-
-    LOG_I("  CNTP_CTL_EL0  = 0x%llx (ENABLE=%d, IMASK=%d, ISTATUS=%d)",
-          cntp_ctl, (cntp_ctl >> 0) & 1, (cntp_ctl >> 1) & 1, (cntp_ctl >> 2) & 1);
-    LOG_I("  CNTP_CVAL_EL0 = 0x%llx", cntp_cval);
-    LOG_I("  CNTP_TVAL_EL0 = 0x%llx", cntp_tval);
-
-    /* Manually enable timer interrupt if needed */
-    if (((*gicr_isenabler0 >> 30) & 1) == 0) {
-        LOG_W("[board] Timer IRQ30 not enabled! Manually enabling...");
-        *gicr_isenabler0 = (1 << 30);  /* Enable IRQ 30 */
-        gicr_ipriorityr[30] = 0xa0;    /* Set priority */
-        __DSB();
-        LOG_I("  Timer IRQ30 manually enabled");
-    }
-
-    /* Test timer interrupt trigger */
-    if ((cntp_ctl & 1) == 0) {
-        LOG_W("[board] CNTP timer not enabled! Testing timer...");
-
-        /* Set a short timer value for test */
-        uint64_t cntpct;
-        __asm__ volatile("mrs %0, CNTPCT_EL0" : "=r"(cntpct));
-        cntp_cval = cntpct + 10000;  /* Trigger after 10000 cycles */
-        __asm__ volatile("msr CNTP_CVAL_EL0, %0" :: "r"(cntp_cval));
-
-        cntp_ctl = 1;  /* ENABLE=1, IMASK=0 */
-        __asm__ volatile("msr CNTP_CTL_EL0, %0" :: "r"(cntp_ctl));
-        __ISB();
-
-        LOG_I("  Timer test: CNTPCT=%llx, CVAL=%llx, CTL=%llx", cntpct, cntp_cval, cntp_ctl);
-        LOG_I("  Waiting for timer interrupt...");
-
-        /* Wait a bit to see if interrupt triggers */
-        for (int i = 0; i < 100000; i++) { __asm__ volatile("nop"); }
-
-        /* Check if interrupt triggered */
-        __asm__ volatile("mrs %0, CNTP_CTL_EL0" : "=r"(cntp_ctl));
-        LOG_I("  After wait: CNTP_CTL_EL0 = 0x%llx (ISTATUS=%d)",
-              cntp_ctl, (cntp_ctl >> 2) & 1);
-    }
-#endif
-
     /* initialize uart */
     rt_hw_uart_init();
     is_uart_initialized = 1;
     LOG_I("-->rt_hw_uart_init ok\n");
+
+#ifdef BSP_USING_HP232X_ARCH_TIMER_PROBE
+    {
+        rt_uint64_t ratio_x1000;
+
+        hp232x_core_timer_platform_init();
+        rt_kprintf("\n[arch-timer] CNTFRQ=%llu Hz\n",
+                   (unsigned long long)hp232x_read_cntfrq());
+#ifdef BSP_USING_SYSCTL_CLK
+        rt_kprintf("[arch-timer] BOOT_SELECT before=0x%08x after=0x%08x\n",
+                   (unsigned int)lynxi_sysctl_lite_boot_select_before,
+                   (unsigned int)lynxi_sysctl_lite_boot_select_after);
+        rt_kprintf("[arch-timer] CPR+0x64=0x%08x CPR+0x68=0x%08x CPR+0xd4=0x%08x\n",
+                   (unsigned int)lynxi_sysctl_lite_reg_read(0x64u),
+                   (unsigned int)lynxi_sysctl_lite_reg_read(0x68u),
+                   (unsigned int)lynxi_sysctl_lite_reg_read(0xd4u));
+#endif
+        rt_kprintf("[arch-timer] pre-sysctl  CNTPCT delta=%llu (2M nop)\n",
+                   (unsigned long long)hp232x_probe_pre_delta);
+        rt_kprintf("[arch-timer] post-sysctl CNTPCT delta=%llu (2M nop)\n",
+                   (unsigned long long)hp232x_probe_post_delta);
+        if (hp232x_probe_pre_delta)
+        {
+            ratio_x1000 = hp232x_probe_post_delta * 1000 / hp232x_probe_pre_delta;
+            rt_kprintf("[arch-timer] nop post/pre ratio=%llu.%03llu",
+                       (unsigned long long)(ratio_x1000 / 1000),
+                       (unsigned long long)(ratio_x1000 % 1000));
+            if (ratio_x1000 > 50000)
+            {
+                rt_kprintf(" (PLL switch raised CNTPCT rate ~62x)\n");
+            }
+            else
+            {
+                rt_kprintf(" (nop window unchanged by sysctl)\n");
+            }
+        }
+        else
+        {
+            rt_kprintf("\n");
+        }
+    }
+#endif
 
     /* initialize timer for os tick */
 #ifdef BSP_USING_APB_TIMER_AS_TICK
@@ -301,6 +399,14 @@ void rt_hw_board_init(void)
 #elif defined(BSP_USING_CORETIMER)
     rt_hw_gtimer_init();
     LOG_I("-->rt_hw_gtimer_init ok\n");
+#endif
+
+#ifdef BSP_USING_HP232X_ARCH_TIMER_PROBE
+    hp232x_probe_wall_delta = hp232x_arch_timer_wall_delta();
+    rt_kprintf("[arch-timer] wall 100ms CNTPCT delta=%llu (expect ~3125000 or ~50000)\n",
+               (unsigned long long)hp232x_probe_wall_delta);
+    rt_kprintf("[arch-timer] wall CNTPCT rate ~%llu Hz (expect ~31250000)\n",
+               (unsigned long long)(hp232x_probe_wall_delta * 10));
 #endif
 
 #ifdef RT_USING_CONSOLE

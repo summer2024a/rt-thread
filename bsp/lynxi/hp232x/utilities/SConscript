@@ -1,0 +1,16 @@
+# hp232x utilities — optional protocol helpers (not built by default)
+import os
+from building import *
+
+cwd = GetCurrentDir()
+src = []
+CPPPATH = [cwd]
+
+# ZMODEM RX → IRAM scratch (flash update); enable with RT_USING_ZMODEM
+if GetDepend('RT_USING_ZMODEM'):
+    src += Glob('zmodem/*.c')
+    CPPPATH += [os.path.join(cwd, 'zmodem')]
+
+group = DefineGroup('hp232x_utilities', src, depend=[''], CPPPATH=CPPPATH)
+
+Return('group')

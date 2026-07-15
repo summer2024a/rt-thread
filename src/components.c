@@ -194,7 +194,15 @@ static void main_thread_entry(void *parameter)
 #endif /* RT_USING_COMPONENTS_INIT */
 
 #ifdef RT_USING_SMP
+#if defined(BSP_USING_HP232X)
+    /*
+     * hp232x: do NOT release secondaries here. Flash cold jumper needs
+     * leave-XIP + MMU table flush first — owned by main() auto-bringup or
+     * msh "smp start" when BSP_SMP_DEFER_SECONDARY is set.
+     */
+#else
     rt_hw_secondary_cpu_up();
+#endif
 #endif /* RT_USING_SMP */
     /* invoke system main function */
 #ifdef __ARMCC_VERSION

@@ -39,10 +39,10 @@ if PLATFORM == 'gcc':
     LPATH   = ''
 
     if BUILD == 'debug':
-        CFLAGS += ' -O0 -ggdb'
+        CFLAGS += ' -Og -ggdb'
         AFLAGS += ' -ggdb'
     else:
-        CFLAGS += ' -O2'
+        CFLAGS += ' -Os -ffunction-sections -fdata-sections'
 
     CXXFLAGS = CFLAGS
 

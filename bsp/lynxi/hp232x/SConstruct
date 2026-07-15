@@ -10,6 +10,7 @@ sys.path = sys.path + [os.path.join(RTT_ROOT, 'tools')]
 # BL21: kernel in first 256KB of IRAM0 (0x04000020), IRAM1 last 256KB
 # BL22: kernel in last 256KB of IRAM0 (0x04040020), IRAM1 last 256KB
 _bl22 = False
+_bl22_uartsetup = False
 _bl21 = False
 try:
     with open('rtconfig.h', 'r') as f:
@@ -26,18 +27,21 @@ except:
 if _bl22:
     IRAM0_KERNEL_BASE = 0x04040020
     IRAM1_BASE = 0x100050000
+    IRAM1_DMA_NC_START = 0x100040000
     HEADER_DEST_ADDR = 0x04040000
     NEXT_OFFSET = 0x0
     MODE_DESC = "BL22 (kernel at 0x04040020, IRAM1 last 256KB)"
 elif _bl22_uartsetup:
     IRAM0_KERNEL_BASE = 0x04040020
     IRAM1_BASE = 0x100050000
+    IRAM1_DMA_NC_START = 0x100040000
     HEADER_DEST_ADDR = 0x04020000
     NEXT_OFFSET = 0x20020
     MODE_DESC = "BL22 (kernel at 0x04040020, IRAM1 last 256KB)"
 elif _bl21:
     IRAM0_KERNEL_BASE = 0x04000020
     IRAM1_BASE = 0x100050000
+    IRAM1_DMA_NC_START = 0x100040000
     HEADER_DEST_ADDR = 0x04000020
     NEXT_OFFSET = 0x20000
     MODE_DESC = "BL21 (kernel at 0x04000020, IRAM1 last 256KB)"
@@ -45,6 +49,7 @@ else:
     # Default: BL21 mode
     IRAM0_KERNEL_BASE = 0x04000020
     IRAM1_BASE = 0x100050000
+    IRAM1_DMA_NC_START = 0x100040000
     HEADER_DEST_ADDR = 0x04000020
     NEXT_OFFSET = 0x20000
     MODE_DESC = "BL2 (default)"
@@ -69,7 +74,7 @@ env = Environment(tools = ['mingw'],
     LINK = rtconfig.LINK, LINKFLAGS = rtconfig.LFLAGS)
 env.PrependENVPath('PATH', rtconfig.EXEC_PATH)
 
-env['LINKCOM'] = '$LINK -o $TARGET $LINKFLAGS $__RPATH $SOURCES $_LIBDIRFLAGS -Wl,--defsym,IRAM0_KERNEL_BASE=0x{:X} -Wl,--defsym,IRAM1_BASE=0x{:X} -Wl,--start-group $_LIBFLAGS -Wl,--end-group'.format(IRAM0_KERNEL_BASE, IRAM1_BASE)
+env['LINKCOM'] = '$LINK -o $TARGET $LINKFLAGS $__RPATH $SOURCES $_LIBDIRFLAGS -Wl,--defsym,IRAM0_KERNEL_BASE=0x{:X} -Wl,--defsym,IRAM1_BASE=0x{:X} -Wl,--defsym,IRAM1_DMA_NC_START=0x{:X} -Wl,--start-group $_LIBFLAGS -Wl,--end-group'.format(IRAM0_KERNEL_BASE, IRAM1_BASE, IRAM1_DMA_NC_START)
 
 Export('RTT_ROOT')
 Export('rtconfig')
@@ -85,6 +90,10 @@ image_cmd = (
     "--dest-addr 0x{:X} --next-offset 0x{:X} ".format(HEADER_DEST_ADDR, NEXT_OFFSET) +
     "--elf rtthread.elf"
 )
+# Host upgrade pack: HP232x_KA200_Serdes_Update_YYYYMMDD_vX.Y.bin
+ka200_cmd = "python3 scripts/mk_ka200_image.py rtthread.bin"
 print(f"[SConstruct] image_cmd: {image_cmd}")
+print(f"[SConstruct] ka200_cmd: {ka200_cmd}")
 env.AddPostAction(TARGET, image_cmd)
+env.AddPostAction(TARGET, ka200_cmd)
 

@@ -3,6 +3,7 @@
  */
 
 #include <rtthread.h>
+#include "biz_log.h"
 #include <rthw.h>
 #ifdef BSP_USING_APB_TIMER_AS_TICK
 #include "drv_apb_timer.h"
@@ -27,7 +28,7 @@ static void pmon_gic_thread(void *parameter)
 
     RT_UNUSED(parameter);
 
-    rt_kprintf("[PMON][CPU%lu] thread started (expect CPU%d)\n",
+    HP_LOGI("[PMON][CPU%lu] thread started (expect CPU%d)\n",
                cpu, PMON_EXPECT_CPU);
 
     while (1)
@@ -44,8 +45,7 @@ static void pmon_gic_thread(void *parameter)
         count++;
         cpu = rt_hw_cpu_id();
 
-        /* Every 500ms: expect ~50 ticks and ~50 ISR at RT_TICK_PER_SECOND=100 */
-        rt_kprintf("[PMON][CPU%lu] #%d tick=%u (+%u) isr=%u (+%u)\n",
+        HP_LOGI("[PMON][CPU%lu] #%d tick=%u (+%u) isr=%u (+%u)\n",
                    cpu, count, (unsigned)now_tick, (unsigned)delta_tick,
                    (unsigned)now_isr, (unsigned)delta_isr);
 
@@ -59,17 +59,17 @@ static void pmon_gic_thread(void *parameter)
             cpu = rt_hw_cpu_id();
             if (PMON_EXPECT_CPU >= 0 && cpu == (rt_ubase_t)PMON_EXPECT_CPU)
             {
-                rt_kprintf("[PMON][CPU%lu] PASS: ran 20 samples on CPU%d\n",
+                HP_LOGI("[PMON][CPU%lu] PASS: ran 20 samples on CPU%d\n",
                            cpu, PMON_EXPECT_CPU);
             }
             else if (PMON_EXPECT_CPU >= 0)
             {
-                rt_kprintf("[PMON][CPU%lu] FAIL: expected CPU%d\n",
+                HP_LOGI("[PMON][CPU%lu] FAIL: expected CPU%d\n",
                            cpu, PMON_EXPECT_CPU);
             }
             else
             {
-                rt_kprintf("[PMON][CPU%lu] Done (20 samples)\n", cpu);
+                HP_LOGI("[PMON][CPU%lu] Done (20 samples)\n", cpu);
             }
             break;
         }
@@ -84,13 +84,13 @@ int pmon_gic_init(void)
     tid = rt_thread_create("pmon_gic",
                            pmon_gic_thread,
                            RT_NULL,
-                           4096,
+                           2048,
                            15,
                            10);
 
     if (tid == RT_NULL)
     {
-        rt_kprintf("[PMON] Failed to create thread\n");
+        HP_LOGI("[PMON] Failed to create thread\n");
         return -RT_ERROR;
     }
 
@@ -98,25 +98,31 @@ int pmon_gic_init(void)
     err = rt_thread_control(tid, RT_THREAD_CTRL_BIND_CPU, (void *)(rt_ubase_t)PMON_BIND_CPU);
     if (err != RT_EOK)
     {
-        rt_kprintf("[PMON] bind CPU%d failed (%d), use default CPU\n",
+        HP_LOGI("[PMON] bind CPU%d failed (%d), use default CPU\n",
                    PMON_BIND_CPU, err);
     }
     else
     {
-        rt_kprintf("[PMON] thread bound to CPU%d (init on CPU%lu)\n",
+        HP_LOGI("[PMON] thread bound to CPU%d (init on CPU%lu)\n",
                    PMON_BIND_CPU, rt_hw_cpu_id());
     }
 #endif
 
     rt_thread_startup(tid);
 #ifdef BSP_USING_APB_TIMER_AS_TICK
-    rt_kprintf("[PMON] thread started (APB timer tick monitor)\n");
+    HP_LOGI("[PMON] thread started (APB timer tick monitor)\n");
 #else
-    rt_kprintf("[PMON] thread started (arch timer tick monitor)\n");
+    HP_LOGI("[PMON] thread started (arch timer tick monitor)\n");
 #endif
     return RT_EOK;
 }
 
+/*
+ * Bind-to-CPU1 must run after rt_hw_secondary_cpu_up() (main), not INIT_APP
+ * (components_init is before release). Unbound PMON may still use INIT_APP.
+ */
+#if !(defined(RT_USING_SMP) && defined(BSP_USING_HP232X_PMON_BIND_CPU1))
 INIT_APP_EXPORT(pmon_gic_init);
+#endif
 
 #endif /* RT_BSP_PMON_TEST */

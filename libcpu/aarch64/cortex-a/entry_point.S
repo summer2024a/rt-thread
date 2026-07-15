@@ -64,8 +64,11 @@
  *
  * CRITICAL: early_putc depends on x6/x7 being initialized by pre_entry.S!
  */
-#ifdef BSP_USING_HP232X_DEBUG_UART
-#ifdef BSP_USING_HP232X
+/*
+ * ASM early_putc: hardware path needs BSP_USING_HP232X_DEBUG_UART.
+ * Breadcrumbs (P2I0 / IBKSUE / …) only emit when BSP_BOOT_EARLY_MARK is set.
+ */
+#if defined(BSP_USING_HP232X_DEBUG_UART) && defined(BSP_BOOT_EARLY_MARK) && defined(BSP_USING_HP232X)
 .macro early_uart_init
     /* BL1 already initialized UART hardware */
     /* pre_entry.S will initialize x6/x7 registers */
@@ -115,20 +118,11 @@ ldr     x6, =0x10006000         /* UART0 base address (THR) */
 .endm
 .macro early_putc, char
 .endm
-.macro drop_el_to_el2 mode addr
-.endm
-#endif  /* BSP_USING_HP232X */
-
-#else  /* BSP_USING_HP232X_DEBUG_UART not defined - no UART output */
-.macro early_uart_init
-.endm
-.macro early_putc_no_wait, char
-.endm
-.macro early_putc, char
+.macro early_putc_reg, reg
 .endm
 .macro drop_el_to_el2 mode addr
 .endm
-#endif  /* BSP_USING_HP232X_DEBUG_UART */
+#endif  /* DEBUG_UART && BOOT_EARLY_MARK && HP232X */
 
     .section ".text.entrypoint","ax"
 
@@ -174,6 +168,23 @@ _start:
     ic      ialluis
     dsb     sy
     isb
+
+#ifdef BSP_USING_HP232X
+    /* clocks: fabric_hclk2 + ssi_boot */
+    ldr     x9, =0x1250006c
+    ldr     w10, [x9]
+    orr     w10, w10, #(1 << 7)
+    str     w10, [x9]
+    ldr     x9, =0x125000c4
+    ldr     w10, [x9]
+    orr     w10, w10, #(1 << 1)
+    str     w10, [x9]
+    /*
+     * Do NOT leave XIP here (no dcache inv). Cold jumper leaves 0x12600024=ba;
+     * bare B8→98 without inv does not stick (seen: mw→04005c80). Leave-XIP is
+     * drv_flash open_flash: inv + B8 + 98, then SSI@PA0 alias.
+     */
+#endif /* BSP_USING_HP232X */
 
     /* Save cpu stack */
     get_phy stack_top, .boot_cpu_stack_top
@@ -276,6 +287,19 @@ cpu_idle:
 #ifdef RT_USING_SMP
     .globl _secondary_cpu_entry
 _secondary_cpu_entry:
+#ifdef BSP_USING_HP232X
+    /*
+     * Gate unwanted cores. bootwrapper may park many CPUs; if every secondary
+     * polls the SAME mbox slot (or SEV wakes all), writing CPU1's entry pulls
+     * Aff1..AffN into this path together → multiple 'a', EXC interleave.
+     * Only linear id in [1, RT_CPUS_NR) continues; others WFE forever.
+     */
+    bl      rt_hw_cpu_id_set
+    bl      rt_hw_cpu_id
+    cbz     x0, cpu_idle
+    cmp     x0, #(RT_CPUS_NR)
+    b.hs    cpu_idle
+#endif /* BSP_USING_HP232X */
 #ifdef RT_USING_OFW
     /* Read cpu id */
     mrs     x5, mpidr_el1

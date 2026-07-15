@@ -13,7 +13,7 @@ msh >help          # 串口输入正常
 msh >list_isr      # apb_tick / uart0 / IPI 计数正常
 ```
 
-**关键 fix（详见 [doc/smp_irq_debug.md](doc/smp_irq_debug.md) §8）**：
+**关键 fix（详见 [doc/SMP_SETUP.md](doc/SMP_SETUP.md) Part C §C.8）**：
 
 | 问题 | Fix |
 |------|-----|
@@ -474,7 +474,7 @@ bootwrapper WFE @ MBOX 0x401ff00
 CPU0: rt_hw_secondary_cpu_up() 写 mbox + flush + SEV
 ```
 
-文档：[doc/smp_irq_debug.md](doc/smp_irq_debug.md)（§8 双核、缓存一致性、串口互斥、1.5s delay）
+文档：[doc/SMP_SETUP.md](doc/SMP_SETUP.md)（Part C §C.8 双核、缓存一致性、串口互斥；Flash 冷启见 Part A）
 
 ~~以下 BL21 调试顺序建议已过时，BL22 双核已 PASS。~~
 
@@ -517,7 +517,7 @@ python3 test_multi.py               # up/smp/pmon 模式切换（改 rtconfig）
 
 ## 相关文档
 
-- [doc/smp_irq_debug.md](doc/smp_irq_debug.md) - SMP 单核/双核 + IRQ 调试
+- [doc/SMP_SETUP.md](doc/SMP_SETUP.md) - SMP 冷启 / 跨核 / bring-up / IRQ
 - [TEST_METHODOLOGY.md](TEST_METHODOLOGY.md) - 测试方法
 - [doc/mm_component_removal_attempt.md](doc/mm_component_removal_attempt.md) - mm 移除尝试记录
 - [doc/system_trim_plan.md](doc/system_trim_plan.md) - 系统裁剪计划

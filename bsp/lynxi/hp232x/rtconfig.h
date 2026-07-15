@@ -12,6 +12,80 @@
 /* Enable UART debug for boot process tracking */
 #define BSP_USING_HP232X_DEBUG_UART
 
+/* Boot init: print all PVT TS/VM channels (bring-up only).
+ * Heartbeat still reads PVT via drv_emmc_biz when disabled. */
+/* #define BSP_DRV_PVT_BOOT_SAMPLE */
+
+/* Temporary: show BIZ_INFO on UART (heart-beat, emmc_biz, thread start). */
+#define BSP_BIZ_LOG_BOOT_INFO
+/* #define BSP_BIZ_LOG_LOCATION */  /* 开：每条日志都带 func:line；默认仅 DEBUG 带 */
+/* A/B: hp640-style cached SPL BSS + flush_cache (disable NC dma_nocache arena) */
+/* #define BSP_EMMC_DMA_CACHED_BSS */
+/* Optional: force HS400 SDCLK_DC=0x3c (hp640 CONFIG_HP640_CUSTOM_EMMC_DC); default uses efuse KA200M=0x21 / KA200=0x23 */
+/* #define BSP_EMMC_CUSTOM_DC */
+
+/* Drop mm_anon/mm_fault + MM debug shell cmds; stub private-map APIs. */
+#define BSP_HP232X_MM_MINIMAL
+
+/* hp640 business modules — disable all but one for incremental debug */
+#define BSP_DRV_MOD_EXEC_APU
+#define BSP_DRV_MOD_EXEC_MISC
+#define BSP_DRV_MOD_EXEC_STRESS
+#define BSP_DRV_MOD_EXEC_SELFTEST
+/* #define BSP_DRV_MOD_EMMC_DLL */
+/* #define BSP_DRV_MOD_PCIE */
+#define BSP_DRV_MOD_FLASH_UPGRADE
+#define BSP_DRV_MOD_FINSH
+
+/*
+ * Manual bring-up (cold-boot / isolation) — msh hand-start only when defined:
+ * - BSP_FLASH_DEFER_INIT: no flash soft/JEDEC/worker at boot;
+ *     msh: flash init | flash worker  (compiled only if this macro is on)
+ * - BSP_BIZ_SKIP_THREADS: no emmc_biz auto-start (i2c independently: BSP_I2C_DEFER);
+ *     msh: biz start|upgrade         (compiled only if this macro is on)
+ * - BSP_I2C_DEFER: no i2c_mcu / mcu_err auto-start;
+ *     msh: i2c start                 (compiled only if this macro is on)
+ * - BSP_SMP_DEFER_SECONDARY:
+ *     defined   → 从核仅 msh「smp start / release」
+ *     undefined → main 内 leave-XIP+flush+release（自启动）
+ *
+ * MCU note (HP2320 build_app): Host 查完 KA200 I2C 地址后若再复位 KA200，
+ * 自启 I2C 可能卡在 bus / IRQ — 用 BSP_I2C_DEFER 手启规避直至 MCU 侧修。
+ * Production: flash/biz/smp 关 DEFER；I2C 视 Host 是否已修而定（见 BIZ_PORTING）。
+ */
+/* #define BSP_FLASH_DEFER_INIT */ /* 开则 flash 命令行 init/worker；关则 boot 自启 */
+/* #define BSP_BIZ_SKIP_THREADS */ /* 开则 biz 命令行 start/upgrade；关则 boot 自启 */
+#define BSP_I2C_DEFER              /* 开则 i2c 手启（msh i2c start）；关则 boot 自启 */
+/* #define BSP_SMP_DEFER_SECONDARY */ /* 开则命令行启动从核；关则 boot 自启动 */
+
+/* emmc_biz 默认绑 CPU1（auto-start / biz_emmc_biz_start） */
+#define BSP_BIZ_EMMC_ON_CPU1
+
+/*
+ * Flash SSI execution (SMP):
+ * - BSP_FLASH_CPU0_WORKER (default): bounce read/write/erase to CPU0 flash worker.
+ * - BSP_FLASH_DIRECT_ON_CALLER: run on calling CPU (emmc_biz@CPU1). Trial only.
+ * Worker auto-starts in biz_worker_init when BSP_FLASH_DEFER_INIT unset.
+ */
+#define BSP_FLASH_CPU0_WORKER
+/* #define BSP_FLASH_DIRECT_ON_CALLER */ /* trial OK 2026-07-14: FlashWrite on cpu1; keep worker */
+
+
+/*
+ * IRAM1 low 256KB (0x100000000..0x10003FFFF) — BL22: no RTT code/stack.
+ * Host Load/upgrade scratch (ka200 DDR_IRAM_ADDR).
+ * - defined:   map Normal NC (DMA/cross-CPU coherent; lighter flash path)
+ * - undefined: leave Normal WB (use invalidate + page bounce; proven 32× OK)
+ */
+#define BSP_IRAM1_LOW_NC
+
+/*
+ * IRAM0 low 256KB (0x04000000..0x0403FFFF) — BL22: boot-wrapper / Host biz
+ * descriptors & buffers (not RTT .text). Map Normal NC like IRAM1 scratch.
+ * Do not enable on BL21 (kernel lives in this half).
+ */
+#define BSP_IRAM0_LOW_NC
+
 /* Enable components init debugging */
 /* Disable other debug outputs */
 /* #define RT_USING_DEBUG */
@@ -27,10 +101,10 @@
 
 /* RT-Thread Kernel */
 
-/* klibc options — minimal, no float */
-#define RT_KLIBC_USING_VSNPRINTF_LONGLONG
+/* klibc options — minimal, no float; trim for IRAM0 in debug builds */
+/* #define RT_KLIBC_USING_VSNPRINTF_LONGLONG */
 #define RT_KLIBC_USING_VSNPRINTF_STANDARD
-#define RT_KLIBC_USING_VSNPRINTF_DECIMAL_SPECIFIERS
+/* #define RT_KLIBC_USING_VSNPRINTF_DECIMAL_SPECIFIERS */
 #define RT_KLIBC_USING_VSNPRINTF_INTEGER_BUFFER_SIZE 32
 /* end of rt_vsnprintf options */
 
@@ -104,8 +178,19 @@
 /* kservice options */
 
 /* end of kservice options */
-/* RT_KERNEL_IRQ_DBG — enable verbose early UART tracing for IRQ/exception debug */
+/* RT_KERNEL_IRQ_DBG — EVERY IRQ dumps early UART (floods console). Keep off. */
 /* #define RT_KERNEL_IRQ_DBG */
+/* Sync/SError: one-shot early ESR dump without kprintf (SMP debug). */
+/* #define BSP_SMP_EXC_EARLY_DUMP */
+/*
+ * Early UART breadcrumbs (default OFF for production):
+ *   BSP_BOOT_EARLY_MARK — primary: entry P2I0 / IBKSUE, pre_entry ESC…,
+ *                         board BOOT/EIMR…, MMU 12345…
+ *   BSP_SMP_EARLY_MARK  — secondary: a..e / I / wait .YN
+ * Needs BSP_USING_HP232X_DEBUG_UART for ASM-side early_putc hardware.
+ */
+/* #define BSP_BOOT_EARLY_MARK */
+/* #define BSP_SMP_EARLY_MARK */
 /* #define RT_USING_DEBUG */  /* Temporarily disable for EL drop test */
 /* #define RT_DEBUGING_ASSERT */
 /* RT_DEBUGING_COLOR — disabled to save code */
@@ -133,7 +218,6 @@
 /* end of Memory Management */
 #define RT_USING_DEVICE
 #define RT_USING_DEVICE_OPS
-/* RT_USING_INTERRUPT_INFO — disabled to save memory */
 #define RT_USING_CONSOLE
 #define RT_CONSOLEBUF_SIZE 128
 #define RT_CONSOLE_DEVICE_NAME "uart0"
@@ -177,13 +261,22 @@
 #define FINSH_THREAD_NAME "tshell"
 #define FINSH_THREAD_PRIORITY 20
 #define FINSH_THREAD_STACK_SIZE 4096
-#define FINSH_USING_HISTORY
-#define FINSH_HISTORY_LINES 5
+/* #define FINSH_USING_HISTORY */
+/* #define FINSH_HISTORY_LINES 5 */
 #define FINSH_USING_SYMTAB
 #define FINSH_CMD_SIZE 80
 #define MSH_USING_BUILT_IN_COMMANDS
-#define FINSH_USING_DESCRIPTION
+/* #define FINSH_USING_DESCRIPTION */
 #define FINSH_ARG_MAX 10
+
+/*
+ * Serial flash update:
+ *   flash update  → Zmodem (send_zmodem.py / sz) — needs RT_USING_ZMODEM
+ *   flash updatey → Ymodem (send_ymodem.py)
+ * Default: ZMODEM off (src under utilities/zmodem, not built).
+ */
+/* #define RT_USING_ZMODEM */
+#define RT_USING_RYM
 
 /* DFS — disabled; serial driver uses rt_device API directly, shell uses rt_device_read/write */
 
@@ -195,8 +288,12 @@
 #define RT_UNAMED_PIPE_NUMBER 64
 #define RT_USING_SERIAL
 #define RT_USING_SERIAL_V1
-#define RT_SERIAL_RB_BUFSZ 128
-#define RT_USING_INTERRUPT_INFO  /* list_isr + per-IRQ counter (~8KB IRAM1 BSS) */
+/*
+ * YMODEM SOH frame = 1+2+128+2 = 133 > 128 → old 128B RB overflows mid-packet
+ * (host sees ACKs desync, board RYM_ERR_CODE -113 recv=0). Need ≥ STX frame.
+ */
+#define RT_SERIAL_RB_BUFSZ 2048
+#define RT_USING_INTERRUPT_INFO
 /* RT_USING_CLOCK_TIME — disabled to save code */
 /* RT_USING_NULL — disabled to save code */
 /* RT_USING_ZERO — disabled to save code */
@@ -207,12 +304,12 @@
 
 /* ISO-ANSI C layer */
 
-/* Timezone and Daylight Saving Time */
+/* Timezone and Daylight Saving Time — disabled to save ctime (~4KB IRAM0) */
 
-#define RT_LIBC_USING_LIGHT_TZ_DST
-#define RT_LIBC_TZ_DEFAULT_HOUR 8
-#define RT_LIBC_TZ_DEFAULT_MIN 0
-#define RT_LIBC_TZ_DEFAULT_SEC 0
+/* #define RT_LIBC_USING_LIGHT_TZ_DST */
+/* #define RT_LIBC_TZ_DEFAULT_HOUR 8 */
+/* #define RT_LIBC_TZ_DEFAULT_MIN 0 */
+/* #define RT_LIBC_TZ_DEFAULT_SEC 0 */
 /* end of Timezone and Daylight Saving Time */
 /* end of ISO-ANSI C layer */
 
@@ -265,13 +362,17 @@
 #define BSP_USING_GICV3  /* Use GICv3 for KA200 SoC (GIC-500) */
 /* #define RT_BSP_GIC_DBG */  /* GIC group config debug - disabled by default */
 #define KERNEL_ASPACE_START 0x04000000
-/* ARM generic timer disabled as system tick when APB timer is selected. */
-/* #define BSP_USING_CORETIMER */
-#define BSP_USING_APB_TIMER
-#define BSP_USING_APB_TIMER_AS_TICK
+/* ARM generic timer as system tick (CNTPCT verified 31.25MHz on BL22). */
+#define BSP_USING_CORETIMER
+/* #define BSP_USING_APB_TIMER */
+/* #define BSP_USING_APB_TIMER_AS_TICK */
 #define HP232X_APB_TIMER_CLOCK 50000000
 #define HP232X_APB_TIMER_TICK_ID 0
+#define BSP_USING_SYSCTL_CLK
+#define BSP_USING_HP232X_ARCH_TIMER_PROBE
 /* #define RT_BSP_PMON_TEST */
+/* #define BSP_USING_HP232X_PMON_BIND_CPU1 */
+/* #define BSP_USING_HP232X_SMP_BIND_TEST */
 
 /* end of Hardware Drivers Config */
 

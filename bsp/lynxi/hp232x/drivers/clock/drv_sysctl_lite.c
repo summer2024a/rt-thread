@@ -77,9 +77,12 @@ void lynxi_sysctl_lite_init(void)
     /*
      * fabric_pclk2: UART/Timer/SPI APB side (lynchip-lite-cpr.dtsi)
      * fabric_aclk6: fabric bus for several peripherals
+     * fabric_hclk2 + ssi_boot: Boot SSI / sfc_nor1 (Linux lynchip-lite-cpr.dtsi)
      */
     _sysctl_gate_on(0x6cu, 5u); /* LITE_FABRIC_ACLK6 */
+    _sysctl_gate_on(0x6cu, 7u); /* LITE_FABRIC_HCLK2 — Boot SSI AHB */
     _sysctl_gate_on(0x6cu, 9u); /* LITE_FABRIC_PCLK2 */
+    _sysctl_gate_on(0xc4u, 1u); /* LITE_SSI_BOOT — ssi_boot_clk */
 
     _sysctl_gate_on(0xb4u, 1u); /* UART0 sclk */
     _sysctl_gate_on(0xb8u, 1u); /* UART1 sclk */

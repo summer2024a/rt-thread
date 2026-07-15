@@ -134,7 +134,9 @@ void rt_page_leak_trace_start()
     _alloc_cnt = 0;
     enable = 1;
 }
+#ifndef BSP_HP232X_MM_MINIMAL
 MSH_CMD_EXPORT(rt_page_leak_trace_start, start page leak tracer);
+#endif
 
 static void _collect()
 {
@@ -162,7 +164,9 @@ void rt_page_leak_trace_stop()
     enable = 0;
     _collect();
 }
+#ifndef BSP_HP232X_MM_MINIMAL
 MSH_CMD_EXPORT(rt_page_leak_trace_stop, stop page leak tracer);
+#endif
 
 static void _trace_alloc(rt_page_t page, void *caller, size_t size_bits)
 {
@@ -976,6 +980,7 @@ int rt_pages_free(void *addr, rt_uint32_t size_bits)
     return real_free;
 }
 
+#ifndef BSP_HP232X_MM_MINIMAL
 /* debug command */
 int rt_page_list(void) __attribute__((alias("list_page")));
 
@@ -1048,6 +1053,7 @@ int list_page(void)
     return 0;
 }
 MSH_CMD_EXPORT(list_page, show page info);
+#endif /* BSP_HP232X_MM_MINIMAL */
 
 void rt_page_get_info(rt_size_t *total_nr, rt_size_t *free_nr)
 {

@@ -17,6 +17,7 @@
 #include "mm_private.h"
 #include <mmu.h>
 
+#ifndef BSP_HP232X_MM_MINIMAL
 static void list_kmem(void)
 {
     rt_aspace_print_all(&rt_kernel_space);
@@ -24,6 +25,7 @@ static void list_kmem(void)
 MSH_CMD_EXPORT(list_kmem, List varea in kernel virtual memory space);
 
 void rt_kmem_list(void) __attribute__((alias("list_kmem")));
+#endif /* BSP_HP232X_MM_MINIMAL */
 
 static rt_ubase_t rt_pv_offset;
 

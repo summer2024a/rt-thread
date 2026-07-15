@@ -9,6 +9,9 @@ if GetDepend('ARCH_ARM_CORTEX_A') or GetDepend('ARCH_ARMV8') or GetDepend('ARCH_
     if not GetDepend('RT_USING_MEMBLOCK'):
         SrcRemove(src, ['mm_memblock.c'])
 
+    if GetDepend('BSP_HP232X_MM_MINIMAL'):
+        SrcRemove(src, ['mm_anon.c', 'mm_fault.c'])
+
     CPPPATH = [cwd]
 
     group = DefineGroup('Memm', src, depend = ['ARCH_MM_MMU'], CPPPATH = CPPPATH)

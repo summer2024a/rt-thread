@@ -117,10 +117,24 @@ SECTIONS
     }
 
     . = ALIGN(16);
+    /*
+     * IRAM1 DMA nocache arena @ 0x100040000 (64KB, hp640 CONFIG_SPL_BSS).
+     * MMU: ATTR_NORMAL_NC. Hardware DMA buffers only — keep WB bss separate.
+     */
+    .dma_nocache IRAM1_DMA_NC_START (NOLOAD) :
+    {
+        PROVIDE(__dma_nocache_start = .);
+        KEEP(*(.bss.dma_nocache))
+        KEEP(*(.bss.dma_nocache.*))
+        . = ALIGN(64);
+        PROVIDE(__dma_nocache_end = .);
+    } :data
+
     /* IRAM1: noclean (stacks, early page, MMU tables) + zeroed bss/heap/stack */
     .bss IRAM1_BASE :
     {
         PROVIDE(__bss_noclean_start = .);
+        KEEP(*(.bss.noclean.log_ring))
         *(.bss.noclean.cpus_stack)
         *(.bss.noclean.early_page)
         *(.bss.noclean.hp232x_spin)

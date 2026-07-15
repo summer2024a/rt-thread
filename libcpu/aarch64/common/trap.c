@@ -488,22 +488,22 @@ void rt_hw_trap_exception(struct rt_hw_exp_stack *regs)
 {
     unsigned long esr;
     unsigned char ec;
-#ifdef RT_KERNEL_IRQ_DBG
+#if defined(RT_KERNEL_IRQ_DBG) || defined(BSP_SMP_EXC_EARLY_DUMP)
     unsigned long far;
     unsigned long elr;
     unsigned long spsr;
 #endif
 
     asm volatile("mrs %0, esr_el1":"=r"(esr));
-#ifdef RT_KERNEL_IRQ_DBG
+#if defined(RT_KERNEL_IRQ_DBG) || defined(BSP_SMP_EXC_EARLY_DUMP)
     asm volatile("mrs %0, far_el1":"=r"(far));
     asm volatile("mrs %0, elr_el1":"=r"(elr));
     asm volatile("mrs %0, spsr_el1":"=r"(spsr));
 #endif
     ec = (unsigned char)((esr >> 26) & 0x3fU);
 
-#ifdef RT_KERNEL_IRQ_DBG
-    early_puts_direct("EXC detail: ESR=0x");
+#if defined(RT_KERNEL_IRQ_DBG) || defined(BSP_SMP_EXC_EARLY_DUMP)
+    early_puts_direct("EXC ESR=0x");
     early_puthex64(esr);
     early_puts_direct(" EC=0x");
     early_puthex64(ec);
@@ -511,10 +511,14 @@ void rt_hw_trap_exception(struct rt_hw_exp_stack *regs)
     early_puthex64(far);
     early_puts_direct(" ELR=0x");
     early_puthex64(elr);
-    early_puts_direct(" SPSR=0x");
-    early_puthex64(spsr);
     early_putc_direct('\n');
-
+#if defined(BSP_SMP_EXC_EARLY_DUMP) && !defined(RT_KERNEL_IRQ_DBG)
+    /* SMP triage: dump once then halt — avoid THREADSAFE kprintf flood/deadlock */
+    early_puts_direct("EXC halt\n");
+    for (;;)
+        __asm__ volatile("wfe");
+#endif
+#ifdef RT_KERNEL_IRQ_DBG
     early_puts_direct("EXC regs: PC=0x");
     early_puthex64(regs->pc);
     early_puts_direct(" CPSR=0x");
@@ -524,6 +528,13 @@ void rt_hw_trap_exception(struct rt_hw_exp_stack *regs)
     early_puts_direct(" X30=0x");
     early_puthex64(regs->x30);
     early_putc_direct('\n');
+#ifdef BSP_USING_HP232X
+    /* Avoid THREADSAFE kprintf after lock contention — park here. */
+    early_puts_direct("EXC halt (no kprintf)\n");
+    for (;;)
+        __asm__ volatile("wfe");
+#endif
+#endif
 #endif
 
     if (DBG_CHECK_EVENT(regs, esr))
@@ -581,7 +592,27 @@ void rt_hw_trap_exception(struct rt_hw_exp_stack *regs)
 
 void rt_hw_trap_serror(struct rt_hw_exp_stack *regs)
 {
-    rt_kprintf("SError\n");
+    unsigned long esr, far;
+
+    asm volatile("mrs %0, esr_el1" : "=r"(esr));
+    asm volatile("mrs %0, far_el1" : "=r"(far));
+
+#if defined(RT_KERNEL_IRQ_DBG) || defined(BSP_SMP_EXC_EARLY_DUMP)
+    early_puts_direct("SError ESR=0x");
+    early_puthex64(esr);
+    early_puts_direct(" FAR=0x");
+    early_puthex64(far);
+    early_puts_direct(" PC=0x");
+    early_puthex64(regs->pc);
+    early_putc_direct('\n');
+#if defined(BSP_USING_HP232X) || defined(BSP_SMP_EXC_EARLY_DUMP)
+    early_puts_direct("SError halt\n");
+    for (;;)
+        __asm__ volatile("wfe");
+#endif
+#endif
+
+    rt_kprintf("SError ESR=0x%lx FAR=0x%lx\n", esr, far);
     rt_hw_show_register(regs);
     rt_kprintf("current: %s\n", rt_thread_self()->parent.name);
 #ifdef RT_USING_FINSH

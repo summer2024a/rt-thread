@@ -67,6 +67,30 @@ extern "C" {
 void hp232x_mmu_init(void);
 
 /**
+ * Flush all HP232X page tables to PoC (call after modifying entries in cacheable RAM).
+ */
+void hp232x_mmu_flush_tables(void);
+
+/**
+ * Verify VA is an L2 BLOCK mapping to expect_pa (2MB-aligned compare).
+ * Returns 0 on match. out_desc / out_attr_idx optional.
+ */
+int hp232x_mmu_check_l2_block(uint64_t va, uint64_t expect_pa,
+                              uint64_t *out_desc, uint32_t *out_attr_idx);
+
+/**
+ * Verify VA is mapped ATTR_NORMAL_NC in software page tables.
+ * Returns 0 if AttrIndx==1 (NC), negative on mismatch.
+ */
+int hp232x_mmu_pte_attr_index(uint64_t va, uint32_t *out_attr_idx);
+
+/**
+ * Runtime DMA-NC sanity check for @test_va (store/load + PTE attr).
+ * Returns 0 on pass.
+ */
+int hp232x_mmu_verify_dma_nc(uint64_t test_va);
+
+/**
  * Get the L1 page table base address for SMP secondary CPU.
  *
  * In SMP mode, all CPUs share the same page table (hp232x_mmu_l1).

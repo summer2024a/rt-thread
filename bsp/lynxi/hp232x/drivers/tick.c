@@ -10,6 +10,7 @@
  */
 
 #include <rthw.h>
+#include "biz_log.h"
 #include <rtthread.h>
 
 static volatile rt_uint64_t time_elapsed = 0;
@@ -83,7 +84,7 @@ int rt_hw_tick_init(void)
     freq = armv8_get_cntfrq();
     tick_cycles = freq / RT_TICK_PER_SECOND;
 
-    rt_kprintf("[rt_hw_tick_init] freq: %d tick_cycles: %d\n",
+    HP_LOGI("[rt_hw_tick_init] freq: %d tick_cycles: %d\n",
                (rt_uint32_t)freq, (rt_uint32_t)tick_cycles);
 
     armv8_cntp_ctl_enable(RT_FALSE);

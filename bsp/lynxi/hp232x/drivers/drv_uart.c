@@ -154,6 +154,8 @@ void rt_hw_earlycon_ioremap_early(void)
     uart_init((rt_ubase_t)earlycon_base, 115200);
 }
 
+#include "biz_log.h"
+
 void rt_hw_console_output(const char *str)
 {
     if (earlycon_base)
@@ -163,6 +165,8 @@ void rt_hw_console_output(const char *str)
             early_putc(*str++);
         }
     }
+
+    biz_log_console_hook(str);
 }
 
 void early_printhex(rt_ubase_t number)

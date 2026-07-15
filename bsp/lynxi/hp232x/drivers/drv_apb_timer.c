@@ -12,9 +12,7 @@
 #include "lynxi.h"
 #include "drv_apb_timer.h"
 
-#define DBG_TAG "drv.apb_timer"
-#define DBG_LVL DBG_INFO
-#include <rtdbg.h>
+#include "biz_log.h"
 
 #define DW_TIMER_LOAD_COUNT(id)     (0x00 + (id) * 0x14)
 #define DW_TIMER_CURRENT_VALUE(id)  (0x04 + (id) * 0x14)

@@ -1,0 +1,35 @@
+import os
+from building import *
+
+cwd = GetCurrentDir()
+src = Glob('*.c') + Glob('*.cpp')
+
+# hp640 SPL business modules — disable all but one for incremental bring-up
+if not GetDepend('BSP_DRV_MOD_EXEC_APU'):
+    SrcRemove(src, ['biz_exec_apu.c', 'biz_apu_dump.c'])
+
+if not GetDepend('BSP_DRV_MOD_EXEC_MISC'):
+    SrcRemove(src, ['biz_exec_misc.c'])
+
+if not GetDepend('BSP_DRV_MOD_EXEC_STRESS'):
+    SrcRemove(src, ['biz_exec_stress.c'])
+
+if not GetDepend('BSP_DRV_MOD_EXEC_SELFTEST'):
+    SrcRemove(src, ['biz_exec_selftest.c'])
+
+if not GetDepend('BSP_DRV_MOD_EMMC_DLL'):
+    SrcRemove(src, ['biz_emmc_dll.c'])
+
+if not GetDepend('BSP_DRV_MOD_FINSH'):
+    SrcRemove(src, ['biz_finsh_cmds.c'])
+
+if not GetDepend('BSP_DRV_MOD_EXEC_MISC') and not GetDepend('BSP_DRV_MOD_FLASH_UPGRADE'):
+    SrcRemove(src, ['biz_crc32.c'])
+
+CPPPATH = [cwd, os.path.join(cwd, '..', 'drivers'), str(Dir('#'))]
+if GetDepend('RT_USING_ZMODEM'):
+    CPPPATH += [os.path.join(cwd, '..', 'utilities', 'zmodem')]
+
+group = DefineGroup('biz', src, depend = [''], CPPPATH = CPPPATH)
+
+Return('group')

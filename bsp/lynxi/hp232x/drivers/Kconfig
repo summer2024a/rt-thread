@@ -98,6 +98,77 @@ menu "Hardware Drivers Config"
                 default 0
         endif
 
+        config BSP_DRV_PVT_BOOT_SAMPLE
+            bool "Print PVT TS/VM at boot init"
+            default n
+            help
+                Enable boot-time PVT channel dump in drv_subsys_init.
+                Heartbeat still reads PVT via drv_emmc_biz when disabled.
+
+        config BSP_HP232X_MM_MINIMAL
+            bool "Minimal MM component (drop anon/fault, MM shell cmds)"
+            default y
+            help
+                Remove mm_anon.c and mm_fault.c; stub private-map APIs.
+                hp232x uses custom hp232x_mmu identity map — COW/fork unused.
+                Also drops list_kmem/list_page finsh commands to save IRAM0.
+
+        config BSP_BIZ_SKIP_THREADS
+            bool "Skip biz worker threads (flash/finsh debug)"
+            default n
+            help
+                Do not start i2c_mcu, mcu_err, or emmc_biz threads.
+                Keeps biz_init (flash/emmc object init) and FinSH msh.
+                Use for SPI flash read/write testing without emmc_biz
+                flooding the console or starving the shell.
+
+        config BSP_BIZ_EMMC_ON_CPU1
+            bool "Bind emmc_biz thread to CPU1 (SMP)"
+            depends on RT_USING_SMP
+            default y
+            help
+                Create emmc_biz on CPU0 but bind it to CPU1 before startup.
+                Requires CPU1 online (main waits for idle ready).
+
+        menu "Driver business modules (hp640 SPL port)"
+            comment "Disable all but one module for incremental bring-up / debug."
+
+            config BSP_DRV_MOD_EXEC_APU
+                bool "Exec: DgbRead, APUDebug, PWM, ApuClock"
+                default y
+
+            config BSP_DRV_MOD_EXEC_MISC
+                bool "Exec: CRC32, Timer, SetTimestamp"
+                default y
+
+            config BSP_DRV_MOD_EXEC_STRESS
+                bool "Exec: eMMC Stress"
+                default y
+
+            config BSP_DRV_MOD_EXEC_SELFTEST
+                bool "Exec: SelfTest + eMMC report"
+                default y
+
+            config BSP_DRV_MOD_EMMC_DLL
+                bool "eMMC DLL scan + flash store"
+                default y
+
+            config BSP_DRV_MOD_PCIE
+                bool "PCIe init / setup / stress"
+                default y
+
+            config BSP_DRV_MOD_FLASH_UPGRADE
+                bool "FlashWrite CRC verify + upgrade helpers"
+                default y
+
+            config BSP_DRV_MOD_FINSH
+                bool "Finsh MSH module test commands"
+                default n
+                help
+                    Register hp640-style debug commands (stress, pcie, self_test…).
+                    Enable one module at a time together with matching BSP_DRV_MOD_*.
+        endmenu
+
         config RT_BSP_PMON_TEST
             bool "Enable PMON GIC monitor thread"
             default y

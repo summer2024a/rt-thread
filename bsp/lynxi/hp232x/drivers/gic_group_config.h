@@ -28,6 +28,8 @@ void hp232x_config_timer_interrupt_group(rt_uint64_t redist_base);
  */
 void hp232x_config_uart_interrupt_group(rt_uint64_t dist_base);
 
+void hp232x_config_i2c_interrupt_group(rt_uint64_t dist_base);
+
 /**
  * 初始化HP232X中断组别配置
  *

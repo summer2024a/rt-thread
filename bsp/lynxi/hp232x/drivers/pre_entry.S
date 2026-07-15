@@ -24,23 +24,12 @@
 /* MPIDR affinity bits mask (bootwrapper/boot.S) */
 .equ MPIDR_ID_BITS, 0xff00ffffff
 
-#ifdef BSP_USING_HP232X_DEBUG_UART
 /*
- * UART debug interface - uses x6/x7 registers (same as entry_point.S)
- * Architecture:
- *   - x6: UART LSR address (pre-initialized)
- *   - x7: UART THR address (pre-initialized)
- *   - x8: Temporary register for character and LSR polling
- *
- * CRITICAL: x6/x7 must be initialized before using early_putc!
+ * early_putc breadcrumbs only when BSP_BOOT_EARLY_MARK (default off).
+ * Still requires BSP_USING_HP232X_DEBUG_UART for the real UART path.
  */
+#if defined(BSP_USING_HP232X_DEBUG_UART) && defined(BSP_BOOT_EARLY_MARK)
 .macro early_putc, char
-// 1:  ldr     w8, [x6]              /* Read LSR (x6 pre-loaded) */
-//     tst     w8, #0x20             /* Check THRE (Transmitter Holding Register Empty) */
-//     b.eq    1b                    /* Wait if NOT ready */
-//     mov     w8, \char             /* Load character */
-//     str     w8, [x7]              /* Write to THR (x7 pre-loaded) */
-
 ldr     x6, =0x10006000         /* UART0 base address (THR) */
 1:  ldr     w8, [x6, #0x14]      /* 读 LSR = base + 0x14 */
     tst     w8, #0x20
@@ -49,9 +38,9 @@ ldr     x6, =0x10006000         /* UART0 base address (THR) */
     str     w8, [x6]             /* 写 THR = base + 0 */
 .endm
 #else
-.macro early_putc, char          /* Empty stub when DEBUG_UART disabled */
+.macro early_putc, char          /* Empty: DEBUG_UART off or BOOT_EARLY_MARK off */
 .endm
-#endif /* BSP_USING_HP232X_DEBUG_UART */
+#endif /* DEBUG_UART && BOOT_EARLY_MARK */
 
     /* Keep current section (don't switch to .text) */
 

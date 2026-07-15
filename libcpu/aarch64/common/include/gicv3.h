@@ -172,6 +172,7 @@ rt_uint64_t arm_gic_get_binary_point(rt_uint64_t index);
 rt_uint64_t arm_gic_get_irq_status(rt_uint64_t index, int irq);
 
 #if defined(RT_USING_SMP) || defined(RT_USING_AMP)
+void arm_gic_sgi_affinity_reset(void);
 void arm_gic_send_affinity_sgi(rt_uint64_t index, int irq, rt_uint32_t cpu_masks[], rt_uint64_t routing_mode);
 #endif
 

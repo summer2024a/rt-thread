@@ -35,7 +35,6 @@
 #define ARM_SPI_BIND_CPU_ID 0
 #endif
 
-/* ARM architected CNTP physical timer PPI (used when BSP_USING_CORETIMER). */
 #ifndef ARM_ARCH_TIMER_PPI
 #define ARM_ARCH_TIMER_PPI 30
 #endif
@@ -442,6 +441,21 @@ struct gicv3_sgi_aff
 
 static struct gicv3_sgi_aff sgi_aff_table[RT_CPUS_NR];
 static rt_uint64_t sgi_aff_table_num;
+static rt_uint64_t gicv3_sgi_masks_nrs;
+
+void arm_gic_sgi_affinity_reset(void)
+{
+    rt_uint64_t i;
+
+    gicv3_sgi_masks_nrs = 0;
+    sgi_aff_table_num = 0;
+    for (i = 0; i < RT_CPUS_NR; i++)
+    {
+        sgi_aff_table[i].aff = 0;
+        sgi_aff_table[i].target_list = 0;
+        rt_memset(sgi_aff_table[i].cpu_mask, 0, sizeof(sgi_aff_table[i].cpu_mask));
+    }
+}
 static void sgi_aff_add_table(rt_uint64_t aff, rt_uint64_t cpu_index)
 {
     rt_uint64_t i;
@@ -517,13 +531,12 @@ void arm_gic_send_affinity_sgi(rt_uint64_t index, int irq, rt_uint32_t cpu_masks
 {
     rt_uint64_t i;
     rt_uint64_t int_id = (irq & 0xf) << 24;
-    static rt_uint64_t masks_nrs = 0;
 
     if (routing_mode == GICV3_ROUTED_TO_SPEC)
     {
-        if (!masks_nrs)
+        if (!gicv3_sgi_masks_nrs)
         {
-            masks_nrs = gicv3_sgi_init();
+            gicv3_sgi_masks_nrs = gicv3_sgi_init();
         }
 
         for (i = 0; i < sgi_aff_table_num; i++)
@@ -531,7 +544,7 @@ void arm_gic_send_affinity_sgi(rt_uint64_t index, int irq, rt_uint32_t cpu_masks
             sgi_aff_table[i].target_list = 0;
         }
 
-        for (i = 0; i < masks_nrs; i++)
+        for (i = 0; i < gicv3_sgi_masks_nrs; i++)
         {
             if (cpu_masks[i] == 0)
             {
@@ -750,7 +763,6 @@ int arm_gic_redist_init(rt_uint64_t index, rt_uint64_t redist_base)
     RT_ASSERT(index < ARM_GIC_MAX_NR);
 
 #if defined(BSP_USING_HP232X) && defined(RT_USING_SMP)
-    /* Secondary CPU may see stale _gic_table from CPU0 dcache. */
     if (cpu_id != 0)
     {
         rt_hw_cpu_dcache_ops(RT_HW_CACHE_INVALIDATE,
@@ -802,11 +814,6 @@ int arm_gic_redist_init(rt_uint64_t index, rt_uint64_t redist_base)
     GIC_RDISTSGI_ICFGR1(redist_base) = 0;
 
 #if defined(BSP_USING_CORETIMER)
-    /*
-     * arm_gic_redist_init() disables all PPI/SGI above; re-enable the arch
-     * timer PPI so CNTP tick works without board-specific GICR patches.
-     * Priority for IRQ 30 is already 0xa0 in the loop above.
-     */
     GIC_RDISTSGI_ISENABLER0(redist_base) = (1U << ARM_ARCH_TIMER_PPI);
     arm_gicv3_wait_rwp(0, ARM_ARCH_TIMER_PPI);
 #endif

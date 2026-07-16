@@ -18,7 +18,9 @@
 
 /* Temporary: show BIZ_INFO on UART (heart-beat, emmc_biz, thread start). */
 #define BSP_BIZ_LOG_BOOT_INFO
-/* #define BSP_BIZ_LOG_LOCATION */  /* 开：每条日志都带 func:line；默认仅 DEBUG 带 */
+/* #define BSP_BIZ_LOG_LOCATION */   /* 开：每条日志都带 func:line；默认仅 DEBUG 带 */
+/* #define BSP_BIZ_LOG_TIMESTAMP */  /* 开：每条日志带 [sec.us] 启动相对时间戳（调试用） */
+#define BSP_BIZ_PHASE_STATS        /* 开：静默累计 query/cmd 耗时；msh: phase / phase reset */
 /* A/B: hp640-style cached SPL BSS + flush_cache (disable NC dma_nocache arena) */
 /* #define BSP_EMMC_DMA_CACHED_BSS */
 /* Optional: force HS400 SDCLK_DC=0x3c (hp640 CONFIG_HP640_CUSTOM_EMMC_DC); default uses efuse KA200M=0x21 / KA200=0x23 */
@@ -49,13 +51,13 @@
  *     defined   → 从核仅 msh「smp start / release」
  *     undefined → main 内 leave-XIP+flush+release（自启动）
  *
- * MCU note (HP2320 build_app): Host 查完 KA200 I2C 地址后若再复位 KA200，
- * 自启 I2C 可能卡在 bus / IRQ — 用 BSP_I2C_DEFER 手启规避直至 MCU 侧修。
- * Production: flash/biz/smp 关 DEFER；I2C 视 Host 是否已修而定（见 BIZ_PORTING）。
+ * MCU note (HP2320): 早期 Host 查地址后复位会卡 I2C，曾默认开 BSP_I2C_DEFER。
+ * 现 I2C 联调已通，默认关 DEFER → boot 自启；隔离调试再临时打开。
+ * Production: flash/biz/smp/i2c 均关 DEFER（见 BIZ_PORTING）。
  */
 /* #define BSP_FLASH_DEFER_INIT */ /* 开则 flash 命令行 init/worker；关则 boot 自启 */
 /* #define BSP_BIZ_SKIP_THREADS */ /* 开则 biz 命令行 start/upgrade；关则 boot 自启 */
-#define BSP_I2C_DEFER              /* 开则 i2c 手启（msh i2c start）；关则 boot 自启 */
+/* #define BSP_I2C_DEFER */        /* 开则 i2c 手启（msh i2c start）；关则 boot 自启 */
 /* #define BSP_SMP_DEFER_SECONDARY */ /* 开则命令行启动从核；关则 boot 自启动 */
 
 /* emmc_biz 默认绑 CPU1（auto-start / biz_emmc_biz_start） */
@@ -82,6 +84,8 @@
 /*
  * IRAM0 low 256KB (0x04000000..0x0403FFFF) — BL22: boot-wrapper / Host biz
  * descriptors & buffers (not RTT .text). Map Normal NC like IRAM1 scratch.
+ * With BSP_IRAM1_LOW_NC: defines BSP_BIZ_SKIP_HOST_DCACHE — CRC/Store/report
+ * dcache ops are not compiled in.
  * Do not enable on BL21 (kernel lives in this half).
  */
 #define BSP_IRAM0_LOW_NC

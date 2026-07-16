@@ -8,6 +8,7 @@
 #include <rtthread.h>
 #include <rthw.h>
 #include "biz_exec_handlers.h"
+#include "biz_emmc.h"
 #include "drv_apu.h"
 #include "drv_emmc.h"
 #include "biz_log.h"

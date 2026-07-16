@@ -5,11 +5,11 @@
 
 #include <rtthread.h>
 #include "drv_apu.h"
+#include "lynxi.h"
 #include "hp232x_mmu.h"
 #include "biz_log.h"
 #include "tick.h"
 
-#define CPR_BASE                    0x12500000UL
 #define CPR_BOOT_SELECT             (CPR_BASE + 0x64UL)
 #define CPR_CLOCK_SW_CTRL           (CPR_BASE + 0xCCUL)
 #define CPR_APU_PLL_CONFIG0         (CPR_BASE + 0x3CUL)

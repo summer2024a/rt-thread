@@ -256,7 +256,7 @@ read_sensor:
     {
         if (--try_cnt < 0)
             return -1;
-            goto read_sensor;
+        goto read_sensor;
     }
     return val;
 }

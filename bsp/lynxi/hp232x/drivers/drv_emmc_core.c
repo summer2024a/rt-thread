@@ -765,6 +765,7 @@ void drv_emmc_report_error(biz_err_code_t err)
     biz_mcu_err_post(err);
 }
 
+/* Coarse wait (1 ms steps) — init / set_clock only; not ExecBD/xfer hot path. */
 static int emmc_wait_inhibit_us(unsigned int max_ms)
 {
     unsigned int waited = 0;
@@ -789,9 +790,33 @@ static void emmc_log_phy_at(const char *tag)
                  emmc_at_stat_read());
 }
 
+/*
+ * hp640 emmc_wait_bus_idle(): tight spin (time++), extend timeout like xfer path.
+ * Used by ExecBD + init settle — must NOT use 1 ms stepped delay.
+ */
 static int emmc_wait_bus_idle(int timeout_ms)
 {
-    return emmc_wait_inhibit_us((unsigned int)timeout_ms);
+    uint32_t time = 0;
+    uint32_t cmd_timeout = (uint32_t)timeout_ms;
+    uint32_t mask = SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT;
+    uint32_t test;
+
+    while ((test = emmc_readl(SDHCI_PRESENT_STATE)) & mask)
+    {
+        if (time >= cmd_timeout * 100U)
+        {
+            if (cmd_timeout <= SDHCI_CMD_DEFAULT_TIMEOUT * 10U)
+            {
+                cmd_timeout += cmd_timeout;
+            }
+            else
+            {
+                return BIZ_ERR_EMMC_STATE_TIMEOUT;
+            }
+        }
+        time++;
+    }
+    return BIZ_SUCCESS;
 }
 
 static void emmc_reset(uint8_t mask)
@@ -2066,27 +2091,19 @@ int drv_emmc_exec_bd(uint64_t bd_addr)
     if (!s_emmc_initialized)
         return BIZ_ERR_EMMC_INIT;
 
+    /* hp640 exec_task_exec_bd: wait idle → kick ADMA_ID → wait INT → fire-and-forget reset */
     ret = emmc_wait_bus_idle(SDHCI_CMD_DEFAULT_TIMEOUT);
     if (ret != BIZ_SUCCESS)
         goto out;
-
-    emmc_writel(SDHCI_INT_ALL_MASK, SDHCI_INT_STATUS);
-    emmc_writeb(SDHCI_DATA_TIMEOUT, SDHCI_TIMEOUT_CONTROL);
-
-    {
-        uint8_t ctrl = emmc_readb(SDHCI_HOST_CONTROL);
-        ctrl &= ~SDHCI_CTRL_DMA_MASK;
-        ctrl |= SDHCI_CTRL_SEL_ADMA2_ADMA3;
-        emmc_writeb(ctrl, SDHCI_HOST_CONTROL);
-    }
 
     emmc_kick_adma3((const void *)(uintptr_t)bd_addr);
 
     ret = emmc_wait_interrupt();
 
+    /* Match hp640: write reset bits, do NOT poll SOFTWARE_RESET (saves FPGA reset latency ×2). */
     emmc_writel(SDHCI_INT_ALL_MASK, SDHCI_INT_STATUS);
-    emmc_reset(SDHCI_RESET_CMD);
-    emmc_reset(SDHCI_RESET_DATA);
+    emmc_writeb(SDHCI_RESET_CMD, SDHCI_SOFTWARE_RESET);
+    emmc_writeb(SDHCI_RESET_DATA, SDHCI_SOFTWARE_RESET);
 
 out:
     if (ret != BIZ_SUCCESS)

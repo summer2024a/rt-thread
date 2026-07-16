@@ -26,9 +26,9 @@
 #define BIZ_I2C_CMD_READ_IP_REG         0xD0U
 #define BIZ_I2C_CMD_WRITE_IP_REG        0xD1U
 
+/* Absolute MMIO address + length (no base+offset; saves 4B on wire) */
 typedef struct __attribute__((packed)) {
-    uint32_t ip_base;
-    uint32_t reg_offset;
+    uint32_t reg_addr;
     uint8_t  access_len;
 } biz_i2c_ip_reg_desc_t;
 

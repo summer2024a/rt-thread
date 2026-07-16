@@ -63,20 +63,68 @@ static int check_req(const uint8_t *req, uint16_t req_len)
     return 0;
 }
 
+/*
+ * Device MMIO often rejects byte/half accesses (CPR BOOT_SELECT etc.).
+ * Prefer natural-width aligned ops; fall back to byte only for unaligned tails.
+ */
 static void mmio_read_bytes(uintptr_t addr, uint8_t *out, uint8_t len)
 {
-    uint8_t i;
-
-    for (i = 0; i < len; i++)
-        out[i] = *(volatile uint8_t *)(addr + i);
+    while (len > 0U)
+    {
+        if (((addr & 3U) == 0U) && (len >= 4U))
+        {
+            uint32_t v = *(volatile uint32_t *)addr;
+            memcpy(out, &v, 4);
+            addr += 4U;
+            out += 4;
+            len = (uint8_t)(len - 4U);
+        }
+        else if (((addr & 1U) == 0U) && (len >= 2U))
+        {
+            uint16_t v = *(volatile uint16_t *)addr;
+            memcpy(out, &v, 2);
+            addr += 2U;
+            out += 2;
+            len = (uint8_t)(len - 2U);
+        }
+        else
+        {
+            *out++ = *(volatile uint8_t *)addr;
+            addr++;
+            len--;
+        }
+    }
 }
 
 static void mmio_write_bytes(uintptr_t addr, const uint8_t *in, uint8_t len)
 {
-    uint8_t i;
-
-    for (i = 0; i < len; i++)
-        *(volatile uint8_t *)(addr + i) = in[i];
+    while (len > 0U)
+    {
+        if (((addr & 3U) == 0U) && (len >= 4U))
+        {
+            uint32_t v;
+            memcpy(&v, in, 4);
+            *(volatile uint32_t *)addr = v;
+            addr += 4U;
+            in += 4;
+            len = (uint8_t)(len - 4U);
+        }
+        else if (((addr & 1U) == 0U) && (len >= 2U))
+        {
+            uint16_t v;
+            memcpy(&v, in, 2);
+            *(volatile uint16_t *)addr = v;
+            addr += 2U;
+            in += 2;
+            len = (uint8_t)(len - 2U);
+        }
+        else
+        {
+            *(volatile uint8_t *)addr = *in++;
+            addr++;
+            len--;
+        }
+    }
 }
 
 static int handle_read_ip_reg(const uint8_t *payload, uint8_t plen,
@@ -98,7 +146,7 @@ static int handle_read_ip_reg(const uint8_t *payload, uint8_t plen,
     if (rsp_out == RT_NULL || rsp_max < need)
         return -1;
 
-    addr = (uintptr_t)desc.ip_base + (uintptr_t)desc.reg_offset;
+    addr = (uintptr_t)desc.reg_addr;
     mmio_read_bytes(addr, data, desc.access_len);
     build_rsp(rsp_out, BIZ_I2C_CMD_READ_IP_REG, data, desc.access_len);
     return (int)need;
@@ -118,7 +166,7 @@ static int handle_write_ip_reg(const uint8_t *payload, uint8_t plen)
     if (plen < (uint8_t)(sizeof(desc) + desc.access_len))
         return -1;
 
-    addr = (uintptr_t)desc.ip_base + (uintptr_t)desc.reg_offset;
+    addr = (uintptr_t)desc.reg_addr;
     mmio_write_bytes(addr, payload + sizeof(desc), desc.access_len);
     return 0;
 }

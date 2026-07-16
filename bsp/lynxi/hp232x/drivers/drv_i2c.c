@@ -594,23 +594,27 @@ static int drv_i2c_irq_process(void)
 
     if (cntl & IC_TX_ABRT)
     {
-        if (i2c_readl(&s_i2c.regs->ic_tx_abrt_source) & IC_TX_ABRT_SDA_STUCK)
+        uint32_t abrt = i2c_readl(&s_i2c.regs->ic_tx_abrt_source);
+
+        if (abrt & IC_TX_ABRT_SDA_STUCK)
         {
+            int wait = 100;
+
             temp = i2c_readl(&s_i2c.regs->ic_enable);
             temp |= IC_ENABLE_SDA_STUCK;
             i2c_writel(temp, &s_i2c.regs->ic_enable);
-            while (!(i2c_readl(&s_i2c.regs->ic_enable) & IC_ENABLE_SDA_STUCK))
+            /* Never busy-wait forever — that used to hard-lock CPU0. */
+            while (wait-- > 0 &&
+                   !(i2c_readl(&s_i2c.regs->ic_enable) & IC_ENABLE_SDA_STUCK))
                 ;
             if (i2c_readl(&s_i2c.regs->ic_status) & IC_STATUS_SDA_STUCK_NOT_OK)
             {
                 *(volatile uint32_t *)0x12500094U = 0x38U;
                 *(volatile uint32_t *)0x12500094U = 0x3FU;
             }
-            else
-            {
-                i2c_readl(&s_i2c.regs->ic_clr_tx_abrt);
-            }
         }
+        /* Always clear ABRT so the IRQ line can drop. */
+        i2c_readl(&s_i2c.regs->ic_clr_tx_abrt);
         ret = -1;
     }
 
@@ -623,6 +627,13 @@ static void drv_i2c_isr(int vector, void *param)
     (void)param;
 
     rt_interrupt_enter();
+    /*
+     * Mask DW IRQs until BH drains IC_RAW_INTR_STAT. Leaving them unmasked
+     * while only posting a semaphore lets GIC re-enter forever during MCU
+     * i2c_scan (START/STOP barrage) and stars out msh on CPU0.
+     */
+    if (s_i2c.regs)
+        i2c_writel(0, &s_i2c.regs->ic_intr_mask);
     rt_sem_release(&s_i2c_irq_sem);
     rt_interrupt_leave();
 }
@@ -645,6 +656,8 @@ void drv_i2c_bh_entry(void *param)
                  ~(IC_ACTIVITY | IC_TX_EMPTY)) == 0)
                 break;
         }
+        /* Re-arm after pending bits are cleared. */
+        drv_i2c_hw_set_intr_mask(1);
     }
 }
 

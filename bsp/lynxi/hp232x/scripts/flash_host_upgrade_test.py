@@ -163,7 +163,7 @@ def analyze_upgrade(out):
         print("  [FAIL] upgrade step — %s" % fail_m.group(0)[:80])
         ok = False
     else:
-        print("  [PASS] no [biz][upgrade] FAIL")
+        print("  [PASS] no [biz] FAIL")
     return (ok and re.search(r"Successfully", out)
             and re.search(r"topology OK", out, re.I)
             and not re.search(r"\[biz\]\[upgrade\] FAIL", out)

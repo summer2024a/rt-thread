@@ -1,12 +1,12 @@
 # HP640 SPL 业务移植进展（hp232x RT-Thread）
 
 > 本文档描述 `hp640_arm/common/spl/` 业务逻辑向 `lynxi-rtt/bsp/lynxi/hp232x` 的移植状态与测试方法，便于交接。  
-> **本阶段移交重点**：eMMC + Host Flash 升级已稳；**Flash 冷启双核自启已通**；**SMP / emmc_biz / flash 默认 boot 自启**；**I2C 已拆自启/手启**（默认 **手启**，规避 MCU 查地址后复位卡 bus）。  
-> **下一位接 P0**：I2C e2e（READ_LOG / mcu_err）+ 推动 MCU（`Lynchip_mcu_HP2320/build_app`）修复位时序后，再评估关 `BSP_I2C_DEFER`。
+> **本阶段移交重点**：eMMC + Host Flash 升级已稳；**Flash 冷启双核自启已通**；**SMP / emmc_biz / flash / I2C 默认 boot 自启**；**MCU↔KA200 I2C 代理已板测调通**；**Host 全路径压测（fpfifo）CRC32 慢路径已修，性能口径与 `phase` 统计已定**。  
+> **下一位接 P0**：READ_LOG / `mcu_err` e2e；CRC32 修复后 Host `-b 64` 回归确认；量产冷启写回镜像（§9 P1）。
 >
-> 设计背景见 [doc/SPL_MIGRATION_DESIGN.md](doc/SPL_MIGRATION_DESIGN.md)；SMP 总入口 [doc/SMP_SETUP.md](doc/SMP_SETUP.md)；eMMC tuning 见 [doc/EMMC_TUNING.md](doc/EMMC_TUNING.md)；Flash 见 [doc/FLASH_PORTING.md](doc/FLASH_PORTING.md)；镜像/启动见 [doc/IMAGE_DESIGN.md](doc/IMAGE_DESIGN.md)；BSP 见 [HANDOFF_SLIM.md](HANDOFF_SLIM.md)；**测试环境**见 [Test_ENV.md](Test_ENV.md)。
+> 设计背景见 [doc/SPL_MIGRATION_DESIGN.md](doc/SPL_MIGRATION_DESIGN.md)；SMP 总入口 [doc/SMP_SETUP.md](doc/SMP_SETUP.md)；eMMC tuning 见 [doc/EMMC_TUNING.md](doc/EMMC_TUNING.md)；Flash 见 [doc/FLASH_PORTING.md](doc/FLASH_PORTING.md)；镜像/启动见 [doc/IMAGE_DESIGN.md](doc/IMAGE_DESIGN.md)；**宏控制**见 [doc/BSP_MACROS.md](doc/BSP_MACROS.md)；**代码段体积**见 [doc/CODE_SIZE.md](doc/CODE_SIZE.md)；BSP 见 [HANDOFF_SLIM.md](HANDOFF_SLIM.md)；**测试环境**见 [Test_ENV.md](Test_ENV.md)。
 
-**更新日期**：2026-07-15（I2C 自启/手启；MCU 复位卡 I2C 根因；交接）
+**更新日期**：2026-07-16（Host 全路径 / CRC32 / `phase` 统计 / NC 编译期跳过 dcache）
 
 ---
 
@@ -16,20 +16,30 @@
 |----|------|
 | 测试板 | **192.168.58.36**（`lynxi` / `lx@123`），UART `/dev/ttyUSB0` @ 115200 |
 | KA200 拓扑参数 | **`-l 0 -i 2 -k 30`** |
-| eMMC HS400 + heartbeat | ✅ tap **0x34**；`emmc_biz` @ **CPU1**（bind + `kick_cpu`） |
+| eMMC HS400 + heartbeat | ✅ tap **0x34**；`emmc_biz` @ **CPU1**；**默认仅上电报一次**（`heart_beat_interval=0`） |
 | Host 升级 Load + FlashWrite `@0xA6000` | ✅；默认 **CPU0 flash worker** + **`BSP_IRAM1_LOW_NC`** / **`BSP_IRAM0_LOW_NC`** |
 | **Flash 冷启 → RTT 双核 + SSI/JEDEC** | ✅ leave-XIP 用 **flush**（非纯 inv）→ CPU1 ready → JEDEC → `emmc_biz entry CPU1` |
 | **SMP / emmc_biz / flash 自启动** | ✅ 默认关 `BSP_*_DEFER` / `BSP_BIZ_SKIP_*`（见 §3.2） |
-| **I2C MCU 从机** | 🟡 **默认手启**（`BSP_I2C_DEFER`）；根因见 §4.5；e2e READ_LOG/报错待验 |
+| **I2C MCU 从机 + `ka200 reg` 代理** | ✅ boot 自启；§4.5 |
+| **Host 全路径压测（fpfifo_stress）** | ✅ 根因曾是 **bit-by-bit CRC32**；已换 **固化表 + 字批处理**（对齐 U-Boot `crc32.c`）；§4.8 |
+| **biz 热路径 NC dcache** | ✅ 双 NC 宏时 **`BSP_BIZ_SKIP_HOST_DCACHE`**：CRC/Store/report **不编译** dcache 调用；§3.2 / §4.8 |
+
+**拓扑说明（HP232x @ 58.36）**：32 颗 KA200 中 **chip30 = RTT 本 BSP**；其余为 **hp640 SPL**。MCU `i2c_scan` = 硬件在位检测。
 
 **交给下一位的立即动作**：
 
-1. 读 **§0 / §3.2 / §4.3 / §4.5 / §4.7** + [doc/SMP_SETUP.md](doc/SMP_SETUP.md) Part A。  
+1. 读 **§0 / §3.2 / §4.3 / §4.5 / §4.8 / §9**。  
 2. 板测用 [Test_ENV.md](Test_ENV.md)；**勿破坏** `emmc_biz` 最高优先与 Host 升级回归。  
-3. 冷启验收：`[SMP] CPU1 ready` → `JEDEC=0xc22537` → `emmc_biz entry CPU1` + HB。  
-4. **I2C**：上电后若未见 slave ready，msh 执行 `i2c start`（当前默认 DEFER）。与 MCU 联调务必先看 §4.5。  
+3. 冷启验收：`[SMP] CPU1 ready` → `JEDEC=0xc22537` → `emmc_biz entry CPU1` + 首发 HB。  
+4. **Host 全路径回归**（同 Host 应用，源：`staging/fifo_test/fpfifo/fpfifo_stress.c`）：
+   ```bash
+   ./fpfifo_stress -d 0 -B 0:30 -r 10000 -b 64    # 或板侧 chip id
+   # KA msh（压测后）:
+   phase            # 静默累计的 avg_round / ExecBD / CRC32
+   phase reset
+   ```
 5. **禁止改 hp640 jumper**（`hp640_arm/.../spl.c` `CONFIG_HP640_JUMPER`）。  
-6. MCU 修复位时序后：注释 `BSP_I2C_DEFER` → I2C boot 自启；再验 READ_LOG / mcu_err e2e。
+6. 待验：READ_LOG / `biz_mcu_err_post` → Host 可见（§9）。
 
 ---
 
@@ -40,13 +50,14 @@
 | 业务能力 | hp640 入口 | hp232x 入口 | 板测 |
 |----------|-----------|-------------|------|
 | 上电 eMMC HS400 | `try_init_emmc()` | `drv_emmc_try_init(true)` | ✅ |
-| 主动上报心跳 | `report_heart_beat()` | `biz_emmc_report_heartbeat()` | ✅（自动首发；周期靠 Host config） |
-| 轮询任务 + 执行 | `auto_run()` | `biz_emmc_biz_entry()` | ✅（升级路径） |
+| 主动上报心跳 | `report_heart_beat()` | `biz_emmc_report_heartbeat()` | ✅ **仅上电首发**（`interval=0`）；周期靠 Host Config |
+| 轮询任务 + 执行 | `auto_run()` | `biz_emmc_biz_entry()` | ✅ 升级 + **fpfifo 全路径**（§4.8） |
 | Host 升级 FlashWrite | `write_flash` @ `0xA6000` | `biz_emmc_exec` + `drv_flash` | ✅ |
 | Flash 冷启 leave-XIP + JEDEC | jumper 后 open_flash | `main`：SMP 前 leave-XIP；再 `drv_flash_bringup` | ✅ 自启 |
 | Flash 冷启双核 | — | flush leave-XIP + `mmu_flush_tables` + release | ✅ 自启 |
 | **Host 读日志** | I2C `READ_LOG` | `drv_i2c.c` IRQ + 底半部 | 🟡 **下阶段验收** |
 | **Host 报错** | GPIO78 + I2C | `drv_mcu_err_post()` → `mcu_err` | 🟡 **下阶段验收** |
+| **MCU 代理读/写片内 MMIO** | — | `biz_i2c_proxy.c` + MCU `ka200 reg` | ✅ chip30 已验 |
 | 其它任务 (Store/APU/…) | `spl_cmd.c` | `biz_exec_*.c` | 未系统回归 |
 
 协议常量：`biz/biz_host_proto.h` / `biz/biz_config.c`（heartbeat `@0x400000`、query `@0x0500000`）。
@@ -91,7 +102,7 @@ main()       (CPU0)
                2. drv_flash_bringup()   // JEDEC
                3. biz_emmc_biz_start()  // bind CPU1 + kick
 emmc_biz     (CPU1)  emmc init → heartbeat → query/exec
-i2c_mcu      (CPU0)  I2C0 IRQ63 底半部 ← 下阶段重点
+i2c_mcu      (CPU0)  I2C0 IRQ63 底半部 + mailbox 代理
 mcu_err      (CPU0)  GPIO78 → 准备 I2C 错误包
 ```
 
@@ -116,11 +127,13 @@ I2C：**中断 + 信号量**；eMMC：**轮询**。跨核 / 冷启 SMP：[doc/SM
 | 日志环缓冲 | `spl_log_buffer.c` | `biz/biz_log.c` | `@0x100050000`，供 I2C READ_LOG |
 | eMMC | `spl_cmd.c` + `sdhci.c` | `drv_emmc_core.c` | HS400/ADMA3/tuning |
 | eMMC 业务 | `auto_run()` | `biz_emmc_biz.c` | CPU1 + `hp232x_kick_cpu` |
-| 任务执行 | `exec_tasks()` | `biz_emmc_exec.c` | Load/FlashWrite 已验 |
+| 任务执行 | `exec_tasks()` | `biz_emmc_exec.c` + `biz_crc32.c` | Load/FlashWrite；**CRC32 固化表**（§4.8） |
 | Flash SSI | open/write_flash | `drv_flash.c` | **flush** leave-XIP；CPU0 worker；§4.7 |
-| Host scratch | DDR_IRAM / IRAM0 低半 | MMU + `BSP_IRAM1_LOW_NC` / `BSP_IRAM0_LOW_NC` | 低 256KB 各映 NC |
+| Host scratch | DDR_IRAM / IRAM0 低半 | MMU + `BSP_IRAM1_LOW_NC` / `BSP_IRAM0_LOW_NC` | 双开 → `BSP_BIZ_SKIP_HOST_DCACHE` |
+| 相位统计 | SPL Round Stats / DDR 缓冲 | `BSP_BIZ_PHASE_STATS` + msh `phase` | **静默累计**，勿每包打印；§4.8 |
 | SMP 从核 | spin-table | `board.c` + `entry_point.S` 门禁 | Flash 冷启 §4.3 / SMP_SETUP Part A |
-| I2C/MCU GPIO | designware + GPIO78 | `drv_i2c.c` / `drv_gpio_mcu.c` | **自启/手启**（默认手启，§4.5） |
+| I2C/MCU GPIO | designware + GPIO78 | `drv_i2c.c` / `drv_gpio_mcu.c` | **默认自启**（§4.5） |
+| I2C 代理 MMIO | — | `biz/biz_i2c_proxy.c` | `0xD0/0xD1` 绝对地址；对齐 32/16-bit 读 |
 | DMA 区 | SPL BSS | `.dma_nocache` 64KB | **位置勿改** |
 
 ### 3.2 当前 `rtconfig.h` 要点（生产 / 联调默认）
@@ -128,6 +141,7 @@ I2C：**中断 + 信号量**；eMMC：**轮询**。跨核 / 冷启 SMP：[doc/SM
 ```c
 #define BSP_BIZ_EMMC_ON_CPU1             /* emmc_biz 独占 CPU1 */
 #define BSP_BIZ_LOG_BOOT_INFO
+#define BSP_BIZ_PHASE_STATS              /* 静默累计；msh: phase / phase reset */
 #define BSP_DRV_MOD_EXEC_STRESS
 #define BSP_DRV_MOD_FLASH_UPGRADE
 #define BSP_DRV_MOD_FINSH
@@ -135,11 +149,13 @@ I2C：**中断 + 信号量**；eMMC：**轮询**。跨核 / 冷启 SMP：[doc/SM
 /* #define BSP_FLASH_DIRECT_ON_CALLER */ /* 试验 OK；生产关 */
 #define BSP_IRAM1_LOW_NC                 /* IRAM1 低 256KB Host scratch → NC */
 #define BSP_IRAM0_LOW_NC                 /* IRAM0 低 256KB Host 描述符/数据 → NC */
+/* 上两者同时定义时 board.h 自动 #define BSP_BIZ_SKIP_HOST_DCACHE
+ * → CRC32 / Store / report_task_result 的 dcache 调用不编译进镜像 */
 
 /* —— 分步 / 规避宏 —— */
 /* #define BSP_FLASH_DEFER_INIT */       /* 开：msh flash init|worker */
 /* #define BSP_BIZ_SKIP_THREADS */       /* 开：msh biz start|upgrade（仅 emmc_biz） */
-#define BSP_I2C_DEFER                    /* 开：msh i2c start；关=boot 自启 I2C（当前默认开） */
+/* #define BSP_I2C_DEFER */              /* 开：msh i2c start；关=boot 自启 I2C（当前默认关） */
 /* #define BSP_SMP_DEFER_SECONDARY */    /* 开：msh smp start */
 /* #define BSP_BOOT_EARLY_MARK */        /* 主核 early putc */
 /* #define BSP_SMP_EARLY_MARK */         /* 从核 early putc */
@@ -149,8 +165,10 @@ I2C：**中断 + 信号量**；eMMC：**轮询**。跨核 / 冷启 SMP：[doc/SM
 |----|----|----|
 | `BSP_SMP_DEFER_SECONDARY` | `main` leave-XIP+flush+放核 | msh `smp start` |
 | `BSP_BIZ_SKIP_THREADS` | `main` 起 `emmc_biz@CPU1` | msh `biz start [cpu]`（**不含** I2C） |
-| `BSP_I2C_DEFER` | `INIT_ENV` 起 i2c_mcu/mcu_err | msh `i2c start`（**当前默认开**，§4.5） |
+| `BSP_I2C_DEFER` | `INIT_ENV` 起 i2c_mcu/mcu_err（**当前默认关**） | msh `i2c start`（调试用，§4.5） |
 | `BSP_FLASH_DEFER_INIT` | flash bringup + worker 自启 | msh `flash init` / `worker` |
+| `BSP_IRAM0_LOW_NC` + `BSP_IRAM1_LOW_NC` | Host 低窗 WB，biz 编译 dcache 维护 | 映 NC，并定义 **`BSP_BIZ_SKIP_HOST_DCACHE`** |
+| `BSP_BIZ_PHASE_STATS` | 无累计 | 静默累计；**不要**每 N 包自动打印 |
 
 **手启编译规则**：对应子命令仅在各自 DEFER/SKIP 宏打开时编入。  
 **注意**：`BSP_BIZ_SKIP_THREADS` **不再**连同跳过 I2C；I2C 只由 `BSP_I2C_DEFER` 控制。
@@ -167,7 +185,7 @@ msh > log warn         # 或 error|info|debug|N（3/4/6/7）
 
 ---
 
-## 4. 当前板测状态（2026-07-15 @ 58.36）
+## 4. 当前板测状态（2026-07-16 @ 58.36）
 
 ### 4.1 hp640 SPL（A/B 基准）— ✅
 
@@ -209,7 +227,9 @@ UART 烧录双核正常；Flash jumper 冷启易在 `hp232x_mmu_secondary_init` 
 **心跳语义（勿混淆）**：
 
 - `emmc_biz` 启动后 **自动发首发心跳**（与 `heart_beat_interval` 无关）；  
-- `heart_beat_interval=0`（默认）→ **无周期心跳**；周期需 Host config 或 msh `heart_beat`。
+- `heart_beat_interval=0`（`biz_config_init` **默认**）→ **无周期心跳**；query 空转里 `process_heartbeat` 直接返回；  
+- 周期心跳：Host Config 原语改 interval，或 msh `heart_beat` 手动报一次；  
+- 成功日志为 **`BIZ_DEBUG`**（避免压测 UART 拖慢 round）。
 
 ### 4.4 Host 在线升级 — ✅
 
@@ -225,46 +245,78 @@ UART 烧录双核正常；Flash jumper 冷启易在 `hp232x_mmu_secondary_init` 
 一键：`python3 scripts/flash_host_upgrade_test.py`。  
 细节：[doc/FLASH_PORTING.md](doc/FLASH_PORTING.md)。
 
-### 4.5 I2C — 自启 / 手启 + MCU 复位踩坑（交接必读）
+### 4.5 I2C — boot 自启 + MCU 代理（2026-07-16 交接）
 
-#### 现象与根因（2026-07-15）
+#### 板型与职责
 
-| 项 | 内容 |
-|----|------|
-| 现象 | boot **自启 I2C** 后可达 `[biz] worker: ready`，随后 I2C 卡死；**手启**则正常 |
-| Host 侧 | `/work/lynxlink/lynxi-mcu/Lynchip_mcu_HP2320/build_app`：MCU **查完 KA200 I2C 地址后**再触发/伴随 KA200 复位 |
-| 结论 | MCU 查询窗口与 KA200 **复位 + I2C slave 自启** 竞态；固件侧用 **I2C 手启** 规避，根治在 MCU 时序 |
+| 侧 | 芯片 | 固件 | I2C 角色 |
+|----|------|------|----------|
+| KA200 chip30 | RTT 本 BSP | `HP232x_KA200_Serdes_Update_20260716_v5.0.bin` | DW I2C0 从机 + **mailbox 代理**（`biz_i2c_proxy.c`） |
+| KA200 其余 | hp640 SPL | 640 镜像 | 仅 **I2C 从机 init**（SAR `0x34+slot`），无 RTT 代理 |
+| MCU | HP2320 | `HP232x_MCU_serdes_upgrade_20260716_V1.7.5.bin` | I2C2 master；CLI / FPGA UART 发命令 |
 
-#### 双模式（`BSP_I2C_DEFER`）
+MCU **`i2c_scan`**：对 soc0–31 做 `HAL_I2C_IsDeviceReady`，**硬件在位**；同 mux 通道 8 颗全 ACK 为正常拓扑（非 bus fault）。  
+**已移除** CLI 命令 `soc_rst`（自动复位仍由 `main` 里 `HandleSocResetSequence` 负责，勿在 CLI 手敲复位）。
+
+#### KA200：自启 vs 手启（`BSP_I2C_DEFER`）
 
 | 模式 | `rtconfig` | 行为 | msh |
 |------|------------|------|-----|
-| **手启（当前默认）** | `#define BSP_I2C_DEFER` | boot **不**起 `drv_i2c` / `i2c_mcu` / `mcu_err` | `i2c start` / `i2c status` |
-| **自启** | 注释掉该宏 | `INIT_ENV` → `biz_i2c_ensure()` | （无 `i2c start` 子命令） |
+| **自启（当前默认）** | 注释掉该宏 | `INIT_ENV` → `biz_i2c_ensure()` | （无 `i2c start`） |
+| **手启（调试）** | `#define BSP_I2C_DEFER` | boot **不**起 I2C | `i2c start` / `i2c status` |
 
-实现：`biz/biz_subsys.c` 的 `biz_i2c_ensure()`（幂等）；与 `BSP_BIZ_SKIP_THREADS`（仅 emmc_biz）正交。
-
-板测手启成功后典型日志：
+自启典型日志：
 
 ```text
-[main] i2c deferred — msh: i2c start
-...
-msh >i2c start
 [biz] worker: i2c
-MCU I2C addr parsed: 0x3a (mux=6)     # 58.36 实测常见
+MCU I2C addr parsed: 0x3a (mux=6)
 I2C MCU slave ready @ 0x3a IRQ63
 i2c_mcu thread started
 mcu_err thread started
+[biz] worker: ready
 ```
 
-| 项 | 现状 |
+#### 代理协议（Mode B，MCU ↔ KA200）
+
+| 项 | 说明 |
 |----|------|
-| 控制器 | DesignWare I2C0 `@0x10002000`，从机 |
-| 中断 | IRQ **63** → 信号量 → `drv_i2c_bh_entry` |
-| 协议 | `CMD_DATA=0x00`，`DATA=0x02`；`READ_LOG=0x01` |
-| MCU 复位竞态 | 🟡 **已定位**；默认手启；待 `build_app` 修 |
-| **Host↔KA200 READ_LOG e2e** | ❓ 未验收 |
-| **mcu_err → Host 可见** | ❓ 未正式验收 |
+| 邮箱 | I2C reg=`0x00`；帧头 4B + payload |
+| 读 | cmd **`0xD0`**；payload `{ uint32_t reg_addr; uint8_t len; }`（**5B，绝对地址**） |
+| 写 | cmd **`0xD1`**；payload 同上 + 数据 |
+| KA 实现 | `addr = reg_addr` → `mmio_read_bytes` / `mmio_write_bytes`（**对齐优先 32/16-bit**，勿对 CPR 等 byte 读） |
+| MCU CLI | `ka200 reg read <soc> <addr> <len>` / `write <soc> <addr> <byte>...` |
+| mcu-tools | `-r ka200_reg -v soc,addr,len` / `-w ... -v soc,addr,hexbytes`（UART 包 **7B** 头） |
+| 超时 | MCU `MCU_I2C_CMD_TIMEOUT=20` ms（对齐 HP640）；写后 `KA200_I2C_PROXY_DELAY_MS=2` |
+
+**示例（chip30）**：
+
+```text
+ka200 reg read  30 0x12500064 4     # CPR BOOT_SELECT
+ka200 reg write 30 0x04020000 0xA5 0x5A 0x12 0x34
+ka200 reg read  30 0x04020000 4
+```
+
+#### 历史问题与修复（勿回退）
+
+| 问题 | 修复 |
+|------|------|
+| MCU `i2c_scan` → KA msh 卡死 | KA：`drv_i2c.c` ISR 内 mask IRQ，BH 排空后再开；SDA stuck 限次 |
+| 代理读 CPR → KA Data abort | `biz_i2c_proxy.c` 对齐 MMIO 访问（非 byte 读 `0x12500064`） |
+| 早期 8/8 ACK 当假 ACK abort | **已撤销**；scan 扫满 32 槽（640 仅 I2C init 时 8/8 正常） |
+| MCU 代理超时 4s 堵主循环 | 改为 **20ms**（`i2c_sensor.h`） |
+
+#### 验收状态
+
+| 项 | 状态 |
+|----|------|
+| I2C boot 自启 | ✅ |
+| MCU `i2c_scan` + KA 存活 | ✅（58.36） |
+| `ka200 reg` 读/写（chip30） | ✅ |
+| **READ_LOG e2e** | ❓ 未验收 |
+| **mcu_err → Host 可见** | ❓ 未验收 |
+
+联调脚本：`scripts/mcu_cli_i2c_test.py`（先 KA 稳定 → 再 MCU `+++` → scan + reg R/W → `quit` + 30s + host reset）。  
+MCU 协议详述：`lynxi-mcu/.../Doc/I2C_PROTOCOL.md`。
 
 ### 4.6 启动链诊断
 
@@ -272,7 +324,9 @@ mcu_err thread started
 |-------------|------|----------|
 | 仅 early `BOOT`（log&lt;4KB） | early 挂死 | IRAM1 BSS 溢出（§8） |
 | `CPU1 ready` + `entry CPU1` + HB | 业务链 OK | — |
-| `[biz] worker: ready` 后全无 / I2C 死 | MCU 查地址 + 复位竞态 | 开 `BSP_I2C_DEFER`，msh `i2c start`（§4.5） |
+| `[biz] worker: ready` 后 KA msh 无回显 | I2C IRQ 风暴 / MCU scan 洪泛 | 确认 KA `drv_i2c` ISR mask 已合入；MCU 20ms 超时 |
+| `ka200 reg read` → KA Data abort | CPR 等需 word 访问 | 用对齐地址 + len=4；或 IRAM scratch |
+| `reg read fail` / I2C timeout | KA 未起 slave / 固件代际不一致 | 查 `I2C MCU slave ready`；KA+MCU 同刷 20260716 |
 | Flash 冷启多个 `a`、无 `c`、EXC | leave-XIP 缓存 | 确认 flush 非 inv；开 `BSP_SMP_EARLY_MARK` |
 | `emmc_biz … ready` 无 `entry` | CPU1 调度失效 | 缺 kick / idle 未 schedule（§4.3A） |
 | `KA200>30:0.0` | chip30 无 RTT | 未起机或无心跳 |
@@ -310,8 +364,75 @@ msh 步进（仅调试）：`flash open_flash` → `bind` → `peek`/`jedec`。
 [drv] flash leave-XIP ok / JEDEC=0xc22537 …
 [biz] emmc_biz bound to CPU1
 [drv] emmc_biz entry CPU1
-Heart-beat reported successfully
 ```
+
+（首发 HB 成功现为 `BIZ_DEBUG`；默认 INFO 下以 `entry CPU1` + Host ALIVE 为准。）
+
+### 4.8 Host 全路径压测与 CRC32（2026-07-16）— ✅ 根因已修
+
+Host 应用源码：`/work/lynxlink/staging/fifo_test/fpfifo/fpfifo_stress.c`。
+
+#### 命令与任务链
+
+| 参数 | 含义 |
+|------|------|
+| `-d 0 -B 0:<chip>` | link0 + 单芯片（例 chip30=RTT） |
+| `-r N` | 轮数 |
+| `-b 64` | blkcnt=64 → input **32KB** |
+| （无 `-n`） | 任务：**ExecBD → CRC32 → ExecBD** + Host compare |
+| `-n` | 仅 ExecBD（无 CRC） |
+
+```bash
+./fpfifo_stress -d 0 -B 0:30 -r 10000 -b 64
+```
+
+#### 现象与根因（已修，勿回退）
+
+| 项 | 说明 |
+|----|------|
+| Host FPS（修前） | RTT chip 远慢于同板 640 chip（约 **7×**，`-b 64`） |
+| `-n`（无 CRC） | RTT ≈ 640 → 瓶颈不在 ExecBD/query |
+| KA `avg_round`（修前） | RTT ~3800µs vs 640 ~560µs（同口径 window/`phase`） |
+| **根因** | `biz_crc32_calc` 曾为 **逐 bit** 软件实现；32KB 多耗 ~3ms |
+| **修复** | `biz/biz_crc32.c`：与 U-Boot `lib/crc32.c` 同 **固化 256 表 + LE 字批处理**（非 `DYNAMIC_CRC_TABLE`） |
+
+#### `phase` 统计（勿再每 1 万包自动打印）
+
+| 项 | 说明 |
+|----|------|
+| 宏 | `BSP_BIZ_PHASE_STATS`（`rtconfig.h`） |
+| 行为 | **静默累计** query / round / ExecBD / CRC32 / other |
+| msh | `phase` 打印平均；`phase reset` 清零 |
+| 禁止 | 每 N 包 `rt_kprintf` 刷屏（干扰 Host 墙钟与 UART） |
+
+示例：
+
+```text
+msh > phase
+[phase] n=10000 stale_rehit=1
+[phase] avg_query=40us avg_qt_rounds=4 avg_report=… avg_round=…
+[phase] ExecBD  n=20000 avg=…us
+[phase] CRC32   n=10000 avg=…us
+```
+
+#### NC 与 dcache（编译期）
+
+`BSP_IRAM0_LOW_NC` **且** `BSP_IRAM1_LOW_NC` → `board.h` 定义 **`BSP_BIZ_SKIP_HOST_DCACHE`**：
+
+```c
+#ifndef BSP_BIZ_SKIP_HOST_DCACHE
+    rt_hw_cpu_dcache_ops(...);   /* CRC32 / Store / report */
+#endif
+```
+
+双 NC 默认开时，上述调用 **不编进镜像**。关任一 NC 宏后恢复编译 dcache 维护。
+
+#### 交接验收建议
+
+1. 刷含 CRC 表修复的 KA 镜像。  
+2. Host：`./fpfifo_stress -d 0 -B 0:<rtt_chip> -r 10000 -b 64`，看 Avg FPS。  
+3. KA：`phase`，确认 `CRC32 avg` 与 `avg_round` 合理（不再 ~3ms 量级空耗）。  
+4. 回归：`-n` 仍应正常；Host 升级 + 冷启仍 PASS。
 
 ---
 
@@ -319,12 +440,15 @@ Heart-beat reported successfully
 
 ```
 hp232x/biz/
-├── biz_host_proto.h / biz_config.c
+├── biz_host_proto.h / biz_config.c   # heart_beat_interval 默认 0
 ├── biz_subsys.c              # kick_cpu + flash worker + i2c + emmc_biz start
-├── biz_emmc_biz.c / biz_emmc_exec.c
+├── biz_emmc_biz.c / biz_emmc_exec.c  # query/exec；Store/report dcache 受 SKIP 宏
+├── biz_crc32.c / biz_exec_misc.c     # CRC32 固化表；SKIP 宏下无 dcache
 ├── biz_log.c                 # I2C READ_LOG 数据源
-├── biz_finsh_cmds.c          # flash / biz / heart_beat msh
+├── biz_i2c_proxy.c           # 0xD0/0xD1 片内 MMIO 代理（绝对地址）
+├── biz_finsh_cmds.c          # flash / biz / heart_beat / phase
 hp232x/drivers/
+├── board.h                   # IRAM NC 窗口；BSP_BIZ_SKIP_HOST_DCACHE
 ├── drv_flash.c               # flush leave-XIP / bringup / worker
 ├── hp232x_mmu.c              # 0x07000000→PA0；mmu_flush_tables
 ├── board.c                   # idle schedule / kick / secondary_up
@@ -347,7 +471,20 @@ hp640 对照：
 
 - eMMC/升级：`common/spl/spl_cmd.c`
 - Flash leave-XIP：`open_flash`（flush）+ ofdata `98`
+- MCU I2C 从机 init：`spl_cmd.c` `mcu_i2c_init()`（640 KA200）
 - **勿改** jumper：`common/spl/spl.c` `lynxi_640_read`
+
+MCU（HP2320，与 KA I2C 代理配套）：
+
+```
+lynxi-mcu/Lynchip_mcu_HP2320/HP2320_APP/
+├── Core/Src/cmd_ka200_i2c.c    # i2c_scan / ka200 reg CLI
+├── Core/Src/ka200_i2c_cmd.c    # mailbox 组帧
+├── Core/Src/mcu_to_ka200.c     # I2C2 + 自动 probe
+├── Core/Inc/i2c_sensor.h       # MCU_I2C_CMD_TIMEOUT=20
+└── Doc/I2C_PROTOCOL.md
+lynxi-bsp-tools/lynxlink_tools/mcu_tools/   # FPGA UART ka200_reg
+```
 
 ---
 
@@ -359,6 +496,17 @@ export RTT_CC_PREFIX=/work/tools/cross-compiler/gcc-arm-10.2-2020.11-x86_64-aarc
 scons -j$(nproc)
 # rtthread-header.bin          — UART / xmodem
 # HP232x_KA200_Serdes_Update_YYYYMMDD_vX.Y.bin  — Host 升级（scons PostAction）
+# 当前联调：HP232x_KA200_Serdes_Update_20260716_v5.0.bin
+```
+
+MCU 编译与升级（58.36 示例）：
+
+```bash
+cd /work/lynxlink/lynxi-mcu/Lynchip_mcu_HP2320/build_app && ./build.sh
+# HP232x_MCU_serdes_upgrade_20260716_V1.7.5.bin
+lynx-showinfo -r -l 0 && sleep 5
+mcu-tools -l 0 -i 2 -t 1 -u HP232x_MCU_serdes_upgrade_20260716_V1.7.5.bin
+mcu-tools -l 0 -i 2 -t 1 reset_mcu
 ```
 
 组包见 [doc/IMAGE_DESIGN.md](doc/IMAGE_DESIGN.md)。
@@ -372,16 +520,20 @@ scons -j$(nproc)
 ```bash
 python3 scripts/remote_board_test.py biz
 python3 scripts/flash_host_upgrade_test.py
+sudo python3 scripts/mcu_cli_i2c_test.py --skip-upgrade   # I2C 代理 e2e（需双 UART）
 ```
 
 | 测试 | PASS |
 |------|------|
-| eMMC biz | `tuning OK tap=0x34` + `Heart-beat reported` |
+| eMMC biz | `tuning OK tap=0x34` + `emmc_biz entry` + Host ALIVE / 首发 HB |
 | Host 升级 | `OK Load` + `OK FlashWrite` + `@0xa6000` 非 FF |
 | Flash 冷启 | `CPU1 ready` + `JEDEC=0xc22537` + `emmc_biz entry CPU1` + 首发 HB |
-| I2C（下阶段） | Host 能 **READ_LOG**；错误路径可复现 |
+| I2C 自启 | boot 日志 `I2C MCU slave ready @ 0x3a`（无需 `i2c start`） |
+| I2C 代理 | MCU `ka200 reg read 30 0x12500064 4` → `ok:` + 4 字节；KA msh 仍活 |
+| Host 全路径 | `fpfifo_stress -b 64` FPS 合理；`phase` 见 CRC32 avg 非 ms 级 |
+| READ_LOG / mcu_err | Host 侧可读 log / 可见错误（**下阶段**） |
 
-MSH（调试）：`heart_beat` / `flash status` / `list_thread` / `log [level]`；开 DEFER 时 `smp start` / `biz start` / `flash init`。
+MSH（调试）：`phase` / `phase reset` / `heart_beat` / `flash status` / `list_thread` / `log [level]`；开 DEFER 时 `smp start` / `biz start` / `flash init`。
 
 ---
 
@@ -400,21 +552,33 @@ MSH（调试）：`heart_beat` / `flash status` / `list_thread` / `log [level]`�
 | `emmc_biz` 一直 Ready | idle `rt_schedule` + `hp232x_kick_cpu(1)` |
 | 放核后 CPU0 死锁 | 持 `_cpus_lock` 时勿 `kprintf`；busy-wait |
 | components 过早放核 | hp232x 改由 `main` 在 leave-XIP 后放核 |
+| I2C 代理 byte 读 CPR | `biz_i2c_proxy.c` 对齐 32/16-bit MMIO |
+| MCU I2C 超时 4s | 改 20ms；KA 挂时快速失败回主循环 |
+| Host 全路径 RTT ≫ 640（`-b 64`） | **bit CRC32** → `biz_crc32.c` 固化表+字批处理 |
+| phase 每 1 万包打印 / DDR 脏计数 | 改为静默累计 + msh `phase`；640 侧勿用 BSS 累加器 |
+| Host NC 区仍做 dcache | 双 NC 宏 → `BSP_BIZ_SKIP_HOST_DCACHE` 编译剔除 |
 
 ---
 
 ## 9. 待办（交接优先级）
 
-### P0（已完成）— eMMC / Host 升级 / Flash 冷启双核自启 / kick
+### P0（已完成）— 核心业务 + I2C + 全路径 CRC
 
-见 §4.3、§4.4、§4.7。三宏默认关。勿改 jumper。
+| 项 | 状态 |
+|----|------|
+| eMMC / Host 升级 / Flash 冷启双核 | ✅ §4.3–4.4、§4.7 |
+| I2C boot 自启 + ISR 修复 | ✅ §4.5 |
+| MCU↔KA `ka200 reg`（绝对地址，chip30） | ✅ §4.5 |
+| Host fpfifo CRC32 慢路径修复 | ✅ §4.8 |
+| KA+MCU **20260716** 固件对齐 | 交接时需板侧确认已刷 |
 
-### P0（下一阶段）— I2C MCU 从机 e2e + MCU 复位时序
+### P0（下一阶段）
 
-1. **MCU**：`Lynchip_mcu_HP2320/build_app` — 查 KA200 I2C 地址后勿与 KA200 复位抢窗口（§4.5）。  
-2. KA200：默认手启 `i2c start`；MCU 修完后关 `BSP_I2C_DEFER` 做自启回归。  
-3. READ_LOG / GPIO78 `biz_mcu_err_post` e2e。  
-4. 改 I2C 后再跑 Host 升级 + Flash 冷启回归。
+1. **刷含 §4.8 的 KA 镜像**后，Host `-b 64` + KA `phase` **回归确认** FPS / CRC32 avg。  
+2. **READ_LOG** e2e（Host / mcu-tools 读 KA log 环缓冲）。  
+3. **`biz_mcu_err_post`** → GPIO78 → Host 可见。  
+4. 改 I2C / CRC / eMMC 热路径后：**Host 升级 + Flash 冷启 + fpfifo `-b 64`** 回归。  
+5. 多 chip 混部：仅 RTT chip 可走 `0xD0/0xD1` 代理。
 
 ### P1 — 冷启写回镜像 / 量产链
 
@@ -422,7 +586,7 @@ Host 升级写入 Flash 后 **冷复位**，确认不回 `.U`（头 + jumper `+0
 
 ### P2
 
-Store/APU/stress 全量；PCIe/DLL 按需；bootwrapper 每核独立 mbox 槽（现为防御门禁）。
+Store/APU/stress 全量；query 去 memcpy / 减 INT 重开等微优化；PCIe/DLL 按需。
 
 ---
 
@@ -436,3 +600,9 @@ Store/APU/stress 全量；PCIe/DLL 按需；bootwrapper 每核独立 mbox 槽（
 | 2026-07-15 | **生产默认**：关 SMP/BIZ/FLASH DEFER → 从核 + emmc_biz@CPU1 + flash 自启 |
 | 2026-07-15 | **`BSP_I2C_DEFER`**：I2C 与 biz 正交；MCU 查地址后复位卡 I2C → 默认手启 `i2c start` |
 | 2026-07-15 | IRAM0/1 低 256KB NC；biz 手启子命令按宏编入；本文交接更新 |
+| 2026-07-15 | **Fix I2C hang**：`drv_i2c` ISR mask + SDA stuck 限次；MCU scan 假 ACK abort；任务 3 板测 PASS |
+| 2026-07-16 | **I2C 默认 boot 自启**；`0xD0/0xD1` **绝对地址**（省 4B payload） |
+| 2026-07-16 | **`biz_i2c_proxy.c`** 对齐 MMIO；CPR 代理读不再 Data abort |
+| 2026-07-16 | MCU：scan 不再 8/8 abort；`MCU_I2C_CMD_TIMEOUT=20`；删 CLI `soc_rst` |
+| 2026-07-16 | `mcu_cli_i2c_test.py` / mcu-tools 绝对地址；**I2C 代理板测 PASS** |
+| 2026-07-16 | **CRC32** 固化表+字批处理；`phase` 静默统计；**`BSP_BIZ_SKIP_HOST_DCACHE`**；HB 默认仅上电一次 |

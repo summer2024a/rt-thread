@@ -202,7 +202,7 @@ python3 scripts/flash_host_upgrade_test.py
 [drv] flash worker on CPU0
 [flash] erase+program addr=0xa6000 len=... (cpu0 src_NC)
 [flash] program ok
-[biz][upgrade] OK FlashWrite ...
+[biz] OK FlashWrite ...
 ```
 
 A/B（关 `BSP_IRAM1_LOW_NC` 后重编重测）应变为 `host scratch WB` + `src_WB`，判据同左。

@@ -8,11 +8,14 @@ HP232X 板测主机与自动化脚本说明。脚本源码位于本目录 [`scri
 |----|-----|
 | IP | `192.168.58.36` |
 | 账号 | `lynxi` / `lx@123`（sudo 同密码） |
-| 串口 | `/dev/ttyUSB0` @ 115200 |
-| 复位 | `lynx-showinfo -r -l 0` |
+| KA200串口 | `/dev/ttyUSB0` @ 115200 |
+| MCU串口 | `/dev/ttyUSB1` @ 115200 |
+| KA200复位 | `lynx-showinfo -r -l 0` |
+| MCU复位 | `/usr/local/lynx/tools/mcu-tools -l 0 -t 1 -i 2 reset_mcu` |
 | 拓扑查询（升级前） | `lynx-showinfo` — 须见 `[Link0] ALIVE` + `[2] ALIVE` |
 
-### 固件与 xmodem 目录
+### 固件与升级方式
+#### uart启动方式测试
 
 **编译（开发机）**
 
@@ -50,6 +53,22 @@ cd /home/lynxi/xia/xmodem
 ln -sf /mnt/49.20/lynxlink/output/uboot/spl/u-boot-spl-hp640-header.bin u-boot-spl.bin
 ```
 
+#### flash冷启方式测试
+```
+1、固件在/home/lynxi/xia/ka200目录
+HP232x_KA200_Serdes_Update_20260715_v5.0.bin -> /mnt/49.20/lynxlink/lynxi-rtt/bsp/lynxi/hp232x/HP232x_KA200_Serdes_Update_20260715_v5.0.bin
+
+2、升级命令为
+/usr/local/lynx/tools/ka200_tools -u /home/lynxi/xia/ka200/HP232x_KA200_Serdes_Update_20260715_v5.0.bin -l 0 -i 2 -k 30
+
+3、复位后固件自动从flash中读取并运行，全程只需要监控串口与交互即可
+```
+
+#### MCU固件升级方式
+```
+/usr/local/lynx/tools/mcu-tools -l 0 -i 2 -t 1 -u HP232x_MCU_serdes_upgrade_20260711_V1.7.5.bin
+升级完MCU复位即可生效
+
 ---
 
 ## 串口信号
@@ -72,7 +91,7 @@ ln -sf /mnt/49.20/lynxlink/output/uboot/spl/u-boot-spl-hp640-header.bin u-boot-s
 | [`flash_run_smp.py`](scripts/flash_run_smp.py) | SMP / Core1 | `[PMON][CPU1] PASS`，tick +50/500ms |
 | [`flash_run_biz0.py`](scripts/flash_run_biz0.py) | eMMC 业务 | board init、tuning、heartbeat |
 | [`flash_host_upgrade_run.py`](scripts/flash_host_upgrade_run.py) | 单 UART：xmodem→拓扑→升级 | heartbeat + topology + ka200_tools |
-| [`flash_host_upgrade_test.py`](scripts/flash_host_upgrade_test.py) | 开发机 SSH 一键 Host 升级 | 同上 + `[biz][upgrade]` |
+| [`flash_host_upgrade_test.py`](scripts/flash_host_upgrade_test.py) | 开发机 SSH 一键 Host 升级 | 同上 + `[biz]` |
 | [`flash_and_log.py`](scripts/flash_and_log.py) | 通用烧录 + 120s log | 手动 grep |
 | [`test_uart.py`](scripts/test_uart.py) | 仅 xmodem 烧录 | 不抓 log |
 | [`remote_board_test.py`](scripts/remote_board_test.py) | 开发机 SSH 上传/板测 | upload / smp / biz |
@@ -295,19 +314,19 @@ python3 scripts/flash_host_upgrade_test.py
 **升级失败时 UART 调试**（`biz_emmc_exec.c` / `biz_emmc_biz.c`）：
 
 ```
-[biz][upgrade] host task pkg: Load tag=N blks=... -> 0x...
-[biz][upgrade] exec idx=0 cmd=Load ...
-[biz][upgrade] OK Load emmc=0x600000 dst=0x100000000 blks=435 tag=0
-[biz][upgrade] exec idx=1 cmd=FlashWrite flash=0xa6000 size=...
-[biz][upgrade] OK FlashWrite flash=0xa6000 size=222864 tag=1
+[biz] host task pkg: Load tag=N blks=... -> 0x...
+[biz] exec idx=0 cmd=Load ...
+[biz] OK Load emmc=0x600000 dst=0x100000000 blks=435 tag=0
+[biz] exec idx=1 cmd=FlashWrite flash=0xa6000 size=...
+[biz] OK FlashWrite flash=0xa6000 size=222864 tag=1
 ```
 
 失败示例：
 
 ```
-[biz][upgrade] FAIL step=flash_write tag=1 flash=0xa6000 ret=...
-[biz][upgrade] FAIL step=verify tag=1 off=1234
-[biz][upgrade] FAIL step=crc tag=0 calc=... expect=...
+[biz] FAIL step=flash_write tag=1 flash=0xa6000 ret=...
+[biz] FAIL step=verify tag=1 off=1234
+[biz] FAIL step=crc tag=0 calc=... expect=...
 ```
 
 **手动步骤（测试机）**：
@@ -334,8 +353,8 @@ lynx-showinfo                 # 确认 Link0 / Board2 ALIVE
 [upgrade] heartbeat OK
 [upgrade] topology OK (Link0 Board2)
 [INFO] Send Update Command/Firmware Successfully
-[biz][upgrade] OK Load ...
-[biz][upgrade] OK FlashWrite flash=0xa6000 ...
+[biz] OK Load ...
+[biz] OK FlashWrite flash=0xa6000 ...
 ```
 
 ### 任务 2：UART 确认 RT-Thread 运行
@@ -352,6 +371,54 @@ msh >
 ```
 
 **SPI Flash 自测（可选，与 host 升级无关）**：开发阶段可用 msh `flash read 0x900000` 验证驱动，**不是** host 升级流程的一部分。
+
+### 任务 3：I2C 联调 / MCU `i2c_scan` 卡死（Flash 冷启）— 已修复（2026-07-15）
+
+**前置**：Flash 冷启，`BSP_I2C_DEFER` **关**（boot 自启 I2C），RTT 已出 `I2C MCU slave ready` + HB。
+
+**复现（修复前）**：
+
+```text
+KA200 msh > i2c start          # slave ready @ 0x3a
+MCU UART2：+++ → i2c_scan      # found 31/32 假 ACK
+→ KA200 msh 无回显（CPU0 死）
+```
+
+**根因**：
+
+1. MCU `HAL_I2C_IsDeviceReady` 狂扫 → 总线假 ACK（`found 31/32`）。  
+2. KA200 DW I2C **IRQ 未在 ISR 里关 mask**：底半部清 raw 前 GIC 反复进 ISR，饿死 CPU0（msh）。  
+3. SDA stuck 路径曾 **无限 busy-wait**，可硬锁 CPU0。
+
+**修复**：
+
+| 侧 | 改动 | 状态 |
+|----|------|------|
+| KA `drv_i2c.c` | ISR 内 `ic_intr_mask=0`，BH 排空后再开；TX_ABRT/SDA stuck 限次 + CLR | ✅ Flash 已升；扛住 scan |
+| MCU `cmd_ka200_i2c.c` / `mcu_to_ka200.c` | 假 ACK 洪泛 abort + `lynxi_mcu_i2c_reinit`；probe 间隔 1ms | ✅ 已刷入（先 `lynx-showinfo -r` 再 `-u`） |
+
+**MCU 升级注意**：若 `mcu-tools -u` 报 `extern lock` / 卡住，**先复位 KA200** 再升：
+
+```bash
+lynx-showinfo -r -l 0
+sleep 5
+/usr/local/lynx/tools/mcu-tools -l 0 -i 2 -t 1 -u HP232x_MCU_serdes_upgrade_YYYYMMDD_V1.7.5.bin
+/usr/local/lynx/tools/mcu-tools -l 0 -t 1 -i 2 reset_mcu   # 生效
+```
+
+**两端联调验收（2026-07-15 @ 58.36；2026-07-16 起 I2C boot 自启）**：
+
+```text
+KA  boot          → I2C MCU slave ready @ 0x3a（无需 i2c start）
+MCU i2c_scan      → bus fault: ch ACK=8 … found 8/32 (aborted)
+KA  msh           → 仍活（不再卡死）
+```
+
+两端均要配合：KA 防 IRQ 风暴；MCU 发现假 ACK 提前停扫、reinit 总线。
+
+升级包：`HP232x_KA200_Serdes_Update_20260715_v5.0.bin`；MCU：`Lynchip_mcu_HP2320/build_app/HP232x_MCU_serdes_upgrade_20260715_V1.7.5.bin`。
+
+---
 
 ### 板测结果（2026-07-14 @ 58.36，`-l 0 -i 2 -k 30`）
 
@@ -386,11 +453,14 @@ python3 scripts/flash_host_upgrade_test.py
 | log 停在 `BOOT`，无 `[board]` | IRAM1 BSS 溢出 | `grep __bss_end rtthread.map`；见 BIZ_PORTING §8 |
 | log 只有 `.U` | 烧录后再次 reset | 烧录后**不要** reset，用 `flash_run_*.py` |
 | heartbeat OK 但升级 abort | 拓扑未 ALIVE | 手动 `lynx-showinfo`，确认 `[Link0]` + `[2]` |
-| `[biz][upgrade] FAIL ret=10` | Load blk 超限 | `EMMC_MAX_BLK_PER_XFER` 应为 2048 |
+| `[biz] FAIL ret=10` | Load blk 超限 | `EMMC_MAX_BLK_PER_XFER` 应为 2048 |
 | `No module named xmodem` | 不在 scripts 目录运行 | `cd scripts/hp232x && sudo python3 ...` |
 | `rtthread-header.bin` 0 字节 | scp 覆盖失败 | 开发机重新 `scons`，再 upload |
 | ka200_tools xlink failed | 参数与本板不符 | **`-l 0 -i 2 -k 30`** |
 | NFS 覆盖固件为 0 字节 | 共享挂载 scp 冲突 | 上传到 `/home/lynxi/xia/xmodem/rtthread-header.bin` |
+| `i2c start` 后 MCU `i2c_scan` → KA msh 死 | 旧：DW ISR 未 mask | **双端已修**；见任务 3 |
+| MCU `+++` 无反应 | 未等 `UART2 CLI ready` / 口不对 | 先 `reset_mcu`，再 guard 后发 `+++` |
+| `mcu-tools` lock / 卡住 | Host 锁或链路忙 | **先 `lynx-showinfo -r -l 0`**，再 `-u` |
 
 ---
 

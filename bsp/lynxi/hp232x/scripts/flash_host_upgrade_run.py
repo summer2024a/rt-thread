@@ -2,7 +2,7 @@
 """
 xmodem boot RT-Thread (lynx-showinfo -r -l 0), wait for emmc_biz heartbeat,
 verify lynx-showinfo topology (Link/Board ALIVE), then ka200_tools -u upgrade.
-Keeps one serial session open so [biz][upgrade] UART logs are captured.
+Keeps one serial session open so [biz] UART logs are captured.
 
 Run on test host (58.36):
   sudo python3 flash_host_upgrade_run.py \\
@@ -119,7 +119,7 @@ def main():
                 sys.stdout.buffer.write(data)
                 sys.stdout.flush()
                 chunk = data.decode(errors="replace")
-                if "OK FlashWrite" in chunk or "[biz][upgrade] FAIL" in chunk:
+                if "OK FlashWrite" in chunk or "[biz] FAIL" in chunk:
                     done = True
                     break
             if not tools_done and proc.poll() is not None:
@@ -156,8 +156,8 @@ def main():
     ok = (rc_tools == 0
           and "topology OK" in text
           and "Send Update Command/Firmware Successfully" in text
-          and "[biz][upgrade] FAIL" not in text
-          and "[biz][upgrade] OK FlashWrite" in text
+          and "[biz] FAIL" not in text
+          and "[biz] OK FlashWrite" in text
           and "SError" not in text)
     return 0 if ok else 1
 

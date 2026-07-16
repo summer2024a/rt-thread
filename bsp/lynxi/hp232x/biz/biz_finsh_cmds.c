@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "biz_exec_handlers.h"
+#include "biz_emmc.h"
 #include "drv_emmc.h"
 #include "drv_flash.h"
 #include "biz_log.h"
@@ -655,6 +656,23 @@ static int cmd_log(int argc, char **argv)
     return 0;
 }
 MSH_CMD_EXPORT_ALIAS(cmd_log, log, set or show log level (error/warn/info/debug/N));
+
+#ifdef BSP_BIZ_PHASE_STATS
+#include "biz_emmc.h"
+
+static int cmd_phase(int argc, char **argv)
+{
+    if (argc >= 2 && !strcmp(argv[1], "reset"))
+    {
+        biz_phase_reset();
+        rt_kprintf("[phase] reset\n");
+        return 0;
+    }
+    biz_phase_dump();
+    return 0;
+}
+MSH_CMD_EXPORT_ALIAS(cmd_phase, phase, phase [reset] — show/reset KA timing stats);
+#endif
 
 static int cmd_ver(int argc, char **argv)
 {

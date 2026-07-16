@@ -198,11 +198,11 @@ int biz_emmc_report_heartbeat(void)
         return ret;
     }
 
-    BIZ_INFO("Heart-beat reported successfully (index=%d)\n", heart_beat.index);
+    BIZ_DEBUG("Heart-beat reported successfully (index=%d)\n", heart_beat.index);
     return 0;
 }
 
-/* hp640 process_heartbeat() */
+/* Periodic HB only when heart_beat_interval > 0 (Host Config); default 0 = off. */
 int biz_emmc_process_heartbeat(void)
 {
     if (biz_config.heart_beat_interval <= 0)
@@ -231,34 +231,49 @@ int biz_emmc_query_task(HP640_Task *task_list, int max_tasks, uint32_t *out_roun
     if (copy_len > BIZ_BLK_SIZE)
         copy_len = BIZ_BLK_SIZE;
 
-    /* hp640 spl_cmd.c query_task(): poll eMMC @ HP640_QUERY_TASK_ADDR until
-     * cmd!=0 or HP640_CMD_NOT_END, calling process_heartbeat() each round. */
+    /*
+     * Align hp640 query_task(): busy-poll until a valid task package is read.
+     * Empty slot (cmd==0 && !NOT_END) never returns — keep spinning.
+     * eMMC / heartbeat errors: post MCU err and retry immediately (no sleep).
+     * Normal return is always BIZ_SUCCESS with a task in task_list.
+     */
     while (1)
     {
-        rounds++;
-        ret = biz_emmc_process_heartbeat();
-        if (ret != BIZ_SUCCESS)
-            break;
-
-        ret = drv_emmc_read_blocks(HP640_QUERY_TASK_ADDR, drv_emmc_query_buf(), 1, BIZ_BLK_SIZE);
-        if (ret != BIZ_SUCCESS)
+        do
         {
-            biz_mcu_err_post((biz_err_code_t)ret);
-            continue;
-        }
+            ret = BIZ_SUCCESS;
+            rounds++;
 
-        memcpy(task_list, drv_emmc_query_buf(), copy_len);
+            ret = biz_emmc_process_heartbeat();
+            if (ret != BIZ_SUCCESS)
+            {
+                BIZ_ERROR("Failed to process heartbeat in query_task (ret=%d)\n", ret);
+                break;
+            }
 
-        if (task_list[0].cmd != 0 || (task_list[0].flag & HP640_CMD_NOT_END))
+            ret = drv_emmc_read_blocks(HP640_QUERY_TASK_ADDR, drv_emmc_query_buf(),
+                                       1, BIZ_BLK_SIZE);
+            if (ret != BIZ_SUCCESS)
+            {
+                BIZ_ERROR("Failed to read task from eMMC (ret=%d), retrying...\n", ret);
+                biz_mcu_err_post((biz_err_code_t)ret);
+                break;
+            }
+
+            memcpy(task_list, drv_emmc_query_buf(), copy_len);
+        } while (task_list[0].cmd == 0 && !(task_list[0].flag & HP640_CMD_NOT_END));
+
+        if (ret == BIZ_SUCCESS)
             break;
     }
 
     if (out_rounds)
         *out_rounds = rounds;
 
-    if (ret == BIZ_SUCCESS && task_list[0].cmd != 0)
-        BIZ_INFO("[biz][upgrade] task received cmd=0x%x flag=0x%x tag=%u\n",
-                 task_list[0].cmd, task_list[0].flag, task_list[0].tag);
+    /* Hot path (ExecBD loop): DEBUG only — INFO+UART can double round-trip latency. */
+    if (task_list[0].cmd != 0)
+        BIZ_DEBUG("[biz] task received cmd=0x%x flag=0x%x tag=%u\n",
+                  task_list[0].cmd, task_list[0].flag, task_list[0].tag);
 
     return ret;
 }
@@ -290,7 +305,9 @@ int biz_emmc_report_task_result(int *task_ret, unsigned int len)
     emmc_addr = biz_config.task_result_report_base_address;
     emmc_addr |= (0x80U | (len / 4U - 1U)) << 24;
 
+#ifndef BSP_BIZ_SKIP_HOST_DCACHE
     rt_hw_cpu_dcache_ops(RT_HW_CACHE_FLUSH, task_ret, len * sizeof(int));
+#endif
 
     ret = drv_emmc_write_blocks(emmc_addr, (uint8_t *)task_ret, 1, BIZ_BLK_SIZE);
     if (ret != BIZ_SUCCESS)
@@ -342,26 +359,47 @@ void biz_emmc_biz_entry(void *param)
         BIZ_ERROR("Failed to report initial heart-beat (%d), system cannot continue\n", ret);
         return;
     }
+    /* Default heart_beat_interval=0: no further HB in query_task. */
 
     BIZ_INFO("Entering main task processing loop\n");
 
     while (1)
     {
         uint32_t qt_rounds = 0;
+#ifdef BSP_BIZ_PHASE_STATS
+        rt_uint64_t ph_round_t0, ph_query_us, ph_round_us, t0, t1, frq, us;
+#endif
 
         if (first_loop)
             BIZ_INFO("Querying tasks from eMMC\n");
 
+#ifdef BSP_BIZ_PHASE_STATS
+        /* Wall-clock round — same as hp640 auto_run phase2. */
+        ph_round_t0 = biz_phase_now_us();
+#endif
+
+        /* query_task busy-polls until success; ret is always 0 here (hp640 auto_run). */
         ret = biz_emmc_query_task(s_task_list, HP640_TAKS_PKG_LENGTH, &qt_rounds);
-        if (ret != BIZ_SUCCESS)
-        {
-            rt_thread_mdelay(10);
-            continue;
-        }
+
+#ifdef BSP_BIZ_PHASE_STATS
+        ph_query_us = biz_phase_now_us() - ph_round_t0;
+        biz_phase_note_query_us(ph_query_us);
+        biz_phase_note_query_rounds(qt_rounds);
+        if (s_task_list[0].cmd == HP640_CMD_ExecBD)
+            biz_phase_note_task_head(s_task_list[0].cmd, s_task_list[0].tag,
+                                     s_task_list[0].bd_addr);
+        else
+            biz_phase_note_task_head(s_task_list[0].cmd, s_task_list[0].tag,
+                                     s_task_list[0].src_addr);
+        __asm__ volatile("mrs %0, cntpct_el0" : "=r"(t0));
+        __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(frq));
+        if (frq == 0)
+            frq = 31250000ULL;
+#endif
 
         if (s_task_list[0].cmd == HP640_CMD_Load)
         {
-            BIZ_INFO("[biz][upgrade] host task pkg: Load tag=%u blks=%u -> 0x%lx\n",
+            BIZ_INFO("[biz] host task pkg: Load tag=%u blks=%u -> 0x%lx\n",
                      s_task_list[0].tag, s_task_list[0].blk_cnt,
                      (unsigned long)s_task_list[0].dst_addr);
         }
@@ -373,7 +411,7 @@ void biz_emmc_biz_entry(void *param)
         ret = biz_emmc_exec_tasks(s_task_list, HP640_TAKS_PKG_LENGTH, s_task_ret);
         if (ret != BIZ_SUCCESS)
         {
-            BIZ_ERROR("[biz][upgrade] exec_tasks fail ret=%d cmd=%s(0x%02x) tag=%u\n",
+            BIZ_ERROR("[biz] exec_tasks fail ret=%d cmd=%s(0x%02x) tag=%u\n",
                       ret, biz_hp640_cmd_name(s_task_list[0].cmd), s_task_list[0].cmd,
                       s_task_list[0].tag);
             drv_apu_enable(0);
@@ -386,7 +424,22 @@ void biz_emmc_biz_entry(void *param)
             s_apu_init_flag = 0;
         }
 
+#ifdef BSP_BIZ_PHASE_STATS
+        __asm__ volatile("mrs %0, cntpct_el0" : "=r"(t1));
+        us = ((t1 - t0) * 1000000ULL) / frq;
+        t0 = t1;
+        (void)us;
+#endif
+
         biz_emmc_report_task_result(s_task_ret, sizeof(s_task_ret) / sizeof(s_task_ret[0]));
+
+#ifdef BSP_BIZ_PHASE_STATS
+        __asm__ volatile("mrs %0, cntpct_el0" : "=r"(t1));
+        us = ((t1 - t0) * 1000000ULL) / frq;
+        biz_phase_note_report_us(us);
+        ph_round_us = biz_phase_now_us() - ph_round_t0;
+        biz_phase_pkg_done(ph_query_us, qt_rounds, ph_round_us);
+#endif
         first_loop = 0;
     }
 }

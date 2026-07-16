@@ -20,6 +20,18 @@ void biz_emmc_biz_entry(void *param);
 int biz_emmc_get_apu_init_flag(void);
 void biz_emmc_set_apu_init_flag(int flag);
 
+#ifdef BSP_BIZ_PHASE_STATS
+void biz_phase_note_query_us(rt_uint64_t us);
+void biz_phase_note_query_rounds(rt_uint32_t rounds);
+void biz_phase_note_task_head(unsigned char cmd, unsigned int tag, rt_uint64_t bd_or_src);
+void biz_phase_note_report_us(rt_uint64_t us);
+void biz_phase_note_cmd(unsigned char cmd, rt_uint64_t us);
+rt_uint64_t biz_phase_now_us(void);
+void biz_phase_pkg_done(rt_uint64_t query_us, rt_uint32_t qt_rounds, rt_uint64_t round_us);
+void biz_phase_dump(void);
+void biz_phase_reset(void);
+#endif
+
 void biz_emmc_dll_boot_init(void);
 uint8_t biz_emmc_dll_offset_get(void);
 

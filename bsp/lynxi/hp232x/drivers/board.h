@@ -120,6 +120,14 @@ static inline int hp232x_addr_is_normal_nc(const void *addr, size_t size)
     return 0;
 }
 
+/*
+ * Both IRAM0+IRAM1 low-256KB mapped NC: biz hot path omits Host dcache ops
+ * at compile time (see #ifndef BSP_BIZ_SKIP_HOST_DCACHE).
+ */
+#if defined(BSP_IRAM0_LOW_NC) && defined(BSP_IRAM1_LOW_NC)
+#define BSP_BIZ_SKIP_HOST_DCACHE
+#endif
+
 /* IRAM1 detailed layout within usable 256KB (0x100040000-0x10007FFFF) */
 /* DMA NC arena: 0x100040000-0x100050000 (64KB) — .dma_nocache in link.lds */
 #define IRAM1_BSS_START        0x100050000ULL  /* .bss section start (52KB) */

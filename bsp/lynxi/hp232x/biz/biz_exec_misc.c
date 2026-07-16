@@ -10,6 +10,7 @@
 #include "biz_exec_handlers.h"
 #include "biz_log.h"
 #include "tick.h"
+#include "board.h"
 
 static rt_uint64_t s_timer_us_base[HP640_TAKS_PKG_LENGTH];
 
@@ -21,17 +22,25 @@ int biz_exec_crc32(const HP640_Task *task)
     if (!task)
         return BIZ_ERR_CLI_PARAM;
 
+    BIZ_DEBUG("Task>>>CRC32 size=%d src_addr=0x%lx ret_addr=0x%lx\n",
+              task->size, (unsigned long)task->src_addr,
+              (unsigned long)task->ret_addr);
+
     src = (uint32_t *)(uintptr_t)task->src_addr;
     ret = (uint32_t *)(uintptr_t)task->ret_addr;
 
+#ifndef BSP_BIZ_SKIP_HOST_DCACHE
     rt_hw_cpu_dcache_ops(RT_HW_CACHE_INVALIDATE, src, task->size);
+#endif
 
     if (task->chip_id == 0xffU)
         *ret = biz_crc32_calc(0, src, task->size);
     else
         *ret = biz_crc32_calc(*ret, src, task->size);
 
+#ifndef BSP_BIZ_SKIP_HOST_DCACHE
     rt_hw_cpu_dcache_ops(RT_HW_CACHE_FLUSH, ret, sizeof(uint32_t));
+#endif
     return BIZ_SUCCESS;
 }
 

@@ -126,7 +126,7 @@ int hp232x_smp_wait_secondaries(void)
             SMP_EARLY_PUTC('Y');
             /* Secondary past scheduler_start — lock released, kprintf OK */
             rt_hw_cpu_dcache_ops(RT_HW_CACHE_INVALIDATE, c, sizeof(*c));
-            HP_LOGI("\n[SMP] CPU%lu ready (idle=%p)\n",
+            HP_LOGI("[SMP] CPU%lu ready (idle=%p)\n",
                        cpu, c->current_thread);
         }
         else

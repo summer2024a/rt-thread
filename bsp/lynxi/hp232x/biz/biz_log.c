@@ -4,6 +4,7 @@
 
 #include "biz_log.h"
 #include <stdlib.h>
+#include <string.h>
 #include <stdarg.h>
 
 biz_log_buffer_t g_log_buffer __attribute__((section(".bss.noclean.log_ring"), aligned(8)));
@@ -139,29 +140,73 @@ void biz_log_console_hook(const char *str)
     rt_exit_critical();
 }
 
+#ifdef BSP_BIZ_LOG_TIMESTAMP
+/* Boot-relative time via CNTPCT (us); for debug correlation only. */
+static rt_uint64_t biz_log_now_us(void)
+{
+    rt_uint64_t cnt;
+    rt_uint64_t freq;
+
+    __asm__ volatile("mrs %0, cntpct_el0" : "=r"(cnt));
+    __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(freq));
+    if (freq == 0)
+        return 0;
+    return (cnt * 1000000ULL) / freq;
+}
+#endif
+
 void biz_log_output(int level, const char *func, int line, const char *tag,
                     const char *fmt, ...)
 {
     char log_buf[BIZ_LOG_ENTRY_MAX_LEN];
-    int offset;
+    int offset = 0;
     va_list args;
 
     /*
      * Compact console format:
      *   [I] message
      *   [D] func:line message   (location only at DEBUG)
-     * Optional: #define BSP_BIZ_LOG_LOCATION to always keep func:line.
+     * Optional: BSP_BIZ_LOG_LOCATION  — always keep func:line
+     * Optional: BSP_BIZ_LOG_TIMESTAMP — prefix [sec.us] boot-relative time
      */
+#ifdef BSP_BIZ_LOG_TIMESTAMP
+    {
+        rt_uint64_t us = biz_log_now_us();
+        offset = rt_snprintf(log_buf, sizeof(log_buf), "[%u.%06u] ",
+                             (unsigned)(us / 1000000ULL),
+                             (unsigned)(us % 1000000ULL));
+        if (offset < 0 || (unsigned int)offset >= sizeof(log_buf))
+            return;
+    }
+#endif
+
 #if defined(BSP_BIZ_LOG_LOCATION)
-    offset = rt_snprintf(log_buf, sizeof(log_buf), "[%s] %s:%d ",
-                      tag ? tag : "?", func ? func : "?", line);
+    {
+        int n = rt_snprintf(log_buf + offset, sizeof(log_buf) - (size_t)offset,
+                            "[%s] %s:%d ",
+                            tag ? tag : "?", func ? func : "?", line);
+        if (n < 0 || (unsigned int)(offset + n) >= sizeof(log_buf))
+            return;
+        offset += n;
+    }
 #else
     if (level >= BIZ_LOG_LEVEL_DEBUG)
-        offset = rt_snprintf(log_buf, sizeof(log_buf), "[%s] %s:%d ",
-                          tag ? tag : "?", func ? func : "?", line);
+    {
+        int n = rt_snprintf(log_buf + offset, sizeof(log_buf) - (size_t)offset,
+                            "[%s] %s:%d ",
+                            tag ? tag : "?", func ? func : "?", line);
+        if (n < 0 || (unsigned int)(offset + n) >= sizeof(log_buf))
+            return;
+        offset += n;
+    }
     else
-        offset = rt_snprintf(log_buf, sizeof(log_buf), "[%s] ",
-                          tag ? tag : "?");
+    {
+        int n = rt_snprintf(log_buf + offset, sizeof(log_buf) - (size_t)offset,
+                            "[%s] ", tag ? tag : "?");
+        if (n < 0 || (unsigned int)(offset + n) >= sizeof(log_buf))
+            return;
+        offset += n;
+    }
 #endif
     if (offset < 0 || (unsigned int)offset >= sizeof(log_buf))
         return;

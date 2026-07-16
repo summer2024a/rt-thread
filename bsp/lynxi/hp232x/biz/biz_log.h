@@ -6,6 +6,10 @@
  * when this header is included instead of <rtdbg.h>.
  *
  * msh: log | log info | log debug | log 4
+ *
+ * Compile options (rtconfig.h):
+ *   BSP_BIZ_LOG_LOCATION  — always print func:line
+ *   BSP_BIZ_LOG_TIMESTAMP — prefix [sec.us] (CNTPCT, debug only)
  */
 
 #ifndef _BIZ_LOG_H_

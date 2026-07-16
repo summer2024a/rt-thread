@@ -333,13 +333,13 @@ void rt_hw_board_init(void)
     /* EL1 Non-Secure cannot modify GIC Secure registers - these attempts will fail */
 
     /* Verify GIC configuration (read-only at EL1 NS) */
-    HP_LOGI("\n[DEBUG] ===== Verifying GIC configuration =====\n");
+    HP_LOGI("===== Verifying GIC configuration =====\n");
 
     volatile uint32_t *gicd_ctrl = (volatile uint32_t *)(GIC_PL500_DISTRIBUTOR_PPTR + 0x000);
     uint32_t gicd_ctlr = *gicd_ctrl;
     HP_LOGI("  GICD_CTLR: 0x%x (ARE_NS view at EL1 NS)\n", gicd_ctlr);
 
-    HP_LOGI("========================================\n\n");
+    HP_LOGI("========================================\n");
 
     /* Check ICC_IGRPEN1_EL1 (Interrupt Group Enable) */
     uint64_t igprpen1;
@@ -358,7 +358,7 @@ void rt_hw_board_init(void)
         rt_uint64_t ratio_x1000;
 
         hp232x_core_timer_platform_init();
-        HP_LOGI("\n[arch-timer] CNTFRQ=%llu Hz\n",
+        HP_LOGI("[arch-timer] CNTFRQ=%llu Hz\n",
                    (unsigned long long)hp232x_read_cntfrq());
 #ifdef BSP_USING_SYSCTL_CLK
         HP_LOGI("[arch-timer] BOOT_SELECT before=0x%08x after=0x%08x\n",

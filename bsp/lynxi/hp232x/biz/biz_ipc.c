@@ -66,7 +66,12 @@ void biz_mcu_err_post(biz_err_code_t err_code)
     data = err_code_to_mcu_data(err_code);
 
     if (err_code == BIZ_ERR_EMMC_DLL_SCAN_FAILED)
-        drv_flash_write(&data, 4, DRV_FLASH_EMMC_ERROR_ADDR);
+    {
+        /* Word store — never write uint16_t with len=4 (garbage high bytes). */
+        uint32_t word = data;
+
+        drv_flash_write(&word, 4, DRV_FLASH_EMMC_ERROR_ADDR);
+    }
 
     s_notify.err_code = err_code;
     s_notify.code = data;

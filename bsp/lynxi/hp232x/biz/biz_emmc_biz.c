@@ -198,7 +198,13 @@ int biz_emmc_report_heartbeat(void)
         return ret;
     }
 
+#ifdef BSP_EMMC_HS400_100M
+    /* 100M bring-up: make first/manual HB visible (was DEBUG-only). */
+    BIZ_INFO("Heart-beat reported ok (index=%d addr=0x%x)\n",
+             heart_beat.index, emmc_addr);
+#else
     BIZ_DEBUG("Heart-beat reported successfully (index=%d)\n", heart_beat.index);
+#endif
     return 0;
 }
 
@@ -326,19 +332,54 @@ int biz_emmc_report_task_result(int *task_ret, unsigned int len)
     return ret;
 }
 
-static void check_emmc_error_from_flash(void)
+static uint32_t s_flash_emmc_err_latched;
+
+/*
+ * hp640 auto_run: check flash error flag AFTER eMMC init, before heartbeat.
+ * Stale @0xe7000 (often DLL_SCAN write with garbage high bytes, e.g. 0x6e600020)
+ * must not run MCU GPIO78 pulse before HS400 bring-up — that races init on CPU1.
+ *
+ * Clear the flag before init (flash erase uses dcache inv; safe only pre-ADMA).
+ * Defer biz_mcu_err_post until after HS400 OK (see biz_emmc_biz_entry).
+ */
+static void latch_and_clear_emmc_error_flag(void)
 {
     uint32_t err_flag = 0;
+    uint32_t clear = 0xFFFFFFFFU;
+
+    s_flash_emmc_err_latched = 0;
 
     if (!drv_flash_is_known())
         return;
 
-    if (drv_flash_read(&err_flag, 4, DRV_FLASH_EMMC_ERROR_ADDR) == 0 &&
-        err_flag != 0 && err_flag != 0xFFFFFFFFU)
-    {
-        BIZ_ERROR("eMMC error flag in flash: 0x%08x\n", err_flag);
-        biz_mcu_err_post(BIZ_ERR_EMMC_DATA_CRC);
-    }
+    if (drv_flash_read(&err_flag, 4, DRV_FLASH_EMMC_ERROR_ADDR) != 0)
+        return;
+    if (err_flag == 0 || err_flag == 0xFFFFFFFFU)
+        return;
+
+    BIZ_ERROR("eMMC error flag in flash: 0x%08x (clear, report after HS400)\n",
+              err_flag);
+    s_flash_emmc_err_latched = err_flag;
+
+    if (drv_flash_write(&clear, 4, DRV_FLASH_EMMC_ERROR_ADDR) != 0)
+        BIZ_WARN("failed to clear eMMC error flag @0x%x\n",
+                 (unsigned)DRV_FLASH_EMMC_ERROR_ADDR);
+}
+
+static void report_latched_emmc_error_flag(void)
+{
+    if (!s_flash_emmc_err_latched)
+        return;
+
+    /*
+     * Do NOT biz_mcu_err_post() here: GPIO78 + i2c_mcu prepare has caused
+     * Instruction/Data abort (epc/SP=0) on some boards (BIZ_PORTING §4.9).
+     * hp640 posts in single-thread SPL; RTT mcu_err BH races emmc_biz@CPU1.
+     * Sticky flag is already cleared — enough for chip to come online.
+     */
+    BIZ_WARN("cleared flash eMMC err 0x%08x; skip MCU GPIO report (i2c_mcu abort risk)\n",
+             s_flash_emmc_err_latched);
+    s_flash_emmc_err_latched = 0;
 }
 
 /* hp640 auto_run() */
@@ -350,18 +391,23 @@ void biz_emmc_biz_entry(void *param)
 
     (void)param;
 
-    check_emmc_error_from_flash();
+    /* Clear sticky @0xe7000 before HS400 (do not GPIO-pulse yet). */
+    latch_and_clear_emmc_error_flag();
 
-#ifdef BIZ_MOD_EMMC_DLL
-    biz_emmc_dll_boot_init();
-#endif
-
+    /* HS400 first (hp640 try_init_emmc), then DLL scan/apply, then heartbeat. */
     ret = drv_emmc_try_init(true);
     if (ret != BIZ_SUCCESS)
     {
         BIZ_ERROR("init emmc fail (%d)\n", ret);
         return;
     }
+
+#ifdef BIZ_MOD_EMMC_DLL
+    biz_emmc_dll_boot_init();
+#endif
+
+    /* hp640: check/report flash eMMC error flag after init, before HB. */
+    report_latched_emmc_error_flag();
 
     ret = biz_emmc_report_heartbeat();
     if (ret != BIZ_SUCCESS)

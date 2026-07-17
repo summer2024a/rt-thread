@@ -75,8 +75,9 @@ static void flash_error_check(void)
     if (drv_flash_read(&err_flag, 4, DRV_FLASH_EMMC_ERROR_ADDR) == 0 &&
         err_flag != 0 && err_flag != 0xFFFFFFFFU)
     {
-        BIZ_ERROR("eMMC error flag in flash: 0x%08x\n", err_flag);
-        biz_mcu_err_post(BIZ_ERR_EMMC_DATA_CRC);
+        /* Do not GPIO-pulse here — emmc_biz clears+reports after HS400. */
+        BIZ_ERROR("eMMC error flag in flash: 0x%08x (defer to emmc_biz)\n",
+                  err_flag);
     }
 }
 

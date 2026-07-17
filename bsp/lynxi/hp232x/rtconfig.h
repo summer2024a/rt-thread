@@ -20,7 +20,12 @@
 #define BSP_BIZ_LOG_BOOT_INFO
 /* #define BSP_BIZ_LOG_LOCATION */   /* 开：每条日志都带 func:line；默认仅 DEBUG 带 */
 /* #define BSP_BIZ_LOG_TIMESTAMP */  /* 开：每条日志带 [sec.us] 启动相对时间戳（调试用） */
-#define BSP_BIZ_PHASE_STATS        /* 开：静默累计 query/cmd 耗时；msh: phase / phase reset */
+/* #define BSP_BIZ_PHASE_STATS */   /* 关=生产默认。开则 msh phase 可用，但 fpfifo ~-4% FPS */
+/*
+ * FPS A/B vs hp640: mask local tick+IPI on emmc_biz CPU. Measured ~+0.8% only —
+ * NOT the main gap (PHASE_STATS was). Keep off.
+ */
+/* #define BSP_BIZ_HOTPATH_NO_TICK_IPI */
 /* A/B: hp640-style cached SPL BSS + flush_cache (disable NC dma_nocache arena) */
 /* #define BSP_EMMC_DMA_CACHED_BSS */
 /* Optional: force HS400 SDCLK_DC=0x3c (hp640 CONFIG_HP640_CUSTOM_EMMC_DC); default uses efuse KA200M=0x21 / KA200=0x23 */

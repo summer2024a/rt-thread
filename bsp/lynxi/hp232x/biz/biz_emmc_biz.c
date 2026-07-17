@@ -363,6 +363,11 @@ void biz_emmc_biz_entry(void *param)
 
     BIZ_INFO("Entering main task processing loop\n");
 
+#ifdef BSP_BIZ_HOTPATH_NO_TICK_IPI
+    /* After HB/init: quiet local tick + SGIs so fpfifo hot path matches SPL. */
+    hp232x_biz_hotpath_irq_quiet();
+#endif
+
     while (1)
     {
         uint32_t qt_rounds = 0;

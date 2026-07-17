@@ -141,7 +141,7 @@ I2C：**中断 + 信号量**；eMMC：**轮询**。跨核 / 冷启 SMP：[doc/SM
 ```c
 #define BSP_BIZ_EMMC_ON_CPU1             /* emmc_biz 独占 CPU1 */
 #define BSP_BIZ_LOG_BOOT_INFO
-#define BSP_BIZ_PHASE_STATS              /* 静默累计；msh: phase / phase reset */
+/* #define BSP_BIZ_PHASE_STATS */         /* 开：msh phase；默认关（约 -4% FPS） */
 #define BSP_DRV_MOD_EXEC_STRESS
 #define BSP_DRV_MOD_FLASH_UPGRADE
 #define BSP_DRV_MOD_FINSH
@@ -168,7 +168,7 @@ I2C：**中断 + 信号量**；eMMC：**轮询**。跨核 / 冷启 SMP：[doc/SM
 | `BSP_I2C_DEFER` | `INIT_ENV` 起 i2c_mcu/mcu_err（**当前默认关**） | msh `i2c start`（调试用，§4.5） |
 | `BSP_FLASH_DEFER_INIT` | flash bringup + worker 自启 | msh `flash init` / `worker` |
 | `BSP_IRAM0_LOW_NC` + `BSP_IRAM1_LOW_NC` | Host 低窗 WB，biz 编译 dcache 维护 | 映 NC，并定义 **`BSP_BIZ_SKIP_HOST_DCACHE`** |
-| `BSP_BIZ_PHASE_STATS` | 无累计 | 静默累计；**不要**每 N 包自动打印 |
+| `BSP_BIZ_PHASE_STATS` | 无累计（**生产默认**，FPS≈640） | 静默累计；msh `phase`；约 **-4% FPS** |
 
 **手启编译规则**：对应子命令仅在各自 DEFER/SKIP 宏打开时编入。  
 **注意**：`BSP_BIZ_SKIP_THREADS` **不再**连同跳过 I2C；I2C 只由 `BSP_I2C_DEFER` 控制。
@@ -401,8 +401,9 @@ Host 应用源码：`/work/lynxlink/staging/fifo_test/fpfifo/fpfifo_stress.c`。
 | 项 | 说明 |
 |----|------|
 | 宏 | `BSP_BIZ_PHASE_STATS`（`rtconfig.h`） |
+| **生产默认** | **关** — 2026-07-17：开时 fpfifo ~11911 FPS，关后 **~12492**（≈ hp640 12430） |
 | 行为 | **静默累计** query / round / ExecBD / CRC32 / other |
-| msh | `phase` 打印平均；`phase reset` 清零 |
+| msh | `phase` 打印平均；`phase reset` 清零（需先开宏重编） |
 | 禁止 | 每 N 包 `rt_kprintf` 刷屏（干扰 Host 墙钟与 UART） |
 
 示例：

@@ -124,7 +124,8 @@
 | `BSP_BIZ_LOG_BOOT_INFO` | 开 | 默认等级 **info**（否则 warn） |
 | `BSP_BIZ_LOG_LOCATION` | 关 | 每条日志带 `func:line`（DEBUG 默认已带） |
 | `BSP_BIZ_LOG_TIMESTAMP` | 关 | 每条带启动相对 `[sec.us]` |
-| `BSP_BIZ_PHASE_STATS` | 开 | 静默累计；msh `phase` / `phase reset` |
+| `BSP_BIZ_PHASE_STATS` | **关（生产）** | 开则 `msh phase` 可用，但全路径约 **-4% FPS**（已测 12492≈640） |
+| `BSP_BIZ_HOTPATH_NO_TICK_IPI` | **关** | 已测：对 FPS 影响 &lt;1% |
 
 运行时：`msh > log [warn|info|debug|N]`。msh 交互回显仍用 `rt_kprintf`。
 

@@ -619,4 +619,25 @@ void hp232x_kick_cpu(int cpu)
 }
 #endif
 
+#ifdef BSP_BIZ_HOTPATH_NO_TICK_IPI
+void hp232x_biz_hotpath_irq_quiet(void)
+{
+    rt_base_t level;
+
+    level = rt_hw_interrupt_disable();
+    /* Local arch-timer (PPI 30) — stop tick_increase on this CPU. */
+    rt_hw_gtimer_local_disable();
+#ifdef RT_USING_SMP
+    /* SGIs used for cross-CPU schedule / stop / smp_call. */
+    rt_hw_interrupt_mask(RT_SCHEDULE_IPI);
+    rt_hw_interrupt_mask(RT_STOP_IPI);
+    rt_hw_interrupt_mask(RT_SMP_CALL_IPI);
+#endif
+    rt_hw_interrupt_enable(level);
+
+    HP_LOGI("[biz] HOTPATH_NO_TICK_IPI: CPU%u tick+IPI masked (FPS A/B)\n",
+            (unsigned)rt_hw_cpu_id());
+}
+#endif
+
 #endif

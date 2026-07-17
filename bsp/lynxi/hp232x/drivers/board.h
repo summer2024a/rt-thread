@@ -188,4 +188,9 @@ void hp232x_smp_release_cpu(int cpu);
 int hp232x_smp_wait_secondaries(void);
 #endif
 
+#ifdef BSP_BIZ_HOTPATH_NO_TICK_IPI
+/* Call on emmc_biz CPU: disable local tick + mask schedule/stop/smp_call SGIs. */
+void hp232x_biz_hotpath_irq_quiet(void);
+#endif
+
 #endif

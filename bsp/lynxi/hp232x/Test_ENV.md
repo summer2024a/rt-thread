@@ -2,7 +2,7 @@
 
 HP232X 板测主机与自动化脚本说明。脚本源码位于本目录 [`scripts/`](scripts/)。
 
-### 测试主机
+### 测试主机1
 
 | 项 | 值 |
 |----|-----|
@@ -13,6 +13,20 @@ HP232X 板测主机与自动化脚本说明。脚本源码位于本目录 [`scri
 | KA200复位 | `lynx-showinfo -r -l 0` |
 | MCU复位 | `/usr/local/lynx/tools/mcu-tools -l 0 -t 1 -i 2 reset_mcu` |
 | 拓扑查询（升级前） | `lynx-showinfo` — 须见 `[Link0] ALIVE` + `[2] ALIVE` |
+
+### 测试主机2
+
+| 项 | 值 |
+|----|-----|
+| IP | `192.168.49.121` |
+| 账号 | `lynxi` / `lx@123`（sudo 同密码） |
+| KA200串口 | `/dev/ttyUSB0` @ 115200 |
+| MCU串口 | 无 |
+| KA200复位 | `lynx-showinfo -r -l 0` |
+| MCU复位 | `/usr/local/lynx/tools/mcu-tools -l 0 -t 1 -i 0 reset_mcu` |
+| 拓扑查询（升级前） | `lynx-showinfo` — 须见 `[Link0] ALIVE` + `[0] ALIVE` |
+| 测试对象 | Link0 Board0 Chip24 |
+| 说明 | 串口无 MCU tty；KA I2C addr 常为 `0x34`（mux=0）。Flash `@0xe7000` 若残留 eMMC err（如 `0x6e600020`）会导致旧固件在 HS400 前打 GPIO78 卡住；新固件会先清标志再 init。 |
 
 ### 固件与升级方式
 #### uart启动方式测试

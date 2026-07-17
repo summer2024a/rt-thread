@@ -16,7 +16,8 @@ LOG = os.environ.get(
 BIZ_PATTERNS = [
     (r"\[board\] IRAM1 layout|\[board\] STEP1", "RT-Thread board init"),
     (r"tuning OK tap=", "eMMC tuning OK"),
-    (r"Heart-beat reported|heart-beat sent|heartbeat", "heartbeat"),
+    # 200M HB is BIZ_DEBUG; "Entering main task" only after successful first HB
+    (r"Heart-beat reported|heart-beat sent|heartbeat|Entering main task", "heartbeat"),
     (r"Entering main task|emmc_biz entry", "biz main loop"),
     (r"HS400|HS200", "eMMC speed mode"),
 ]

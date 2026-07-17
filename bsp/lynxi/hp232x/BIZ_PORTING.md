@@ -1,12 +1,13 @@
 # HP640 SPL 业务移植进展（hp232x RT-Thread）
 
 > 本文档描述 `hp640_arm/common/spl/` 业务逻辑向 `lynxi-rtt/bsp/lynxi/hp232x` 的移植状态与测试方法，便于交接。  
-> **本阶段移交重点**：eMMC + Host Flash 升级已稳；**Flash 冷启双核自启已通**；**SMP / emmc_biz / flash / I2C 默认 boot 自启**；**MCU↔KA200 I2C 代理已板测调通**；**Host 全路径压测（fpfifo）CRC32 慢路径已修，性能口径与 `phase` 统计已定**。  
-> **下一位接 P0**：READ_LOG / `mcu_err` e2e；CRC32 修复后 Host `-b 64` 回归确认；量产冷启写回镜像（§9 P1）。
+> **上一阶段（已稳）**：eMMC **HS400@200M** + Host Flash 升级；Flash 冷启双核；SMP / emmc_biz / flash / I2C 自启；MCU I2C 代理；fpfifo CRC32 / `phase`。  
+> **本阶段（UART 已验）**：**HS400@100M + DLL** 首发 HB 与 hp640 **同板对齐**（§4.9）；`rtconfig` 联调开 `BSP_EMMC_HS400_100M`，**量产请关回 200M**。  
+> **并行待验**：Flash 冷启@100M；200M 回归护栏；READ_LOG / `mcu_err` e2e。
 >
 > 设计背景见 [doc/SPL_MIGRATION_DESIGN.md](doc/SPL_MIGRATION_DESIGN.md)；SMP 总入口 [doc/SMP_SETUP.md](doc/SMP_SETUP.md)；eMMC tuning 见 [doc/EMMC_TUNING.md](doc/EMMC_TUNING.md)；Flash 见 [doc/FLASH_PORTING.md](doc/FLASH_PORTING.md)；镜像/启动见 [doc/IMAGE_DESIGN.md](doc/IMAGE_DESIGN.md)；**宏控制**见 [doc/BSP_MACROS.md](doc/BSP_MACROS.md)；**代码段体积**见 [doc/CODE_SIZE.md](doc/CODE_SIZE.md)；BSP 见 [HANDOFF_SLIM.md](HANDOFF_SLIM.md)；**测试环境**见 [Test_ENV.md](Test_ENV.md)。
 
-**更新日期**：2026-07-16（Host 全路径 / CRC32 / `phase` 统计 / NC 编译期跳过 dcache）
+**更新日期**：2026-07-17（HS400@100M UART 闭环；同板 A/B vs hp640）
 
 ---
 
@@ -16,7 +17,8 @@
 |----|------|
 | 测试板 | **192.168.58.36**（`lynxi` / `lx@123`），UART `/dev/ttyUSB0` @ 115200 |
 | KA200 拓扑参数 | **`-l 0 -i 2 -k 30`** |
-| eMMC HS400 + heartbeat | ✅ tap **0x34**；`emmc_biz` @ **CPU1**；**默认仅上电报一次**（`heart_beat_interval=0`） |
+| eMMC HS400@**200M** + heartbeat | ✅ tap **0x34**；`emmc_biz` @ **CPU1**；**默认仅上电报一次**（`heart_beat_interval=0`） |
+| eMMC HS400@**100M** + DLL + 首发 HB | ✅ **UART 闭环**（§4.9）：`DLL=0x32` + HB + Host ALIVE；联调开 `BSP_EMMC_HS400_100M`，**量产关回 200M** |
 | Host 升级 Load + FlashWrite `@0xA6000` | ✅；默认 **CPU0 flash worker** + **`BSP_IRAM1_LOW_NC`** / **`BSP_IRAM0_LOW_NC`** |
 | **Flash 冷启 → RTT 双核 + SSI/JEDEC** | ✅ leave-XIP 用 **flush**（非纯 inv）→ CPU1 ready → JEDEC → `emmc_biz entry CPU1` |
 | **SMP / emmc_biz / flash 自启动** | ✅ 默认关 `BSP_*_DEFER` / `BSP_BIZ_SKIP_*`（见 §3.2） |
@@ -28,18 +30,12 @@
 
 **交给下一位的立即动作**：
 
-1. 读 **§0 / §3.2 / §4.3 / §4.5 / §4.8 / §9**。  
-2. 板测用 [Test_ENV.md](Test_ENV.md)；**勿破坏** `emmc_biz` 最高优先与 Host 升级回归。  
-3. 冷启验收：`[SMP] CPU1 ready` → `JEDEC=0xc22537` → `emmc_biz entry CPU1` + 首发 HB。  
-4. **Host 全路径回归**（同 Host 应用，源：`staging/fifo_test/fpfifo/fpfifo_stress.c`）：
-   ```bash
-   ./fpfifo_stress -d 0 -B 0:30 -r 10000 -b 64    # 或板侧 chip id
-   # KA msh（压测后）:
-   phase            # 静默累计的 avg_round / ExecBD / CRC32
-   phase reset
-   ```
+1. 读 **§0 / §3.2 / §4.9 / §9**。  
+2. **关 `BSP_EMMC_HS400_100M` 做 200M 回归**（量产默认仍是 200M）。  
+3. 可选：Flash 冷启@100M（UART 已绿；冷启另验 leave-XIP + DLL）。  
+4. 板测用 [Test_ENV.md](Test_ENV.md)；**勿破坏** `emmc_biz` 最高优先与 Host 升级回归。  
 5. **禁止改 hp640 jumper**（`hp640_arm/.../spl.c` `CONFIG_HP640_JUMPER`）。  
-6. 待验：READ_LOG / `biz_mcu_err_post` → Host 可见（§9）。
+6. 待验：READ_LOG / `biz_mcu_err_post` → Host 可见（§9）；DLL 失败路径曾触发 `i2c_mcu` `epc=0`。
 
 ---
 
@@ -49,8 +45,9 @@
 
 | 业务能力 | hp640 入口 | hp232x 入口 | 板测 |
 |----------|-----------|-------------|------|
-| 上电 eMMC HS400 | `try_init_emmc()` | `drv_emmc_try_init(true)` | ✅ |
-| 主动上报心跳 | `report_heart_beat()` | `biz_emmc_report_heartbeat()` | ✅ **仅上电首发**（`interval=0`）；周期靠 Host Config |
+| 上电 eMMC HS400 | `try_init_emmc()` | `drv_emmc_try_init(true)` | ✅ **200M**；✅ **100M UART** 见 §4.9 |
+| 主动上报心跳 | `report_heart_beat()` | `biz_emmc_report_heartbeat()` | ✅ **200M** 仅上电首发；✅ **100M UART** |
+| eMMC DLL offset | `sdhci_scan_dll_offset()` | `emmc_dll_offset_calibrate_100m()` + `biz_emmc_dll.c` | ✅ **100M UART**（DLL=`0x32`） |
 | 轮询任务 + 执行 | `auto_run()` | `biz_emmc_biz_entry()` | ✅ 升级 + **fpfifo 全路径**（§4.8） |
 | Host 升级 FlashWrite | `write_flash` @ `0xA6000` | `biz_emmc_exec` + `drv_flash` | ✅ |
 | Flash 冷启 leave-XIP + JEDEC | jumper 后 open_flash | `main`：SMP 前 leave-XIP；再 `drv_flash_bringup` | ✅ 自启 |
@@ -125,7 +122,8 @@ I2C：**中断 + 信号量**；eMMC：**轮询**。跨核 / 冷启 SMP：[doc/SM
 |------|---------|-------------|------|
 | 协议/配置 | `lynxi_hp640.h` | `biz_host_proto.h`, `biz_config.c` | Task/HeartBeat |
 | 日志环缓冲 | `spl_log_buffer.c` | `biz/biz_log.c` | `@0x100050000`，供 I2C READ_LOG |
-| eMMC | `spl_cmd.c` + `sdhci.c` | `drv_emmc_core.c` | HS400/ADMA3/tuning |
+| eMMC | `spl_cmd.c` + `sdhci.c` | `drv_emmc_core.c` | HS400/ADMA3/tuning；**100M+DLL 见 §4.9** |
+| eMMC DLL | `sdhci_scan_dll_offset()` | `drv_emmc_core.c`（100M）+ `biz_emmc_dll.c` | 读扫 `@0xFF400400`；HB 写探测 |
 | eMMC 业务 | `auto_run()` | `biz_emmc_biz.c` | CPU1 + `hp232x_kick_cpu` |
 | 任务执行 | `exec_tasks()` | `biz_emmc_exec.c` + `biz_crc32.c` | Load/FlashWrite；**CRC32 固化表**（§4.8） |
 | Flash SSI | open/write_flash | `drv_flash.c` | **flush** leave-XIP；CPU0 worker；§4.7 |
@@ -152,6 +150,15 @@ I2C：**中断 + 信号量**；eMMC：**轮询**。跨核 / 冷启 SMP：[doc/SM
 /* 上两者同时定义时 board.h 自动 #define BSP_BIZ_SKIP_HOST_DCACHE
  * → CRC32 / Store / report_task_result 的 dcache 调用不编译进镜像 */
 
+/*
+ * HS400 时钟（勿与 200M 基线混淆）：
+ * - 量产 / 已验路径：注释掉 BSP_EMMC_HS400_100M → HS400@200M（默认 DLL_OFFST=0x74）
+ * - 联调 100M：打开下方宏 → 100M + SDCLK_DC=0x3c + 自动 BSP_DRV_MOD_EMMC_DLL
+ *   对齐 hp640 HS400_100M_CLOCK（spl_cmd.c，默认常注释）
+ */
+/* #define BSP_EMMC_HS400_100M */         /* 量产关；100M 联调时打开（见 §4.9） */
+/* #define BSP_EMMC_CUSTOM_DC */          /* 单独强制 DC=0x3c；100M 宏已隐含 */
+
 /* —— 分步 / 规避宏 —— */
 /* #define BSP_FLASH_DEFER_INIT */       /* 开：msh flash init|worker */
 /* #define BSP_BIZ_SKIP_THREADS */       /* 开：msh biz start|upgrade（仅 emmc_biz） */
@@ -169,6 +176,7 @@ I2C：**中断 + 信号量**；eMMC：**轮询**。跨核 / 冷启 SMP：[doc/SM
 | `BSP_FLASH_DEFER_INIT` | flash bringup + worker 自启 | msh `flash init` / `worker` |
 | `BSP_IRAM0_LOW_NC` + `BSP_IRAM1_LOW_NC` | Host 低窗 WB，biz 编译 dcache 维护 | 映 NC，并定义 **`BSP_BIZ_SKIP_HOST_DCACHE`** |
 | `BSP_BIZ_PHASE_STATS` | 无累计（**生产默认**，FPS≈640） | 静默累计；msh `phase`；约 **-4% FPS** |
+| `BSP_EMMC_HS400_100M` | HS400@**200M**（已验） | HS400@**100M** + DC=`0x3c` + DLL 校准（§4.9，**UART 已验**） |
 
 **手启编译规则**：对应子命令仅在各自 DEFER/SKIP 宏打开时编入。  
 **注意**：`BSP_BIZ_SKIP_THREADS` **不再**连同跳过 I2C；I2C 只由 `BSP_I2C_DEFER` 控制。
@@ -185,7 +193,7 @@ msh > log warn         # 或 error|info|debug|N（3/4/6/7）
 
 ---
 
-## 4. 当前板测状态（2026-07-16 @ 58.36）
+## 4. 当前板测状态（2026-07-16 @ 58.36；§4.9 为 2026-07-17）
 
 ### 4.1 hp640 SPL（A/B 基准）— ✅
 
@@ -229,7 +237,8 @@ UART 烧录双核正常；Flash jumper 冷启易在 `hp232x_mmu_secondary_init` 
 - `emmc_biz` 启动后 **自动发首发心跳**（与 `heart_beat_interval` 无关）；  
 - `heart_beat_interval=0`（`biz_config_init` **默认**）→ **无周期心跳**；query 空转里 `process_heartbeat` 直接返回；  
 - 周期心跳：Host Config 原语改 interval，或 msh `heart_beat` 手动报一次；  
-- 成功日志为 **`BIZ_DEBUG`**（避免压测 UART 拖慢 round）。
+- **200M**：成功日志多为 **`BIZ_DEBUG`**；**100M**：升为 **`BIZ_INFO`**（`Heart-beat reported ok`）便于联调；  
+- msh `heart_beat` 与运行中的 `emmc_biz` **并发不安全**（§4.9）。
 
 ### 4.4 Host 在线升级 — ✅
 
@@ -435,6 +444,77 @@ msh > phase
 3. KA：`phase`，确认 `CRC32 avg` 与 `avg_round` 合理（不再 ~3ms 量级空耗）。  
 4. 回归：`-n` 仍应正常；Host 升级 + 冷启仍 PASS。
 
+### 4.9 HS400@100M + DLL（2026-07-17）— ✅ UART 闭环 / 同板 A/B
+
+> **背景**：部分板级 / FPGA 路径需 HS400 **100MHz**（hp640 `HS400_100M_CLOCK`）+ 固定 `SDCLK_DC=0x3c` + **`sdhci_scan_dll_offset`**。  
+> **200M 已验路径勿改坏**：所有 100M 逻辑必须包在 `BSP_EMMC_HS400_100M` 下；量产默认 **关** 该宏。  
+> **工作区现状**：`rtconfig.h` **打开** `BSP_EMMC_HS400_100M`（联调）；交付量产或回归 200M 前务必注释掉并重编。
+
+#### 宏与代码入口
+
+| 侧 | 开关 | 时钟 | DC | DLL |
+|----|------|------|-----|-----|
+| hp640 | `HS400_100M_CLOCK`（`spl_cmd.c`，常注释） | 100M | 常配 `CONFIG_HP640_CUSTOM_EMMC_DC`→`0x3c` | `sdhci_scan_dll_offset()`：读 `@0xFF400400`；**auto_run 内 scan 默认注释**，A/B 时临时打开 |
+| RTT | `BSP_EMMC_HS400_100M`（`rtconfig.h`） | `EMMC_HS400_CLK_HZ=100M` | 强制 `SDCLK_DC=0x3c` | `emmc_dll_offset_calibrate_100m()` 在 `emmc_init_driver()` **HS400 OK 之后**；`biz_emmc_dll.c` 为 msh/`Exec` 补充 |
+
+RTT 关键文件：`drivers/drv_emmc_core.c`（校准）、`biz/biz_emmc_dll.c`、`biz/biz_emmc_biz.c`（init→dll→HB）、`doc/BSP_MACROS.md`。
+
+#### 同板 A/B 实测（chip30 UART @ 58.36，2026-07-17）
+
+| 项 | hp640（临时开 `HS400_100M_CLOCK` + `CUSTOM_EMMC_DC` + auto_run DLL） | RTT（`BSP_EMMC_HS400_100M`） |
+|----|------|------|
+| 时钟 / DC | HS400 **100 MHz**，DC=`0x3c` | 同左 |
+| DLL lock 初态 | `DLL has error status 0x3`（继续） | `dll: lock err stat=0x3`（continue） |
+| Tuning | iter≈71，AT 路径过 | latch `tap=0x46` iter=63 |
+| DLL scan | `final good DLL_OFFSET=**0x32**`，mlkdc=`0x7f` | read-eye `offset=**0x32**` mlkdc=`0x7f` range=0..100；HB write-probe OK |
+| 首发 HB | `Heart-beat reported successfully` | `Heart-beat reported ok` + `Entering main task` |
+| Host | ALIVE 位图含 chip30 | 同左（`lynx-showinfo` ALIVE=`FFFFFFFF`） |
+
+> **注意**：hp640 A/B 后已 **关回** `HS400_100M_CLOCK` / `CUSTOM_EMMC_DC` / auto_run DLL（勿把 100M 留在 640 默认树）。RTT 联调宏仍开。
+
+#### 已对齐（相对 hp640）
+
+- HS400@100M + `SDCLK_DC=0x3c`（KA200M 日志可见）。  
+- Tuning latch：`tap=0x46` / `iter=63` 可过（与 200M tap=0x34 不同，属预期）。  
+- DLL 读扫范围 0..127；100M 取成功窗中点，**不做** `mlkdc/4` 回减。  
+- flash 路径 / scan 完成路径的 `DLL_CTRL` 终值：flash 加载→`0x3`，scan 完成→`0x2`（与 hp640 `#ifdef HS400_100M_CLOCK` 分支一致）。  
+- 扫测地址：**只读** `0xFF400400`（勿对该地址 ADMA 写）。  
+- RTT 额外：**HB ARG 写探测**（确认 DATA 路径），再宣称 DLL OK；flash 候选 offset 写探测失败则 rescan。
+
+#### 历史失败（已踩坑，勿回退）
+
+| 现象 | 含义 / 处理 |
+|------|----------|
+| Tuning / HS400 OK，HB：`INT=0x1`（仅 CMD_COMPLETE） | 默认 `DLL_OFFST=0x74` 不适配 100M → 必须 scan |
+| 对扫测地址 ADMA **写** | 总线打挂 → **只读**扫描；写探测用 HB ARG |
+| flash 坏 offset（如 `0x2f`） | write-probe 失败后 rescan（勿盲信 flash） |
+| msh `heart_beat` 与 biz 交错 | CPU0/CPU1 抢 eMMC；**勿用 msh HB 判首发** |
+| DLL 失败 → `i2c_mcu` `epc=0` | `biz_mcu_err_post` 路径待顺手查 |
+
+#### 成功日志（100M UART，勿输 msh `heart_beat`）
+
+```text
+[I] [drv] emmc: chip=KA200M HS400@100M SDCLK_DC=0x3c
+[I] [drv] emmc: tuning OK tap=0x46 iter=63
+[I] [drv] emmc: HS400 OK tap=0x46
+[I] [drv] emmc: DLL scan … offset=0x32 … (HB write-probe OK)
+[I] Heart-beat reported ok (index=… addr=0x8d400000)
+[I] Entering main task processing loop
+```
+
+一键：`python3 scripts/remote_board_test.py biz`（需已开 `BSP_EMMC_HS400_100M`）。
+
+#### 实现注意（已踩坑，勿回退）
+
+| 点 | 说明 |
+|----|------|
+| 校准放在 **driver init** | 不依赖 SCons `GetDepend(BSP_DRV_MOD_EMMC_DLL)` 是否链上 `biz_emmc_dll.c` |
+| 扫测地址只读 | 写探测用 **心跳 ARG**（`0x400000` + size 编码 → `0x8d400000` 类），与 `biz_emmc_report_heartbeat` 一致 |
+| 失败后 `emmc_dll_recover_bus` | reset CMD/DATA + clear INT + wait idle，再扫下一 tap |
+| 勿在 init 中途 `drv_flash_write` DLL | erase+program 含 **dcache-all**，易扰 ADMA；落盘留给 msh `emmc_dll` / biz 模块 |
+| 200M 路径 | quiet / calibrate / HB INFO 均 `#ifdef BSP_EMMC_HS400_100M` |
+| DLL lock `stat=0x3` | 100M 上 hp640/RTT **均有**；警告后继续，属预期 |
+
 ---
 
 ## 5. 关键文件地图
@@ -444,17 +524,20 @@ hp232x/biz/
 ├── biz_host_proto.h / biz_config.c   # heart_beat_interval 默认 0
 ├── biz_subsys.c              # kick_cpu + flash worker + i2c + emmc_biz start
 ├── biz_emmc_biz.c / biz_emmc_exec.c  # query/exec；Store/report dcache 受 SKIP 宏
+├── biz_emmc_dll.c            # DLL msh/Exec；boot 与 driver 校准衔接
 ├── biz_crc32.c / biz_exec_misc.c     # CRC32 固化表；SKIP 宏下无 dcache
 ├── biz_log.c                 # I2C READ_LOG 数据源
 ├── biz_i2c_proxy.c           # 0xD0/0xD1 片内 MMIO 代理（绝对地址）
-├── biz_finsh_cmds.c          # flash / biz / heart_beat / phase
+├── biz_finsh_cmds.c          # flash / biz / heart_beat / emmc_dll / phase
 hp232x/drivers/
 ├── board.h                   # IRAM NC 窗口；BSP_BIZ_SKIP_HOST_DCACHE
 ├── drv_flash.c               # flush leave-XIP / bringup / worker
 ├── hp232x_mmu.c              # 0x07000000→PA0；mmu_flush_tables
 ├── board.c                   # idle schedule / kick / secondary_up
 ├── drv_i2c.c / drv_gpio_mcu.c
-├── drv_emmc_core.c
+├── drv_emmc_core.c           # HS400；100M 时 emmc_dll_offset_calibrate_100m()
+├── drv_emmc.h
+hp232x/rtconfig.h             # BSP_EMMC_HS400_100M（联调开 / 量产关）
 hp232x/utilities/
 ├── zmodem/                   # 串口 flash update（ZMODEM）；默认不编
                               # 需在 rtconfig.h 打开 RT_USING_ZMODEM
@@ -526,15 +609,17 @@ sudo python3 scripts/mcu_cli_i2c_test.py --skip-upgrade   # I2C 代理 e2e（需
 
 | 测试 | PASS |
 |------|------|
-| eMMC biz | `tuning OK tap=0x34` + `emmc_biz entry` + Host ALIVE / 首发 HB |
+| eMMC biz **200M** | `tuning OK tap=0x34` + `emmc_biz entry` + Host ALIVE / 首发 HB |
+| eMMC biz **100M** | §4.9：`DLL … (HB write-probe OK)` + `Heart-beat reported ok` + Host ALIVE（**UART ✅**） |
 | Host 升级 | `OK Load` + `OK FlashWrite` + `@0xa6000` 非 FF |
 | Flash 冷启 | `CPU1 ready` + `JEDEC=0xc22537` + `emmc_biz entry CPU1` + 首发 HB |
 | I2C 自启 | boot 日志 `I2C MCU slave ready @ 0x3a`（无需 `i2c start`） |
 | I2C 代理 | MCU `ka200 reg read 30 0x12500064 4` → `ok:` + 4 字节；KA msh 仍活 |
 | Host 全路径 | `fpfifo_stress -b 64` FPS 合理；`phase` 见 CRC32 avg 非 ms 级 |
-| READ_LOG / mcu_err | Host 侧可读 log / 可见错误（**下阶段**） |
+| READ_LOG / mcu_err | Host 侧可读 log / 可见错误（**下阶段**；DLL 失败路径曾打挂 `i2c_mcu`） |
 
-MSH（调试）：`phase` / `phase reset` / `heart_beat` / `flash status` / `list_thread` / `log [level]`；开 DEFER 时 `smp start` / `biz start` / `flash init`。
+MSH（调试）：`phase` / `phase reset` / `heart_beat` / `emmc_dll` / `flash status` / `list_thread` / `log [level]`；开 DEFER 时 `smp start` / `biz start` / `flash init`。  
+**注意**：`emmc_biz` 已跑时不要用 `heart_beat` 做 100M 判据（并发）。
 
 ---
 
@@ -563,7 +648,7 @@ MSH（调试）：`phase` / `phase reset` / `heart_beat` / `flash status` / `lis
 
 ## 9. 待办（交接优先级）
 
-### P0（已完成）— 核心业务 + I2C + 全路径 CRC
+### P0（已完成）— 核心业务 + I2C + 全路径 CRC（**HS400@200M**）
 
 | 项 | 状态 |
 |----|------|
@@ -573,21 +658,26 @@ MSH（调试）：`phase` / `phase reset` / `heart_beat` / `flash status` / `lis
 | Host fpfifo CRC32 慢路径修复 | ✅ §4.8 |
 | KA+MCU **20260716** 固件对齐 | 交接时需板侧确认已刷 |
 
-### P0（下一阶段）
+### P0（本阶段）— **HS400@100M ↔ hp640 A/B**（§4.9）
 
-1. **刷含 §4.8 的 KA 镜像**后，Host `-b 64` + KA `phase` **回归确认** FPS / CRC32 avg。  
-2. **READ_LOG** e2e（Host / mcu-tools 读 KA log 环缓冲）。  
-3. **`biz_mcu_err_post`** → GPIO78 → Host 可见。  
-4. 改 I2C / CRC / eMMC 热路径后：**Host 升级 + Flash 冷启 + fpfifo `-b 64`** 回归。  
-5. 多 chip 混部：仅 RTT chip 可走 `0xD0/0xD1` 代理。
+| 项 | 状态 |
+|----|------|
+| hp640 同板 UART 基准（临时开 100M+DLL） | ✅ `DLL_OFFSET=0x32` + HB；已关回默认 |
+| RTT UART：`BSP_EMMC_HS400_100M` 首发 HB + Host ALIVE | ✅ §4.9 |
+| 关 100M 宏后 **200M** 回归 | ⬜ 建议交付前再跑一次 |
+| Flash 冷启@100M | ⬜ 未专门验收（UART 已绿） |
+| flash `@0xe8029` 坏 offset / `@0xe7000` error flag 清理 | ⬜ 按需 |
+| `biz_mcu_err_post(DLL_SCAN)` → `i2c_mcu` `epc=0` | ⬜ |
+| READ_LOG / `mcu_err` Host 可见 | ⬜ |
 
 ### P1 — 冷启写回镜像 / 量产链
 
-Host 升级写入 Flash 后 **冷复位**，确认不回 `.U`（头 + jumper `+0x20` 见 IMAGE_DESIGN）。
+Host 升级写入 Flash 后 **冷复位**，确认不回 `.U`（头 + jumper `+0x20` 见 IMAGE_DESIGN）。  
+量产 `rtconfig`：**注释** `BSP_EMMC_HS400_100M`（保持 200M）。
 
 ### P2
 
-Store/APU/stress 全量；query 去 memcpy / 减 INT 重开等微优化；PCIe/DLL 按需。
+Store/APU/stress 全量；query 去 memcpy / 减 INT 重开等微优化；PCIe 按需；100M 量产化（DLL 落盘策略、去 INFO HB 等）。
 
 ---
 
@@ -607,3 +697,5 @@ Store/APU/stress 全量；query 去 memcpy / 减 INT 重开等微优化；PCIe/D
 | 2026-07-16 | MCU：scan 不再 8/8 abort；`MCU_I2C_CMD_TIMEOUT=20`；删 CLI `soc_rst` |
 | 2026-07-16 | `mcu_cli_i2c_test.py` / mcu-tools 绝对地址；**I2C 代理板测 PASS** |
 | 2026-07-16 | **CRC32** 固化表+字批处理；`phase` 静默统计；**`BSP_BIZ_SKIP_HOST_DCACHE`**；HB 默认仅上电一次 |
+| 2026-07-17 | **`BSP_EMMC_HS400_100M`**：100M+DC`0x3c`+driver 内 DLL 校准；HB 写探测 |
+| 2026-07-17 | **UART 闭环**：同板 A/B 与 hp640 同得 `DLL=0x32`；RTT 首发 HB + main loop；§4.9 更新 |

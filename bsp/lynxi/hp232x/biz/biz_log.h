@@ -46,11 +46,15 @@ typedef struct {
 } biz_log_buffer_t;
 
 extern biz_log_buffer_t g_log_buffer;
-extern unsigned char s_log_level;
+/* Active level pointer — bound to biz_config.log_level after biz_config_init
+ * (same as hp640 set_loglevel_pt). Do not write this pointer directly. */
+extern unsigned char *s_log_level_pt;
 
 void biz_log_init(void);
 void biz_log_set_level(unsigned char level);
 unsigned char biz_log_get_level(void);
+/* Bind filter to Host Config field (hp640 set_loglevel_pt). */
+void biz_log_set_level_pt(unsigned char *pt);
 const char *biz_log_level_name(unsigned char level);
 /* Parse "error"/"warn"/"info"/"debug"/"3"..; return -1 if invalid. */
 int biz_log_parse_level(const char *s);
@@ -60,7 +64,7 @@ void biz_log_output(int level, const char *func, int line, const char *tag,
 
 #define BIZ_LOG(lv, tag, fmt, args...) \
     do { \
-        if ((lv) <= s_log_level) \
+        if ((lv) <= *s_log_level_pt) \
             biz_log_output(lv, __func__, __LINE__, tag, fmt, ##args); \
     } while (0)
 

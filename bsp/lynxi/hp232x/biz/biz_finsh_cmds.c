@@ -638,7 +638,8 @@ static int cmd_log(int argc, char **argv)
     if (argc < 2)
     {
         rt_kprintf("log level=%u (%s)  [error=3 warn=4 info=6 debug=7]\n",
-                   (unsigned)s_log_level, biz_log_level_name(s_log_level));
+                   (unsigned)biz_log_get_level(),
+                   biz_log_level_name(biz_log_get_level()));
         rt_kprintf("usage: log <error|warn|info|debug|N>\n");
         return 0;
     }
@@ -652,7 +653,8 @@ static int cmd_log(int argc, char **argv)
     }
     biz_log_set_level((unsigned char)lv);
     rt_kprintf("log level=%u (%s)\n",
-               (unsigned)s_log_level, biz_log_level_name(s_log_level));
+               (unsigned)biz_log_get_level(),
+               biz_log_level_name(biz_log_get_level()));
     return 0;
 }
 MSH_CMD_EXPORT_ALIAS(cmd_log, log, set or show log level (error/warn/info/debug/N));

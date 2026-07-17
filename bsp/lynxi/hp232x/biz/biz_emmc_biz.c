@@ -272,8 +272,18 @@ int biz_emmc_query_task(HP640_Task *task_list, int max_tasks, uint32_t *out_roun
 
     /* Hot path (ExecBD loop): DEBUG only — INFO+UART can double round-trip latency. */
     if (task_list[0].cmd != 0)
+    {
         BIZ_DEBUG("[biz] task received cmd=0x%x flag=0x%x tag=%u\n",
                   task_list[0].cmd, task_list[0].flag, task_list[0].tag);
+        if (task_list[0].cmd == HP640_CMD_Config)
+        {
+            BIZ_DEBUG("[biz] Config raw: flag=0x%x size=%u imm=0x%lx off=%lu tag=%u\n",
+                      task_list[0].flag, task_list[0].size,
+                      (unsigned long)task_list[0].imm_value,
+                      (unsigned long)task_list[0].cfg_offset,
+                      task_list[0].tag);
+        }
+    }
 
     return ret;
 }
@@ -376,7 +386,7 @@ void biz_emmc_biz_entry(void *param)
 #endif
 
         if (first_loop)
-            BIZ_INFO("Querying tasks from eMMC\n");
+            BIZ_DEBUG("Querying tasks from eMMC\n");
 
 #ifdef BSP_BIZ_PHASE_STATS
         /* Wall-clock round — same as hp640 auto_run phase2. */
@@ -404,13 +414,21 @@ void biz_emmc_biz_entry(void *param)
 
         if (s_task_list[0].cmd == HP640_CMD_Load)
         {
-            BIZ_INFO("[biz] host task pkg: Load tag=%u blks=%u -> 0x%lx\n",
+            BIZ_DEBUG("[biz] host task pkg: Load tag=%u blks=%u -> 0x%lx\n",
                      s_task_list[0].tag, s_task_list[0].blk_cnt,
                      (unsigned long)s_task_list[0].dst_addr);
         }
+        else if (s_task_list[0].cmd == HP640_CMD_Config)
+        {
+            BIZ_DEBUG("[biz] host task pkg: Config tag=%u offset=%lu size=%u val=0x%lx\n",
+                     s_task_list[0].tag,
+                     (unsigned long)s_task_list[0].cfg_offset,
+                     s_task_list[0].size,
+                     (unsigned long)s_task_list[0].imm_value);
+        }
 
         if (first_loop)
-            BIZ_INFO("Tasks queried (rounds=%u)\n", qt_rounds);
+            BIZ_DEBUG("Tasks queried (rounds=%u)\n", qt_rounds);
 
         memset(s_task_ret, 0, sizeof(s_task_ret));
         ret = biz_emmc_exec_tasks(s_task_list, HP640_TAKS_PKG_LENGTH, s_task_ret);

@@ -9,11 +9,13 @@
 
 biz_log_buffer_t g_log_buffer __attribute__((section(".bss.noclean.log_ring"), aligned(8)));
 
+/* Fallback storage until biz_config_init() rebinds to biz_config.log_level. */
 #ifdef BSP_BIZ_LOG_BOOT_INFO
-unsigned char s_log_level = BIZ_LOG_LEVEL_INFO;
+static unsigned char s_log_level_storage = BIZ_LOG_LEVEL_INFO;
 #else
-unsigned char s_log_level = BIZ_LOG_LEVEL_WARN;
+static unsigned char s_log_level_storage = BIZ_LOG_LEVEL_WARN;
 #endif
+unsigned char *s_log_level_pt = &s_log_level_storage;
 
 static volatile rt_uint8_t s_log_ready;
 static volatile rt_uint8_t s_in_biz_log_output;
@@ -69,21 +71,28 @@ void biz_log_init(void)
         buf->header.buffer_size = BIZ_LOG_BUFFER_SIZE;
     }
 
-    s_log_level = BIZ_LOG_LEVEL_WARN;
+    s_log_level_storage = BIZ_LOG_LEVEL_WARN;
 #ifdef BSP_BIZ_LOG_BOOT_INFO
-    s_log_level = BIZ_LOG_LEVEL_INFO;
+    s_log_level_storage = BIZ_LOG_LEVEL_INFO;
 #endif
+    s_log_level_pt = &s_log_level_storage;
     s_log_ready = 1;
 }
 
 void biz_log_set_level(unsigned char level)
 {
-    s_log_level = level;
+    *s_log_level_pt = level;
 }
 
 unsigned char biz_log_get_level(void)
 {
-    return s_log_level;
+    return *s_log_level_pt;
+}
+
+void biz_log_set_level_pt(unsigned char *pt)
+{
+    if (pt)
+        s_log_level_pt = pt;
 }
 
 const char *biz_log_level_name(unsigned char level)

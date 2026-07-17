@@ -247,7 +247,7 @@ static int exec_task_load(const HP640_Task *task)
                       (unsigned)task->src_addr, (unsigned long)task->dst_addr,
                       task->blk_cnt, ret);
         else
-            BIZ_INFO("[biz] OK Load emmc=0x%x dst=0x%lx blks=%u tag=%u\n",
+            BIZ_DEBUG("[biz] OK Load emmc=0x%x dst=0x%lx blks=%u tag=%u\n",
                      (unsigned)task->src_addr, (unsigned long)task->dst_addr,
                      task->blk_cnt, task->tag);
         return ret;
@@ -273,7 +273,7 @@ static int exec_task_load(const HP640_Task *task)
         BIZ_ERROR("Load eMMC read tail fail emmc=0x%x dst=0x%lx ret=%d\n",
                   (unsigned)task->src_addr, (unsigned long)task->dst_addr, ret);
     else
-        BIZ_INFO("[biz] OK Load emmc=0x%x dst=0x%lx blks=%u tag=%u\n",
+        BIZ_DEBUG("[biz] OK Load emmc=0x%x dst=0x%lx blks=%u tag=%u\n",
                  (unsigned)task->src_addr, (unsigned long)task->dst_addr,
                  task->blk_cnt, task->tag);
     return ret;
@@ -378,25 +378,51 @@ static int exec_task_wait(const HP640_Task *task)
 
 static int exec_task_config(const HP640_Task *task)
 {
+    /* log_level is at offset 2 in packed HP640_Config (same as hp640). */
     const unsigned int log_level_offset = 2U;
+    unsigned long off = task->cfg_offset;
+    unsigned int size = task->size;
 
-    switch (task->size)
+    BIZ_DEBUG("[biz] Config exec: tag=%u off=%lu size=%u val=0x%lx\n",
+              task->tag, off, size, (unsigned long)task->imm_value);
+
+    if (size != 1 && size != 2 && size != 4 && size != 8)
+    {
+        BIZ_ERROR("[biz] Config bad size=%u (need 1/2/4/8) tag=%u\n",
+                  size, task->tag);
+        return BIZ_ERR_PRIM_PARAM;
+    }
+    if (off >= sizeof(biz_config) || size > sizeof(biz_config) - off)
+    {
+        BIZ_ERROR("[biz] Config bad off=%lu size=%u (cfg sz=%u) tag=%u\n",
+                  off, size, (unsigned)sizeof(biz_config), task->tag);
+        return BIZ_ERR_PRIM_PARAM;
+    }
+
+    switch (size)
     {
     case 1:
-        *((uint8_t *)((uint8_t *)&biz_config + task->cfg_offset)) = (uint8_t)task->imm_value;
+        *((uint8_t *)((uint8_t *)&biz_config + off)) = (uint8_t)task->imm_value;
         break;
     case 2:
-        *((uint16_t *)((uint8_t *)&biz_config + task->cfg_offset)) = (uint16_t)task->imm_value;
+        *((uint16_t *)((uint8_t *)&biz_config + off)) = (uint16_t)task->imm_value;
         break;
     case 4:
-        *((uint32_t *)((uint8_t *)&biz_config + task->cfg_offset)) = (uint32_t)task->imm_value;
+        *((uint32_t *)((uint8_t *)&biz_config + off)) = (uint32_t)task->imm_value;
+        break;
+    case 8:
+        *((uint64_t *)((uint8_t *)&biz_config + off)) = (uint64_t)task->imm_value;
         break;
     default:
         return BIZ_ERR_PRIM_PARAM;
     }
 
-    if (task->cfg_offset == log_level_offset && task->size == 1)
-        biz_log_set_level(biz_config.log_level);
+    /* Filter points at biz_config.log_level (hp640 set_loglevel_pt).
+     * Host may also write size=4@off=0 covering log_level — pointer sees it. */
+    if (off <= log_level_offset && off + size > log_level_offset)
+        BIZ_DEBUG("[biz] Config log_level → %u (%s)\n",
+                  (unsigned)biz_config.log_level,
+                  biz_log_level_name(biz_config.log_level));
 
     return BIZ_SUCCESS;
 }
@@ -534,7 +560,7 @@ int biz_emmc_exec_tasks(HP640_Task *task_base, int task_count, int *task_ret)
         {
             /* Load: union holds blk_cnt/max_cnt — do not print as size */
             if (task->cmd == HP640_CMD_Load)
-                BIZ_INFO("[biz] Load tag=%u blks=%u bytes=%u dst=0x%lx\n",
+                BIZ_DEBUG("[biz] Load tag=%u blks=%u bytes=%u dst=0x%lx\n",
                          task->tag, task->blk_cnt,
                          (unsigned)task->blk_cnt * BIZ_BLK_SIZE,
                          (unsigned long)task->dst_addr);

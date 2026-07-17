@@ -4,9 +4,9 @@
  */
 
 #include <rtthread.h>
-#include <stdio.h>
 #include <string.h>
 #include "drv_efuse.h"
+#include "hp_fmt.h"
 #include "tick.h"
 
 static uint32_t efuse_readl(uint32_t offset)
@@ -119,7 +119,6 @@ int drv_efuse_get_chip_uuid_simple(unsigned char uuidstr[33])
     uint32_t uuid_data[4] = {0};
     unsigned char *data = (unsigned char *)uuid_data;
     int i;
-    int str_idx = 0;
 
     if (!uuidstr)
         return -1;
@@ -130,12 +129,5 @@ int drv_efuse_get_chip_uuid_simple(unsigned char uuidstr[33])
             return -1;
     }
 
-    for (i = 0; i < 16; i++)
-    {
-        sprintf((char *)&uuidstr[str_idx], "%02x", data[i]);
-        str_idx += 2;
-    }
-
-    uuidstr[32] = '\0';
-    return 0;
+    return hp_fmt_uuid_simple((char *)uuidstr, data);
 }

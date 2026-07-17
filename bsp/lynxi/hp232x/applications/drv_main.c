@@ -7,6 +7,7 @@
 #include "drv_efuse.h"
 #include "drv_flash.h"
 #include "biz_ipc.h"
+#include "hp_fmt.h"
 #ifdef BSP_DRV_PVT_BOOT_SAMPLE
 #include "drv_pvt.h"
 #endif
@@ -28,12 +29,17 @@ static void pvt_boot_sample(void)
 {
     float temp[DRV_PVT_TS_COUNT];
     float volt[DRV_PVT_VM_COUNT];
+    char fbuf[24];
     int i;
 
     if (drv_pvt_read_temperature(temp, 0) == 0)
     {
         for (i = 0; i < DRV_PVT_TS_COUNT; i++)
-            BIZ_INFO("PVT TS[%d]: %.3f C\n", i, temp[i]);
+        {
+            if (hp_fmt_pvt_temp_c(fbuf, sizeof(fbuf), temp[i]) < 0)
+                continue;
+            BIZ_INFO("PVT TS[%d]: %s C\n", i, fbuf);
+        }
     }
     else
     {
@@ -43,7 +49,11 @@ static void pvt_boot_sample(void)
     if (drv_pvt_read_voltage(volt, 0) == 0)
     {
         for (i = 0; i < DRV_PVT_VM_COUNT; i++)
-            BIZ_INFO("PVT VM[%d]: %.4f V\n", i, volt[i]);
+        {
+            if (hp_fmt_pvt_volt_v(fbuf, sizeof(fbuf), volt[i]) < 0)
+                continue;
+            BIZ_INFO("PVT VM[%d]: %s V\n", i, fbuf);
+        }
     }
     else
     {

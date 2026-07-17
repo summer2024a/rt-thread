@@ -6,6 +6,7 @@ src     = Glob('*.c') + Glob('*.cpp')
 CPPPATH = [cwd,
            os.path.join(cwd, '..', 'drivers'),
            os.path.join(cwd, '..', 'biz'),
+           os.path.join(cwd, '..', 'utilities'),
            str(Dir('#'))]
 
 group = DefineGroup('Applications', src, depend = [''], CPPPATH = CPPPATH)

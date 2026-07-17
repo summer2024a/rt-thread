@@ -106,6 +106,14 @@ menu "klibc options"
         config RT_KLIBC_USING_LIBC_VSSCANF
             bool "Enable rt_vsscanf to use libc vsscanf"
             default n
+
+        config RT_KLIBC_USING_VSSCANF_NO_FLOAT
+            bool "Disable floating point scan (%f/%e/%g) in rt_vsscanf"
+            depends on !RT_KLIBC_USING_LIBC_VSSCANF
+            default n
+            help
+                When enabled, rt_vsscanf rejects %a/%e/%f/%g and does not link
+                Newlib strtod/strtof/strtold (saves IRAM on tiny boards).
     endmenu # rt_vsscanf options
 
     menu "rt_memset options"

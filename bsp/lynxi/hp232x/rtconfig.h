@@ -105,14 +105,16 @@
 
 /* RT-Thread Kernel */
 
-/* klibc options — minimal, no float; trim for IRAM0 in debug builds */
-/* #define RT_KLIBC_USING_VSNPRINTF_LONGLONG */
-#define RT_KLIBC_USING_VSNPRINTF_STANDARD
+/* klibc options — tiny vsnprintf + long long (%llx/%llu); no float printf */
+#define RT_KLIBC_USING_VSNPRINTF_LONGLONG
+/* #define RT_KLIBC_USING_VSNPRINTF_STANDARD */ /* off: use rt_vsnprintf_tiny (saves ~IRAM0) */
 /* #define RT_KLIBC_USING_VSNPRINTF_DECIMAL_SPECIFIERS */
-#define RT_KLIBC_USING_VSNPRINTF_INTEGER_BUFFER_SIZE 32
+/* #define RT_KLIBC_USING_VSNPRINTF_INTEGER_BUFFER_SIZE 32 */ /* only for STANDARD */
 /* end of rt_vsnprintf options */
 
 /* rt_vsscanf options */
+/* No %f/%e/%g → do not pull Newlib strtod (hp232x: use hp_fmt for PVT print). */
+#define RT_KLIBC_USING_VSSCANF_NO_FLOAT
 /* end of rt_vsscanf options */
 
 /* rt_memset options */

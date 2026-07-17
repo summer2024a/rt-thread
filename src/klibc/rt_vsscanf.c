@@ -15,7 +15,7 @@
  */
 
 #include <rtthread.h>
-#include <stdlib.h> /* for strtod */
+#include <stdlib.h> /* strtoll/strtoull; strtod* only if float scanf enabled */
 #include <ctype.h> /* for isspace */
 #include <stdarg.h> /* for va_list */
 
@@ -42,7 +42,9 @@
 #define CT_CCL     1 /* %[...] conversion */
 #define CT_STRING  2 /* %s conversion */
 #define CT_INT     3 /* %[dioupxX] conversion */
+#ifndef RT_KLIBC_USING_VSSCANF_NO_FLOAT
 #define CT_FLOAT   4 /* %[aefgAEFG] conversion */
+#endif
 #define CT_NONE    5 /* No conversion (ex. %n) */
 
 static const unsigned char *__sccl(char *tab, const unsigned char *fmt)
@@ -261,6 +263,7 @@ static int scanf_parse(char *ccltab, const char *inp, int *inr, char const *fmt0
                     base = 16;
                     break;
 
+#ifndef RT_KLIBC_USING_VSSCANF_NO_FLOAT
                 case 'A':
                 case 'E':
                 case 'F':
@@ -271,7 +274,7 @@ static int scanf_parse(char *ccltab, const char *inp, int *inr, char const *fmt0
                 case 'g':
                     convType = CT_FLOAT;
                     break;
-
+#endif
 
                 case 's':
                     convType = CT_STRING;
@@ -618,6 +621,7 @@ static int scanf_parse(char *ccltab, const char *inp, int *inr, char const *fmt0
                 nconversions++;
                 break;
 
+#ifndef RT_KLIBC_USING_VSSCANF_NO_FLOAT
             case CT_FLOAT: {
                 union {
                     float f;
@@ -676,6 +680,7 @@ static int scanf_parse(char *ccltab, const char *inp, int *inr, char const *fmt0
 
                 break;
             }
+#endif /* !RT_KLIBC_USING_VSSCANF_NO_FLOAT */
 
             default:
                 break;

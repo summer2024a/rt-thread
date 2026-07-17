@@ -31,6 +31,17 @@
 | `BSP_USING_HP232X_DEBUG_UART` | 开 | early putc 硬件；配合 early mark |
 | `BSP_HP232X_MM_MINIMAL` | 开 | 裁掉 mm_anon/mm_fault + MM shell；`mm_anon_stub` |
 
+### klibc 打印 / 扫描（体积）
+
+| 宏 | 默认（hp232x） | 说明 |
+|----|----------------|------|
+| `RT_KLIBC_USING_VSNPRINTF_STANDARD` | **关** | 关 → `rt_vsnprintf_tiny`；开 → std（含可选浮点） |
+| `RT_KLIBC_USING_VSNPRINTF_LONGLONG` | **开** | tiny/std 均需：支持 `%lld`/`%llu`/`%llx` |
+| `RT_KLIBC_USING_VSSCANF_NO_FLOAT` | **开** | 禁用 `%f` 扫描，不链 Newlib `strtod` |
+
+浮点展示用 `utilities/hp_fmt.h`（`hp_fmt_pvt_*` / `hp_fmt_uuid_simple`），勿依赖 `%.3f`。
+
+
 **注意**：`BSP_IRAM0_LOW_NC` 仅适合 **BL22**（前半 IRAM0 不作 RTT `.text`）。
 
 ---

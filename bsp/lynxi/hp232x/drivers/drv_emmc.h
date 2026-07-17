@@ -53,4 +53,8 @@ int drv_emmc_read_blocks(uint32_t addr, uint8_t *buf, uint16_t blk_cnt, uint16_t
 int drv_emmc_write_blocks(uint32_t addr, uint8_t *buf, uint16_t blk_cnt, uint16_t blk_size);
 int drv_emmc_exec_bd(uint64_t bd_addr);
 
+#ifdef BSP_EMMC_HS400_100M
+uint8_t drv_emmc_dll_offset_get(void);
+#endif
+
 #endif /* _DRV_EMMC_H_ */

@@ -4,6 +4,7 @@
  */
 
 #include "drv_emmc.h"
+#include "drv_flash.h"
 #include "biz_log.h"
 #include "biz_ipc.h"
 #include "drv_efuse.h"
@@ -160,12 +161,20 @@
 #define DLL_OFFST               0x29U
 #define DLLLBT_CNFG             0x2cU
 #define DLL_STATUS              0x2eU
+#define DLLDBG_MLKDC            0x30U /* hp640 sdhci.h — not DLLLBT_CNFG */
 #define DLL_IS_LOCKED           (1U << 0)
 #define DLL_ERROR_STS           (1U << 1)
+#ifdef BSP_EMMC_HS400_100M
+#define EMMC_DLL_TEST_ADDR      0x0FF400400UL /* hp640 0xFF400400 */
+#endif
 
 #define EMMC_HOST_MAX_CLK_HZ    100000000U
 #define EMMC_HS200_CLK_HZ       200000000U
+#ifdef BSP_EMMC_HS400_100M
+#define EMMC_HS400_CLK_HZ       100000000U   /* hp640 HS400_100M_CLOCK */
+#else
 #define EMMC_HS400_CLK_HZ       200000000U
+#endif
 #define SDHCI_SIGNAL_ENABLE     0x38
 #define SDHCI_BLOCK_SIZE        0x04
 #define SDHCI_BLOCK_COUNT       0x06
@@ -265,6 +274,15 @@ static inline adma_desc_pair_t *emmc_dma_pair(void)
     return s_pair_base;
 }
 static uint8_t s_emmc_initialized;
+#ifdef BSP_EMMC_HS400_100M
+static uint8_t s_emmc_xfer_quiet; /* 1: 100M DLL scan — suppress err dump/MCU post */
+static uint8_t s_emmc_dll_offset = 0xFFU;
+static int emmc_read_data(uint32_t addr, uint8_t *buf, uint16_t blk_cnt,
+                          uint16_t blk_size);
+static int emmc_write_data(uint32_t addr, uint8_t *buf, uint16_t blk_cnt,
+                           uint16_t blk_size);
+static int emmc_dll_offset_calibrate_100m(void);
+#endif
 static uint32_t s_emmc_error_mask;
 
 typedef struct {
@@ -292,10 +310,11 @@ static int emmc_chip_type_get(void)
     return (int)s_emmc_chip_type;
 }
 
-/* hp640 snps_sdhci_set_tapdelay() HS400 SDCLK_DC branch */
+/* hp640 snps_sdhci_set_tapdelay() HS400 SDCLK_DC branch.
+ * 100M board patch enables CONFIG_HP640_CUSTOM_EMMC_DC together. */
 static uint8_t emmc_hs400_sdclk_dc(void)
 {
-#ifdef BSP_EMMC_CUSTOM_DC
+#if defined(BSP_EMMC_CUSTOM_DC) || defined(BSP_EMMC_HS400_100M)
     return EMMC_SDCLK_DC_HS400_CUSTOM;
 #else
     if (emmc_chip_type_get() == DRV_CHIP_KA200M)
@@ -1848,8 +1867,9 @@ int emmc_init_driver(void)
     int ret;
 
     emmc_chip_type_get();
-    EMMC_BOOT_LOG("chip=%s HS400 SDCLK_DC=0x%x\n",
+    EMMC_BOOT_LOG("chip=%s HS400@%uM SDCLK_DC=0x%x\n",
                   (s_emmc_chip_type == DRV_CHIP_KA200M) ? "KA200M" : "KA200",
+                  (unsigned)(EMMC_HS400_CLK_HZ / 1000000U),
                   emmc_hs400_sdclk_dc());
 
     ret = emmc_init();
@@ -1879,6 +1899,18 @@ int emmc_init_driver(void)
     emmc_writeb(SDHCI_DATA_TIMEOUT, SDHCI_TIMEOUT_CONTROL);
 
     EMMC_BOOT_LOG("HS400 OK tap=0x%x\n", emmc_at_stat_read());
+
+#ifdef BSP_EMMC_HS400_100M
+    /*
+     * hp640 auto_run: sdhci_scan_dll_offset after HS400.
+     * Must run here (driver), not only biz DLL module — otherwise heartbeat
+     * ADMA write fails with INT=CMD_COMPLETE only (DATA timeout).
+     */
+    ret = emmc_dll_offset_calibrate_100m();
+    if (ret != BIZ_SUCCESS)
+        goto fail;
+#endif
+
     BIZ_INFO("eMMC HS400 init OK @ 0x%08x\n", (unsigned)EMMC_BASE);
     return BIZ_SUCCESS;
 
@@ -2003,7 +2035,10 @@ static int emmc_xfer_data(uint32_t addr, uint8_t *buf, uint16_t blk_cnt,
             s_emmc_stats.read_error_count++;
         else
             s_emmc_stats.write_error_count++;
-        emmc_dump_regs("xfer_err");
+#ifdef BSP_EMMC_HS400_100M
+        if (!s_emmc_xfer_quiet)
+#endif
+            emmc_dump_regs("xfer_err");
     }
     else
         EMMC_REG_DUMP("xfer_ok");
@@ -2016,20 +2051,199 @@ static int emmc_xfer_data(uint32_t addr, uint8_t *buf, uint16_t blk_cnt,
         emmc_cache_invalidate(buf, (rt_size_t)blk_cnt * blk_size);
 
 out:
+#ifdef BSP_EMMC_HS400_100M
+    if (ret != BIZ_SUCCESS && !s_emmc_xfer_quiet)
+#else
     if (ret != BIZ_SUCCESS)
+#endif
         drv_emmc_report_error((biz_err_code_t)ret);
     return ret;
 }
 
-int emmc_read_data(uint32_t addr, uint8_t *buf, uint16_t blk_cnt, uint16_t blk_size)
+static int emmc_read_data(uint32_t addr, uint8_t *buf, uint16_t blk_cnt, uint16_t blk_size)
 {
     return emmc_xfer_data(addr, buf, blk_cnt, blk_size, 1);
 }
 
-int emmc_write_data(uint32_t addr, uint8_t *buf, uint16_t blk_cnt, uint16_t blk_size)
+static int emmc_write_data(uint32_t addr, uint8_t *buf, uint16_t blk_cnt, uint16_t blk_size)
 {
     return emmc_xfer_data(addr, buf, blk_cnt, blk_size, 0);
 }
+
+#ifdef BSP_EMMC_HS400_100M
+/*
+ * hp640 sdhci_scan_dll_offset — required after HS400@100M before any ADMA data.
+ * Default DLL_OFFST=0x74 from emmc_dll_config() often yields CMD OK + DATA hang.
+ *
+ * Scan uses READ @ 0xFF400400 only (hp640). Write-probe uses heartbeat ARG
+ * (0x8d400000-class) — NEVER write the scan test address (always DATA hang).
+ */
+static void emmc_dll_apply_offset(uint8_t value, uint16_t dll_ctrl_final)
+{
+    emmc_phy_writew(DLL_CTRL, 0x2);
+    emmc_phy_writew(DLL_CTRL, 0x6);
+    emmc_phy_writeb(DLLDL_CNFG, 0x60);
+    emmc_phy_writeb(DLL_OFFST, value);
+    emmc_phy_writew(DLL_CTRL, dll_ctrl_final);
+}
+
+static void emmc_dll_recover_bus(void)
+{
+    emmc_writel(SDHCI_INT_ALL_MASK, SDHCI_INT_STATUS);
+    emmc_reset(SDHCI_RESET_CMD);
+    emmc_reset(SDHCI_RESET_DATA);
+    (void)emmc_wait_bus_idle(SDHCI_CMD_DEFAULT_TIMEOUT);
+}
+
+static uint32_t emmc_dll_hb_probe_addr(void)
+{
+    /* Same ARG encoding as biz_emmc_report_heartbeat() with default base 0x400000. */
+    uint32_t addr = 0x400000U;
+
+    addr |= (0x80U | ((sizeof(HP640_HeartBeatPackage) / 4U) - 1U)) << 24;
+    return addr;
+}
+
+/* Confirm ADMA write on the real HB data plane before claiming DLL OK. */
+static int emmc_dll_write_probe(uint8_t offset)
+{
+    static uint8_t s_probe[EMMC_BLK_SIZE] __attribute__((aligned(64)));
+    int ret;
+
+    emmc_dll_apply_offset(offset, 0x2);
+    rt_memset(s_probe, 0xa5, sizeof(s_probe));
+    s_emmc_xfer_quiet = 1;
+    ret = emmc_write_data(emmc_dll_hb_probe_addr(), s_probe, 1, EMMC_BLK_SIZE);
+    s_emmc_xfer_quiet = 0;
+    if (ret != BIZ_SUCCESS)
+        emmc_dll_recover_bus();
+    return ret;
+}
+
+static int emmc_dll_offset_calibrate_100m(void)
+{
+    static uint8_t s_scan_buf[EMMC_BLK_SIZE] __attribute__((aligned(64)));
+    int success[128];
+    int success_count = 0;
+    int max_start = 0, max_len = 0, cur_start = 0, cur_len = 1;
+    int ret;
+    unsigned int i;
+    uint8_t v;
+
+    /* Prefer flash only if HB write-probe passes. */
+    if (drv_flash_is_known() &&
+        drv_flash_read(&v, 1, BIZ_FLASH_DLL_OFFSET_ADDR) == 0 &&
+        v != 0 && v != 0xFFU)
+    {
+        EMMC_BOOT_LOG("DLL flash candidate offset=0x%02x, HB write-probe\n", v);
+        ret = emmc_dll_write_probe(v);
+        if (ret == BIZ_SUCCESS)
+        {
+            /* flash-load path: 100M → DLL_CTRL 0x3 */
+            emmc_dll_apply_offset(v, 0x3);
+            s_emmc_dll_offset = v;
+            EMMC_BOOT_LOG("DLL from flash offset=0x%02x (HB write-probe OK)\n", v);
+            return BIZ_SUCCESS;
+        }
+        EMMC_BOOT_LOG("DLL flash offset=0x%02x HB write-probe fail, rescanning\n", v);
+        emmc_dll_recover_bus();
+    }
+
+    EMMC_BOOT_LOG("DLL scan start (HS400@100M) read@0x%x\n",
+                  (unsigned)(uint32_t)EMMC_DLL_TEST_ADDR);
+    s_emmc_xfer_quiet = 1;
+    for (i = 0; i < 128U; i++)
+    {
+        emmc_dll_apply_offset((uint8_t)i, 0x2);
+        ret = emmc_read_data((uint32_t)EMMC_DLL_TEST_ADDR, s_scan_buf, 1, EMMC_BLK_SIZE);
+        emmc_dll_recover_bus();
+        if (ret == BIZ_SUCCESS)
+            success[success_count++] = (int)i;
+    }
+    s_emmc_xfer_quiet = 0;
+
+    if (success_count == 0)
+    {
+        EMMC_BOOT_LOG("DLL scan: no valid read offset\n");
+        return BIZ_ERR_EMMC_DLL_SCAN_FAILED;
+    }
+
+    for (int j = 1; j < success_count; j++)
+    {
+        if (success[j] == success[j - 1] + 1)
+            cur_len++;
+        else
+        {
+            if (cur_len > max_len)
+            {
+                max_len = cur_len;
+                max_start = cur_start;
+            }
+            cur_start = j;
+            cur_len = 1;
+        }
+    }
+    if (cur_len > max_len)
+    {
+        max_len = cur_len;
+        max_start = cur_start;
+    }
+
+    {
+        int mid = max_start + max_len / 2;
+        int mlkdc = emmc_phy_readb(DLLDBG_MLKDC);
+        int good = success[mid];
+        int t;
+
+        if (good < 0)
+            good += 128;
+
+        EMMC_BOOT_LOG("DLL scan read-eye offset=0x%02x mlkdc=0x%x range=%d..%d (n=%d)\n",
+                      (unsigned)good, mlkdc,
+                      success[max_start],
+                      success[max_start + max_len - 1],
+                      success_count);
+
+        /* Prefer mid, walk window until HB write works. */
+        ret = BIZ_ERR_EMMC_DLL_SCAN_FAILED;
+        for (t = 0; t < max_len; t++)
+        {
+            int idx = mid + ((t % 2) ? ((t + 1) / 2) : -(t / 2));
+            int cand;
+
+            if (idx < max_start || idx >= max_start + max_len)
+                continue;
+            cand = success[idx];
+            if (cand < 0)
+                cand += 128;
+            ret = emmc_dll_write_probe((uint8_t)cand);
+            if (ret == BIZ_SUCCESS)
+            {
+                good = cand;
+                break;
+            }
+        }
+
+        if (ret != BIZ_SUCCESS)
+        {
+            EMMC_BOOT_LOG("DLL scan: no offset passed HB write-probe\n");
+            return BIZ_ERR_EMMC_DLL_SCAN_FAILED;
+        }
+
+        s_emmc_dll_offset = (uint8_t)good;
+        /* scan-complete @100M: DLL_CTRL 0x2 */
+        emmc_dll_apply_offset((uint8_t)good, 0x2);
+        EMMC_BOOT_LOG("DLL scan OK offset=0x%02x (HB write-probe OK)\n",
+                      s_emmc_dll_offset);
+    }
+    return BIZ_SUCCESS;
+}
+
+uint8_t drv_emmc_dll_offset_get(void)
+{
+    return s_emmc_dll_offset;
+}
+#endif /* BSP_EMMC_HS400_100M */
 
 int drv_emmc_read_blocks(uint32_t addr, uint8_t *buf, uint16_t blk_cnt, uint16_t blk_size)
 {
@@ -2074,8 +2288,11 @@ static int emmc_wait_interrupt(void)
 
         if (++spins > 5000000U)
         {
-            EMMC_BOOT_LOG("wait timeout INT=0x%x ADMA_ERR=0x%x\n",
-                          stat, emmc_readb(SDHCI_ADMA_ERROR));
+#ifdef BSP_EMMC_HS400_100M
+            if (!s_emmc_xfer_quiet)
+#endif
+                EMMC_BOOT_LOG("wait timeout INT=0x%x ADMA_ERR=0x%x\n",
+                              stat, emmc_readb(SDHCI_ADMA_ERROR));
             ret = BIZ_ERR_EMMC_DATA_TIMEOUT;
             break;
         }

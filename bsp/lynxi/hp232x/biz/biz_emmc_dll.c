@@ -22,7 +22,7 @@
 #define DLL_CTRL                0x24U
 #define DLL_OFFST               0x29U
 #define DLLDL_CNFG              0x28U
-#define DLLDBG_MLKDC            0x2cU
+#define DLLDBG_MLKDC            0x30U /* hp640 sdhci.h (was wrongly 0x2c=DLLLBT) */
 
 #define EMMC_DLL_TEST_ADDR      0x0FF400400UL
 
@@ -49,7 +49,12 @@ static void emmc_dll_apply(uint8_t value)
     emmc_phy_writew(DLL_CTRL, 0x6);
     emmc_phy_writeb(DLLDL_CNFG, 0x60);
     emmc_phy_writeb(DLL_OFFST, value);
+    /* hp640 flash-load path: 100M→0x3, 200M→0x2 */
+#ifdef BSP_EMMC_HS400_100M
     emmc_phy_writew(DLL_CTRL, 0x3);
+#else
+    emmc_phy_writew(DLL_CTRL, 0x2);
+#endif
 }
 
 uint8_t biz_emmc_dll_offset_get(void)
@@ -82,7 +87,30 @@ void biz_emmc_dll_boot_init(void)
 {
     uint8_t v = 0xFFU;
 
-    (void)emmc_dll_load_from_flash(&v);
+#ifdef BSP_EMMC_HS400_100M
+    /* Driver already ran sdhci_scan_dll_offset in emmc_init_driver(). */
+    v = drv_emmc_dll_offset_get();
+    if (v != 0xFFU)
+    {
+        s_dll_offset = v;
+        return;
+    }
+#endif
+
+    /* Prefer flash-cached offset (hp640 EMMC_DLL_OFFSET_FROM_FLASH). */
+    if (emmc_dll_load_from_flash(&v) == 0)
+        return;
+
+#ifdef BSP_EMMC_HS400_100M
+    /*
+     * Fallback if driver calibrate skipped (should not happen @100M).
+     * Default DLL_OFFST=0x74 from dll_config is often wrong at 100M —
+     * CMD/tuning OK but ADMA DATA hangs (INT=CMD_COMPLETE only).
+     */
+    BIZ_INFO("eMMC DLL: no flash/driver offset, scanning for HS400@100M\n");
+    if (biz_exec_emmc_dll_scan() != BIZ_SUCCESS)
+        BIZ_ERROR("eMMC DLL scan failed — data path may be unreliable @100M\n");
+#endif
 }
 
 int biz_exec_emmc_dll_scan(void)
@@ -97,12 +125,23 @@ int biz_exec_emmc_dll_scan(void)
     if (emmc_dll_load_from_flash(&s_dll_offset) == 0)
         return BIZ_SUCCESS;
 
-    if (drv_emmc_try_init(true) != BIZ_SUCCESS)
+    /* Caller already inited eMMC (biz_entry / msh); avoid force re-init mid-scan. */
+    if (drv_emmc_try_init(false) != BIZ_SUCCESS)
         return BIZ_ERR_EMMC_INIT;
 
-    BIZ_INFO("eMMC DLL scan start\n");
+    BIZ_INFO("eMMC DLL scan start (%s)\n",
+#ifdef BSP_EMMC_HS400_100M
+             "HS400@100M"
+#else
+             "HS400@200M"
+#endif
+        );
 
+#ifdef BSP_EMMC_HS400_100M
+    for (i = 0; i < 128; i++)
+#else
     for (i = 0; i < 64; i++)
+#endif
     {
         emmc_phy_writew(DLL_CTRL, 0x2);
         emmc_phy_writew(DLL_CTRL, 0x6);
@@ -145,15 +184,29 @@ int biz_exec_emmc_dll_scan(void)
     {
         int mid = max_start + max_len / 2;
         int mlkdc = emmc_phy_readb(DLLDBG_MLKDC);
+#ifdef BSP_EMMC_HS400_100M
+        int good = success[mid];
+#else
         int good = success[mid] - (mlkdc / 4);
+#endif
 
         if (good < 0)
             good += 128;
 
         s_dll_offset = (uint8_t)good;
-        emmc_dll_apply((uint8_t)good);
+        /* hp640 scan-complete: 100M→DLL_CTRL 0x2, 200M→0x3 (inverse of flash-load) */
+        emmc_phy_writew(DLL_CTRL, 0x2);
+        emmc_phy_writew(DLL_CTRL, 0x6);
+        emmc_phy_writeb(DLLDL_CNFG, 0x60);
+        emmc_phy_writeb(DLL_OFFST, (uint8_t)good);
+#ifdef BSP_EMMC_HS400_100M
+        emmc_phy_writew(DLL_CTRL, 0x2);
+#else
+        emmc_phy_writew(DLL_CTRL, 0x3);
+#endif
         drv_flash_write(&s_dll_offset, 1, BIZ_FLASH_DLL_OFFSET_ADDR);
-        BIZ_INFO("eMMC DLL scan OK offset=0x%02x\n", s_dll_offset);
+        BIZ_INFO("eMMC DLL scan OK offset=0x%02x mlkdc=0x%x\n",
+                 s_dll_offset, mlkdc);
     }
 
     return BIZ_SUCCESS;

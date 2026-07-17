@@ -112,7 +112,8 @@
 | 宏 | 默认 | 说明 |
 |----|------|------|
 | `BSP_EMMC_DMA_CACHED_BSS` | 关 | 不用 `.dma_nocache`，改缓存 BSS + flush |
-| `BSP_EMMC_CUSTOM_DC` | 关 | 强制 HS400 `SDCLK_DC=0x3c` |
+| `BSP_EMMC_HS400_100M` | **关（=200M，量产）** | 开=HS400@**100M** + `SDCLK_DC=0x3c`（对齐 hp640 `HS400_100M_CLOCK`）；**自动打开** `BSP_DRV_MOD_EMMC_DLL`；init 后 DLL 读扫 + HB 写探测（详见 `BIZ_PORTING.md` §4.9；**UART 已验**） |
+| `BSP_EMMC_CUSTOM_DC` | 关 | 单独强制 HS400 `SDCLK_DC=0x3c`（100M 宏已隐含） |
 | `BSP_DRV_EMMC_DEBUG` | 关 | eMMC 驱动详细日志 |
 
 ---

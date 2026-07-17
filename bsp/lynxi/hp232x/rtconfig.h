@@ -28,7 +28,13 @@
 /* #define BSP_BIZ_HOTPATH_NO_TICK_IPI */
 /* A/B: hp640-style cached SPL BSS + flush_cache (disable NC dma_nocache arena) */
 /* #define BSP_EMMC_DMA_CACHED_BSS */
-/* Optional: force HS400 SDCLK_DC=0x3c (hp640 CONFIG_HP640_CUSTOM_EMMC_DC); default uses efuse KA200M=0x21 / KA200=0x23 */
+/*
+ * HS400 SDCLK: default 200MHz. Define BSP_EMMC_HS400_100M for 100MHz
+ * (hp640 HS400_100M_CLOCK). Also forces SDCLK_DC=0x3c like 640 board patch
+ * (same as BSP_EMMC_CUSTOM_DC). DLL scan range/calc follow 100M rules when on.
+ */
+/* #define BSP_EMMC_HS400_100M */
+/* Optional alone: force HS400 SDCLK_DC=0x3c; default uses efuse KA200M=0x21 / KA200=0x23 */
 /* #define BSP_EMMC_CUSTOM_DC */
 
 /* Drop mm_anon/mm_fault + MM debug shell cmds; stub private-map APIs. */
@@ -39,7 +45,15 @@
 #define BSP_DRV_MOD_EXEC_MISC
 #define BSP_DRV_MOD_EXEC_STRESS
 #define BSP_DRV_MOD_EXEC_SELFTEST
+/*
+ * eMMC DLL scan: required for HS400@100M data path (hp640 auto_run after init).
+ * At 200M usually optional (efuse DC + default DLL_OFFST=0x74).
+ */
+#if defined(BSP_EMMC_HS400_100M)
+#define BSP_DRV_MOD_EMMC_DLL
+#else
 /* #define BSP_DRV_MOD_EMMC_DLL */
+#endif
 /* #define BSP_DRV_MOD_PCIE */
 #define BSP_DRV_MOD_FLASH_UPGRADE
 #define BSP_DRV_MOD_FINSH

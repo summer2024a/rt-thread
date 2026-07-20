@@ -228,20 +228,14 @@ int biz_emmc_query_task(HP640_Task *task_list, int max_tasks, uint32_t *out_roun
 {
     uint32_t rounds = 0;
     int ret = BIZ_SUCCESS;
-    size_t copy_len;
 
     if (!task_list || max_tasks <= 0)
         return BIZ_ERR_CLI_PARAM;
 
-    copy_len = (size_t)max_tasks * sizeof(HP640_Task);
-    if (copy_len > BIZ_BLK_SIZE)
-        copy_len = BIZ_BLK_SIZE;
-
     /*
-     * Align hp640 query_task(): busy-poll until a valid task package is read.
+     * Align hp640 query_task(): DMA straight into task_list (no bounce+memcpy).
+     * task_list must be DMA-aligned (s_task_list is). Busy-poll until valid pkg.
      * Empty slot (cmd==0 && !NOT_END) never returns — keep spinning.
-     * eMMC / heartbeat errors: post MCU err and retry immediately (no sleep).
-     * Normal return is always BIZ_SUCCESS with a task in task_list.
      */
     while (1)
     {
@@ -257,16 +251,14 @@ int biz_emmc_query_task(HP640_Task *task_list, int max_tasks, uint32_t *out_roun
                 break;
             }
 
-            ret = drv_emmc_read_blocks(HP640_QUERY_TASK_ADDR, drv_emmc_query_buf(),
-                                       1, BIZ_BLK_SIZE);
+            ret = drv_emmc_read_blocks(HP640_QUERY_TASK_ADDR,
+                                       (uint8_t *)task_list, 1, BIZ_BLK_SIZE);
             if (ret != BIZ_SUCCESS)
             {
                 BIZ_ERROR("Failed to read task from eMMC (ret=%d), retrying...\n", ret);
                 biz_mcu_err_post((biz_err_code_t)ret);
                 break;
             }
-
-            memcpy(task_list, drv_emmc_query_buf(), copy_len);
         } while (task_list[0].cmd == 0 && !(task_list[0].flag & HP640_CMD_NOT_END));
 
         if (ret == BIZ_SUCCESS)

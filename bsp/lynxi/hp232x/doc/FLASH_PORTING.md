@@ -17,7 +17,8 @@
 | JEDEC | ✅ | EVB：`0xc22537`（known） |
 | 生产：CPU0 flash worker | ✅ | 默认；与 SPL「Flash 归 Core0」一致 |
 | 试验：CPU1 直写 SSI | ✅ | `BSP_FLASH_DIRECT_ON_CALLER` PASS；**默认仍关**，回 worker |
-| Host scratch **NC**（`BSP_IRAM1_LOW_NC`） | ✅ | 日志 `host scratch NC` + `src_NC`；**当前默认开** |
+| Host scratch **WB**（默认，关 `BSP_IRAM1_LOW_NC`） | ✅ | 日志 `host scratch WB`；fpfifo FPS；Flash 用 inv+bounce |
+| Host scratch **NC**（开 `BSP_IRAM1_LOW_NC`） | ✅ 可选 | 日志 `host scratch NC`；Flash 更省心，CRC FPS 约 -30% |
 | Host scratch **WB**（关宏） | ✅ | A/B：`host scratch WB` + `src_WB`；inv-all + 页 bounce |
 | eMMC ADMA 描述符区 | 不变 | 仍在 **`IRAM1_DMA_NC` @ `0x100040000`（64KB）**；与 Host scratch 分离 |
 | Flash 冷启 SSI/JEDEC（jumper 留下 `ba`） | 🟡 | inv+B8+98 + PA0 alias；**勿 INIT_DEVICE JEDEC**（SEA）；`main` `drv_flash_bringup`；见 BIZ_PORTING **§4.7** |
@@ -106,8 +107,7 @@ flash ssi_probe [0|1]               # 分核直连 SSI（诊断，见 §5）
 #define BSP_FLASH_CPU0_WORKER         /* 默认：读/写/擦 bounce → CPU0「flash」线程 */
 /* #define BSP_FLASH_DIRECT_ON_CALLER */  /* 试验：CPU1 直写已 PASS；生产保持关 */
 
-#define BSP_IRAM1_LOW_NC              /* Host scratch → Normal NC（默认） */
-/* #define BSP_IRAM1_LOW_NC */        /* A/B：关 = WB + cache 维护；板测同样 PASS */
+/* #define BSP_IRAM1_LOW_NC */        /* 默认关=WB（fpfifo CRC）；开=NC 利于 Flash 相干 */
 ```
 
 | 宏组合 | 启动 / 写 Flash 日志 | 行为 |
@@ -195,23 +195,23 @@ cd bsp/lynxi/hp232x
 python3 scripts/flash_host_upgrade_test.py
 ```
 
-串口应出现（默认 NC + worker）：
+串口应出现（默认 **WB** + worker）：
 
 ```
-[mmu] IRAM1 host scratch NC 0x100000000 +0x40000 (BSP_IRAM1_LOW_NC)
+[mmu] IRAM1 host scratch WB 0x100000000 +0x40000 (upgrade uses cache maintain)
 [drv] flash worker on CPU0
-[flash] erase+program addr=0xa6000 len=... (cpu0 src_NC)
+[flash] erase+program addr=0xa6000 len=... (cpu0 src_WB)
 [flash] program ok
 [biz] OK FlashWrite ...
 ```
 
-A/B（关 `BSP_IRAM1_LOW_NC` 后重编重测）应变为 `host scratch WB` + `src_WB`，判据同左。
+开 `BSP_IRAM1_LOW_NC` 时为 `host scratch NC` + `src_NC`。FPS 说明见 [Biz_Performance_Optimization.md](Biz_Performance_Optimization.md)。
 
 期望勾选：
 
 - [ ] JEDEC known，`flash test @0x900000` OK  
 - [ ] Host：`OK Load` + `OK FlashWrite`，`@0xa6000` 非全 FF  
-- [ ] 生产：**CPU0 worker**，**关** `DIRECT`；scratch **NC 默认开**（WB 作对照）  
+- [ ] 生产：**CPU0 worker**，**关** `DIRECT`；scratch **默认 WB**（开 `BSP_IRAM1_LOW_NC` 作 Flash 对照）  
 - [ ] `emmc_biz` 仍为 biz 最高优先；描述符仍在 DMA NC 区  
 - [ ] 冷启动从 `@0xA6000` 进 RTT：**未做**（仍 Xmodem）
 

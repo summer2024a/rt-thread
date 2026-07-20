@@ -19,8 +19,8 @@
 /* Temporary: show BIZ_INFO on UART (heart-beat, emmc_biz, thread start). */
 #define BSP_BIZ_LOG_BOOT_INFO
 /* #define BSP_BIZ_LOG_LOCATION */   /* 开：每条日志都带 func:line；默认仅 DEBUG 带 */
-/* #define BSP_BIZ_LOG_TIMESTAMP */  /* 开：每条日志带 [sec.us] 启动相对时间戳（调试用） */
-/* #define BSP_BIZ_PHASE_STATS */   /* 关=生产默认。开则 msh phase 可用，但 fpfifo ~-4% FPS */
+/* #define BSP_BIZ_LOG_TIMESTAMP */  /* 开：每条日志带 [sec.us]（启动耗时）；fpfifo A/B 须关 */
+/* #define BSP_BIZ_PHASE_STATS */    /* 开：msh phase；约 -4% FPS；gap 已测完关 */
 /*
  * FPS A/B vs hp640: mask local tick+IPI on emmc_biz CPU. Measured ~+0.8% only —
  * NOT the main gap (PHASE_STATS was). Keep off.
@@ -94,17 +94,18 @@
 
 /*
  * IRAM1 low 256KB (0x100000000..0x10003FFFF) — BL22: no RTT code/stack.
- * Host Load/upgrade scratch (ka200 DDR_IRAM_ADDR).
- * - defined:   map Normal NC (DMA/cross-CPU coherent; lighter flash path)
- * - undefined: leave Normal WB (use invalidate + page bounce; proven 32× OK)
+ * Host Load/upgrade scratch + fpfifo CRC buffer (ka200 DDR_IRAM_ADDR).
+ * 默认 WB（对齐 hp640；CRC 扫 8KB 走 L1）。详见 doc/Biz_Performance_Optimization.md。
+ * - undefined（默认）: Normal WB + CRC/Store invalidate/flush；Flash 用 inv+page bounce
+ * - defined:           Normal NC（Flash 升级更省心；fpfifo CRC FPS 约 -30%）
  */
-#define BSP_IRAM1_LOW_NC
+/* #define BSP_IRAM1_LOW_NC */
 
 /*
  * IRAM0 low 256KB (0x04000000..0x0403FFFF) — BL22: boot-wrapper / Host biz
- * descriptors & buffers (not RTT .text). Map Normal NC like IRAM1 scratch.
- * With BSP_IRAM1_LOW_NC: defines BSP_BIZ_SKIP_HOST_DCACHE — CRC/Store/report
- * dcache ops are not compiled in.
+ * descriptors & buffers (not RTT .text). Map Normal NC.
+ * With BSP_IRAM1_LOW_NC also on: board.h defines BSP_BIZ_SKIP_HOST_DCACHE
+ * (CRC/Store/report dcache ops omitted). Default IRAM1=WB → SKIP 不派生。
  * Do not enable on BL21 (kernel lives in this half).
  */
 #define BSP_IRAM0_LOW_NC

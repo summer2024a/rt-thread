@@ -101,9 +101,9 @@
 
 | 宏 | 默认 | 说明 |
 |----|------|------|
-| `BSP_IRAM1_LOW_NC` | 开 | `0x100000000..0x10003FFFF` → Normal NC（Host Load scratch） |
+| `BSP_IRAM1_LOW_NC` | **关（=WB）** | `0x100000000..0x10003FFFF` Host scratch；默认 WB 以保 fpfifo CRC FPS（见 `Biz_Performance_Optimization.md`）；开=NC，Flash 更省心但 CRC 约 -30% |
 | `BSP_IRAM0_LOW_NC` | 开 | `0x04000000..0x0403FFFF` → Normal NC（Host 描述符/数据，BL22） |
-| `BSP_BIZ_SKIP_HOST_DCACHE` | **派生** | `board.h`：两 NC 宏**同时**开时自动定义 |
+| `BSP_BIZ_SKIP_HOST_DCACHE` | **派生** | `board.h`：两 NC 宏**同时**开时自动定义；当前默认不派生 |
 
 派生效果：`biz_emmc_biz` / `biz_emmc_exec` / `biz_exec_misc` 里 CRC / Store / `report_task_result` 的 `rt_hw_cpu_dcache_ops` **不编译**。关任一 NC 宏后恢复 dcache 维护。
 
@@ -176,8 +176,8 @@
 #define BSP_BIZ_EMMC_ON_CPU1
 #define BSP_FLASH_CPU0_WORKER
 #define BSP_IRAM0_LOW_NC
-#define BSP_IRAM1_LOW_NC          /* → BSP_BIZ_SKIP_HOST_DCACHE */
-#define BSP_BIZ_PHASE_STATS
+/* #define BSP_IRAM1_LOW_NC */  /* 默认关=WB；见 Biz_Performance_Optimization.md */
+/* #define BSP_BIZ_PHASE_STATS */ /* 测相时开；约 -4% FPS */
 #define BSP_BIZ_LOG_BOOT_INFO
 /* 全部 DEFER / SKIP 注释掉 */
 /* RT_USING_ZMODEM 关；PCIE / EMMC_DLL 关 */
@@ -193,9 +193,15 @@
 /* 再按需只留一个 BSP_DRV_MOD_* */
 ```
 
-**Host WB 路径 A/B（恢复 dcache）**
+**Host IRAM1 NC（Flash 升级更省心；fpfifo CRC FPS 约 -30%）**
+
+```c
+#define BSP_IRAM1_LOW_NC          /* 与 IRAM0_LOW_NC 同开 → BSP_BIZ_SKIP_HOST_DCACHE */
+```
+
+**Host 双窗 WB（恢复两路 dcache）**
 
 ```c
 /* #define BSP_IRAM0_LOW_NC */
-/* 或注释 BSP_IRAM1_LOW_NC — 任一即可去掉 SKIP_HOST_DCACHE */
+/* #define BSP_IRAM1_LOW_NC */
 ```

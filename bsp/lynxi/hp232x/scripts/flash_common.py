@@ -82,34 +82,46 @@ def reset_mcu(cmd=None):
 
 def patch_boot_wrapper_spl(fw_path, wrapper_path):
     """Align boot-wrapper spl_address with rtthread-header dest_addr (4KB)."""
-    with open(fw_path, "rb") as fw:
+    fw_real = os.path.realpath(fw_path)
+    wrap_real = os.path.realpath(wrapper_path)
+    with open(fw_real, "rb") as fw:
         fw.seek(8)
         dest = struct.unpack("<I", fw.read(4))[0]
     spl = dest & ~0xFFF
-    with open(wrapper_path, "r+b") as f:
+    with open(wrap_real, "r+b") as f:
         f.seek(8)
         f.write(struct.pack("<Q", spl))
-    print("[flash] boot-wrapper spl_address=0x%08X (dest=0x%08X)" % (spl, dest),
-          flush=True)
+    print("[flash] boot-wrapper spl_address=0x%08X (dest=0x%08X) fw=%s" %
+          (spl, dest, fw_real), flush=True)
+    return spl
 
 
 def wait_for_xmodem(ser, timeout_s=30):
+    """Wait for BL1 xmodem marker. Prefer '.U'; bare 'U' after NAK also OK."""
     buf = b""
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        chunk = ser.read(4096)
+        try:
+            chunk = ser.read(4096)
+        except serial.SerialException as e:
+            print("[flash] serial read err: %s" % e, flush=True)
+            return False
         if chunk:
             buf += chunk
             sys.stdout.buffer.write(chunk)
             sys.stdout.flush()
-            if b".U" in buf or b"xmodem" in buf.lower():
+            if b".U" in buf:
+                return True
+            # BL1 often emits NAK then 'U'
+            if b"U" in chunk and (b"\x15" in buf or b"." in buf[-8:]):
                 return True
         else:
-            time.sleep(0.1)
+            time.sleep(0.05)
     return False
 
 
 def xmodem_send(ser, path):
+    path = os.path.realpath(path)
     def getc(size, timeout=8):
         return ser.read(size) or None
 
@@ -119,33 +131,89 @@ def xmodem_send(ser, path):
 
     modem = XMODEM(getc, putc)
     with open(path, "rb") as stream:
-        if path.endswith("spl.bin"):
+        if path.endswith("spl.bin") or "rtthread-header" in path or "hp640-header" in path:
             for _ in range(6):
                 ser.write(b"\x00")
         else:
             ser.write(b"\x00")
-        print("[flash] sending %s" % path, flush=True)
+        print("[flash] sending %s (%d bytes)" % (path, os.path.getsize(path)),
+              flush=True)
         if not modem.send(stream):
             raise RuntimeError("xmodem send failed: %s" % path)
 
 
-def flash_images(xdir, reset_cmd=None):
+def open_serial():
+    """Open UART. Do NOT use fuser — it can leave D-state hangs on FTDI."""
+    return serial.Serial(SERIAL_DEV, BAUD, timeout=0.05)
+
+
+def flash_images(xdir, reset_cmd=None, require_u=True):
+    """
+    Robust UART boot: open serial FIRST, then reset, wait .U, xmodem.
+    Never call fuser. Caller must close ser (or use capture_boot_log).
+    """
     wrapper = os.path.join(xdir, "boot-wrapper.bin")
     spl = os.path.join(xdir, "u-boot-spl.bin")
     for p in (wrapper, spl):
-        if not os.path.isfile(p):
+        if not os.path.isfile(p) and not os.path.islink(p):
             raise FileNotFoundError("missing %s (set HP232X_XMODEM_DIR?)" % p)
     patch_boot_wrapper_spl(spl, wrapper)
-    ser = serial.Serial(SERIAL_DEV, BAUD, timeout=0.05)
+
+    # Open BEFORE reset so we do not miss early .U bytes
+    ser = open_serial()
     reset = reset_cmd or RESET_CMD
+    # Prefer timeout-wrapped reset to avoid lynx-showinfo hangs
+    if "timeout" not in reset:
+        reset = "timeout -k 3 20 %s" % reset
     reset_mcu(reset)
-    wait_s = UPGRADE_RESET_WAIT if "-r" in reset else 3
-    time.sleep(wait_s)
-    if not wait_for_xmodem(ser):
+    time.sleep(2.0)
+    if not wait_for_xmodem(ser, timeout_s=25):
+        if require_u:
+            ser.close()
+            raise RuntimeError("no .U after reset — refuse xmodem (retry)")
         print("[flash] WARN: .U not seen, trying xmodem anyway", flush=True)
     xmodem_send(ser, wrapper)
     xmodem_send(ser, spl)
     return ser
+
+
+def flash_until_marker(xdir, markers, passes=1, log_sec=35, reset_cmd=None):
+    """
+    Boot firmware N times (hp640=1, RTT=2 after biz/IRAM0 dirty).
+    Success = final pass log contains any marker. Serial is closed before return.
+    """
+    if isinstance(markers, str):
+        markers = [markers]
+    last_text = ""
+    for i in range(1, passes + 1):
+        print("[flash] pass %d/%d markers=%s" % (i, passes, markers), flush=True)
+        try:
+            ser = flash_images(xdir, reset_cmd=reset_cmd, require_u=True)
+        except RuntimeError as e:
+            print("[flash] pass %d fail: %s" % (i, e), flush=True)
+            time.sleep(2)
+            if i == passes:
+                return False, last_text
+            continue
+        buf = bytearray()
+        end = time.time() + log_sec
+        while time.time() < end:
+            data = ser.read(4096)
+            if data:
+                buf.extend(data)
+                sys.stdout.buffer.write(data)
+                sys.stdout.flush()
+            else:
+                time.sleep(0.01)
+        ser.close()
+        last_text = buf.decode("latin1", "replace")
+        hit = any(m in last_text for m in markers)
+        print("[flash] pass %d marker_hit=%s" % (i, hit), flush=True)
+        if i < passes:
+            time.sleep(1.5)
+            continue
+        return hit, last_text
+    return False, last_text
 
 
 def capture_boot_log(ser, log_path, seconds=LOG_SECONDS):

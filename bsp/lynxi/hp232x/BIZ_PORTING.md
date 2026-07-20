@@ -1,13 +1,13 @@
 # HP640 SPL 业务移植进展（hp232x RT-Thread）
 
 > 本文档描述 `hp640_arm/common/spl/` 业务逻辑向 `lynxi-rtt/bsp/lynxi/hp232x` 的移植状态与测试方法，便于交接。  
-> **上一阶段（已稳）**：eMMC **HS400@200M** + Host Flash 升级；Flash 冷启双核；SMP / emmc_biz / flash / I2C 自启；MCU I2C 代理；fpfifo CRC32 / `phase`。  
-> **本阶段（UART 已验）**：**HS400@100M + DLL** 首发 HB 与 hp640 **同板对齐**（§4.9）；`rtconfig` 联调开 `BSP_EMMC_HS400_100M`，**量产请关回 200M**。  
-> **并行待验**：Flash 冷启@100M；200M 回归护栏；READ_LOG / `mcu_err` e2e。
+> **上一阶段（已稳）**：eMMC HS400@200M；Host Flash 升级；Flash 冷启双核；SMP / emmc_biz / I2C；**fpfifo 全路径 FPS≈hp640**（IRAM1 scratch 默认 **WB**，见 [doc/Biz_Performance_Optimization.md](doc/Biz_Performance_Optimization.md)）；HS400@100M UART A/B（§4.9，量产关回 200M）。  
+> **本阶段移交重点 / 下一位 P0**：**APU 业务报错排查**（Host 跑 APU 相关任务包时失败 / timeout / 状态异常；§4.10 / §9）。  
+> **并行待验**：READ_LOG / `mcu_err` Host 可见；200M 回归护栏；Flash 冷启@100M。
 >
-> 设计背景见 [doc/SPL_MIGRATION_DESIGN.md](doc/SPL_MIGRATION_DESIGN.md)；SMP 总入口 [doc/SMP_SETUP.md](doc/SMP_SETUP.md)；eMMC tuning 见 [doc/EMMC_TUNING.md](doc/EMMC_TUNING.md)；Flash 见 [doc/FLASH_PORTING.md](doc/FLASH_PORTING.md)；镜像/启动见 [doc/IMAGE_DESIGN.md](doc/IMAGE_DESIGN.md)；**宏控制**见 [doc/BSP_MACROS.md](doc/BSP_MACROS.md)；**代码段体积**见 [doc/CODE_SIZE.md](doc/CODE_SIZE.md)；BSP 见 [HANDOFF_SLIM.md](HANDOFF_SLIM.md)；**测试环境**见 [Test_ENV.md](Test_ENV.md)。
+> 设计背景见 [doc/SPL_MIGRATION_DESIGN.md](doc/SPL_MIGRATION_DESIGN.md)；SMP [doc/SMP_SETUP.md](doc/SMP_SETUP.md)；eMMC [doc/EMMC_TUNING.md](doc/EMMC_TUNING.md)；Flash [doc/FLASH_PORTING.md](doc/FLASH_PORTING.md)；镜像 [doc/IMAGE_DESIGN.md](doc/IMAGE_DESIGN.md)；宏 [doc/BSP_MACROS.md](doc/BSP_MACROS.md)；**FPS/cache** [doc/Biz_Performance_Optimization.md](doc/Biz_Performance_Optimization.md)；体积 [doc/CODE_SIZE.md](doc/CODE_SIZE.md)；BSP [HANDOFF_SLIM.md](HANDOFF_SLIM.md)；板测 [Test_ENV.md](Test_ENV.md)。
 
-**更新日期**：2026-07-17（HS400@100M UART 闭环；同板 A/B vs hp640）
+**更新日期**：2026-07-20（fpfifo NC→WB 闭环；交接重心 → APU 报错）
 
 ---
 
@@ -15,27 +15,27 @@
 
 | 项 | 状态 |
 |----|------|
-| 测试板 | **192.168.58.36**（`lynxi` / `lx@123`），UART `/dev/ttyUSB0` @ 115200 |
-| KA200 拓扑参数 | **`-l 0 -i 2 -k 30`** |
-| eMMC HS400@**200M** + heartbeat | ✅ tap **0x34**；`emmc_biz` @ **CPU1**；**默认仅上电报一次**（`heart_beat_interval=0`） |
-| eMMC HS400@**100M** + DLL + 首发 HB | ✅ **UART 闭环**（§4.9）：`DLL=0x32` + HB + Host ALIVE；联调开 `BSP_EMMC_HS400_100M`，**量产关回 200M** |
-| Host 升级 Load + FlashWrite `@0xA6000` | ✅；默认 **CPU0 flash worker** + **`BSP_IRAM1_LOW_NC`** / **`BSP_IRAM0_LOW_NC`** |
-| **Flash 冷启 → RTT 双核 + SSI/JEDEC** | ✅ leave-XIP 用 **flush**（非纯 inv）→ CPU1 ready → JEDEC → `emmc_biz entry CPU1` |
-| **SMP / emmc_biz / flash 自启动** | ✅ 默认关 `BSP_*_DEFER` / `BSP_BIZ_SKIP_*`（见 §3.2） |
-| **I2C MCU 从机 + `ka200 reg` 代理** | ✅ boot 自启；§4.5 |
-| **Host 全路径压测（fpfifo_stress）** | ✅ 根因曾是 **bit-by-bit CRC32**；已换 **固化表 + 字批处理**（对齐 U-Boot `crc32.c`）；§4.8 |
-| **biz 热路径 NC dcache** | ✅ 双 NC 宏时 **`BSP_BIZ_SKIP_HOST_DCACHE`**：CRC/Store/report **不编译** dcache 调用；§3.2 / §4.8 |
+| 测试板1 | **192.168.58.36**（`lynxi` / `lx@123`），UART `/dev/ttyUSB0`；拓扑 **`-l 0 -i 2 -k 30`**（chip30=RTT） |
+| 测试板2（fpfifo A/B） | **192.168.49.121** Link0 Board0 **Chip24**；无 MCU tty；见 [Test_ENV.md](Test_ENV.md) |
+| eMMC HS400@**200M** + heartbeat | ✅ tap **0x34**；`emmc_biz` @ **CPU1**；默认仅上电报一次 |
+| eMMC HS400@**100M** + DLL | ✅ UART（§4.9）；联调开 `BSP_EMMC_HS400_100M`，**量产关** |
+| Host 升级 Load + FlashWrite | ✅；IRAM0 **NC**；IRAM1 scratch 默认 **WB** + inv/bounce（Flash 已维护） |
+| Flash 冷启双核 + SSI/JEDEC | ✅ |
+| SMP / emmc_biz / flash / I2C 自启 | ✅ |
+| **fpfifo_stress 全路径 FPS** | ✅ 对齐 hp640；根因 IRAM1 **NC** 上 CRC 扫 8KB；默认 **关 `BSP_IRAM1_LOW_NC`** |
+| **APU 业务（ExecBD 旁路上电、ApuClock/APUDebug/…）** | 🟡 **代码已移植，未系统回归** → **下一位 P0**（§4.10） |
+| READ_LOG / `mcu_err` Host 可见 | 🟡 待验 |
 
-**拓扑说明（HP232x @ 58.36）**：32 颗 KA200 中 **chip30 = RTT 本 BSP**；其余为 **hp640 SPL**。MCU `i2c_scan` = 硬件在位检测。
+**拓扑**：Host1 上 chip30=RTT、余为 hp640；Host2 上 chip24 可 UART 刷 RTT 做 A/B。
 
 **交给下一位的立即动作**：
 
-1. 读 **§0 / §3.2 / §4.9 / §9**。  
-2. **关 `BSP_EMMC_HS400_100M` 做 200M 回归**（量产默认仍是 200M）。  
-3. 可选：Flash 冷启@100M（UART 已绿；冷启另验 leave-XIP + DLL）。  
-4. 板测用 [Test_ENV.md](Test_ENV.md)；**勿破坏** `emmc_biz` 最高优先与 Host 升级回归。  
-5. **禁止改 hp640 jumper**（`hp640_arm/.../spl.c` `CONFIG_HP640_JUMPER`）。  
-6. 待验：READ_LOG / `biz_mcu_err_post` → Host 可见（§9）；DLL 失败路径曾触发 `i2c_mcu` `epc=0`。
+1. 读 **§0 / §4.8 / §4.10 / §9**；FPS/cache 细节读 [doc/Biz_Performance_Optimization.md](doc/Biz_Performance_Optimization.md)。  
+2. **确认 `rtconfig.h`**：`BSP_IRAM1_LOW_NC` **关（WB）**；`BSP_BIZ_PHASE_STATS` / `BSP_BIZ_LOG_TIMESTAMP` **关**；量产 **关** `BSP_EMMC_HS400_100M`（200M）。  
+3. **本阶段主线：APU 业务报错排查**（§4.10）— 先复现 Host 侧失败现象，再同板对照 hp640。  
+4. 回归护栏：staging `fpfifo_stress`（路径见 Performance 文档）；Host 升级 Load/FlashWrite。  
+5. **禁止改 hp640 jumper**（`CONFIG_HP640_JUMPER`）。  
+6. 同一 Link **禁止并行** fpfifo/dfifo；离线必须 `lynx-showinfo -r -l 0` 后再 UART。
 
 ---
 
@@ -55,7 +55,7 @@
 | **Host 读日志** | I2C `READ_LOG` | `drv_i2c.c` IRQ + 底半部 | 🟡 **下阶段验收** |
 | **Host 报错** | GPIO78 + I2C | `drv_mcu_err_post()` → `mcu_err` | 🟡 **下阶段验收** |
 | **MCU 代理读/写片内 MMIO** | — | `biz_i2c_proxy.c` + MCU `ka200 reg` | ✅ chip30 已验 |
-| 其它任务 (Store/APU/…) | `spl_cmd.c` | `biz_exec_*.c` | 未系统回归 |
+| 其它任务 (Store/APU/…) | `spl_cmd.c` | `biz_exec_*.c` / `drv_apu.c` | 🟡 **APU 报错 = 下阶段 P0** |
 
 协议常量：`biz/biz_host_proto.h` / `biz/biz_config.c`（heartbeat `@0x400000`、query `@0x0500000`）。
 
@@ -64,7 +64,8 @@
 | 已对齐 | 未移植 / 有差异 |
 |--------|----------------|
 | eMMC init → HS400 → heartbeat → query/exec | U-Boot DM/MMC 层 |
-| Host 升级 Load/FlashWrite（协议 + cache/NC） | — |
+| Host 升级 Load/FlashWrite（协议 + IRAM1 **WB** cache） | — |
+| fpfifo CRC/FPS 对齐 hp640（IRAM1 默认 WB） | 开 `BSP_IRAM1_LOW_NC` 会再掉 ~30% FPS |
 | Flash 冷启：strap win + leave-XIP（**flush+icache**）+ PA0 VA alias | jumper 仍不改；BL 链见 IMAGE_DESIGN |
 | Flash SSI EPROMREAD/TO、CPU0 worker | 与 MCU Host 侧的 **I2C e2e 验收** |
 | ADMA `.dma_nocache` @ `0x100040000` | — |
@@ -127,7 +128,7 @@ I2C：**中断 + 信号量**；eMMC：**轮询**。跨核 / 冷启 SMP：[doc/SM
 | eMMC 业务 | `auto_run()` | `biz_emmc_biz.c` | CPU1 + `hp232x_kick_cpu` |
 | 任务执行 | `exec_tasks()` | `biz_emmc_exec.c` + `biz_crc32.c` | Load/FlashWrite；**CRC32 固化表**（§4.8） |
 | Flash SSI | open/write_flash | `drv_flash.c` | **flush** leave-XIP；CPU0 worker；§4.7 |
-| Host scratch | DDR_IRAM / IRAM0 低半 | MMU + `BSP_IRAM1_LOW_NC` / `BSP_IRAM0_LOW_NC` | 双开 → `BSP_BIZ_SKIP_HOST_DCACHE` |
+| Host scratch | DDR_IRAM / IRAM0 低半 | MMU；IRAM1 默认 WB、IRAM0 NC | 双 NC 才 → `BSP_BIZ_SKIP_HOST_DCACHE`；FPS 见 Performance 文档 |
 | 相位统计 | SPL Round Stats / DDR 缓冲 | `BSP_BIZ_PHASE_STATS` + msh `phase` | **静默累计**，勿每包打印；§4.8 |
 | SMP 从核 | spin-table | `board.c` + `entry_point.S` 门禁 | Flash 冷启 §4.3 / SMP_SETUP Part A |
 | I2C/MCU GPIO | designware + GPIO78 | `drv_i2c.c` / `drv_gpio_mcu.c` | **默认自启**（§4.5） |
@@ -145,9 +146,9 @@ I2C：**中断 + 信号量**；eMMC：**轮询**。跨核 / 冷启 SMP：[doc/SM
 #define BSP_DRV_MOD_FINSH
 #define BSP_FLASH_CPU0_WORKER
 /* #define BSP_FLASH_DIRECT_ON_CALLER */ /* 试验 OK；生产关 */
-#define BSP_IRAM1_LOW_NC                 /* IRAM1 低 256KB Host scratch → NC */
+/* #define BSP_IRAM1_LOW_NC */            /* 默认关=WB（fpfifo CRC）；开=NC 利于 Flash */
 #define BSP_IRAM0_LOW_NC                 /* IRAM0 低 256KB Host 描述符/数据 → NC */
-/* 上两者同时定义时 board.h 自动 #define BSP_BIZ_SKIP_HOST_DCACHE
+/* 两 NC 同时开时 board.h 才 #define BSP_BIZ_SKIP_HOST_DCACHE
  * → CRC32 / Store / report_task_result 的 dcache 调用不编译进镜像 */
 
 /*
@@ -248,7 +249,7 @@ UART 烧录双核正常；Flash jumper 冷启易在 `hp232x_mmu_secondary_init` 
 | `ka200_tools -u` | ✅ | Successfully |
 | Load → `@0x100000000` | ✅ | |
 | FlashWrite `@0xA6000` | ✅ | EPROMREAD RDSR；CPU0 worker |
-| scratch NC / WB A/B | ✅ | 默认 NC |
+| scratch NC / WB A/B | ✅ | **默认 WB**（FPS）；NC 可选 |
 | CPU1 DIRECT Flash | ✅ 试验 | 默认关 |
 
 一键：`python3 scripts/flash_host_upgrade_test.py`。  
@@ -435,14 +436,14 @@ msh > phase
 #endif
 ```
 
-双 NC 默认开时，上述调用 **不编进镜像**。关任一 NC 宏后恢复编译 dcache 维护。
+仅双 NC 同时开时上述调用 **不编进镜像**。当前默认 IRAM1=WB → CRC/Store **编译** dcache 维护（对齐 hp640）。详析：[doc/Biz_Performance_Optimization.md](doc/Biz_Performance_Optimization.md)。
 
 #### 交接验收建议
 
-1. 刷含 CRC 表修复的 KA 镜像。  
-2. Host：`./fpfifo_stress -d 0 -B 0:<rtt_chip> -r 10000 -b 64`，看 Avg FPS。  
-3. KA：`phase`，确认 `CRC32 avg` 与 `avg_round` 合理（不再 ~3ms 量级空耗）。  
-4. 回归：`-n` 仍应正常；Host 升级 + 冷启仍 PASS。
+1. 确认 `BSP_IRAM1_LOW_NC` **关**（默认 WB）。  
+2. Host：staging `fpfifo_stress -d 0 -B 0:<rtt_chip> -b16 -T 50 -g 0`，RTT≈hp640 FPS。  
+3. 可选开 `PHASE_STATS`：`CRC32 avg` 应远低于 NC 时的 ~194µs；测完关回。  
+4. 回归：`-n`；Host 升级（WB + inv/bounce）+ 冷启仍 PASS。
 
 ### 4.9 HS400@100M + DLL（2026-07-17）— ✅ UART 闭环 / 同板 A/B
 
@@ -515,38 +516,83 @@ RTT 关键文件：`drivers/drv_emmc_core.c`（校准）、`biz/biz_emmc_dll.c`�
 | 200M 路径 | quiet / calibrate / HB INFO 均 `#ifdef BSP_EMMC_HS400_100M` |
 | DLL lock `stat=0x3` | 100M 上 hp640/RTT **均有**；警告后继续，属预期 |
 
+### 4.10 APU 业务报错排查（2026-07-20 交接）— 🟡 下一位 P0
+
+> **目标**：Host 下发含 APU / ExecBD 旁路上电的任务包时，RTT 与 hp640 行为对齐；定位报错（timeout / 状态异常 / Host 可见失败）。  
+> **前提**：eMMC + fpfifo 已稳；勿在排查时重开 `BSP_IRAM1_LOW_NC`（除非专门验 Flash NC）。
+
+#### 代码入口（RTT ↔ hp640）
+
+| 能力 | hp640 | RTT |
+|------|-------|-----|
+| APU clk/rst/PLL | `spl_cmd.c` `apu_enable` / `apu_pll_set` | `drivers/drv_apu.c` |
+| 包内首次 ExecBD → 上电 APU | `exec_tasks` 同类逻辑 | `biz_emmc_exec_tasks()`：`drv_apu_enable(1)` + `s_apu_init_flag` |
+| 包结束关 APU（非 unlimited） | 同 | `biz_emmc_biz_entry`：`unlimited_apu_task==0` 时 `drv_apu_enable(0)` |
+| ApuClock / APUDebug / DgbRead / PWM | `exec_task_*` | `biz/biz_exec_apu.c`（`BSP_DRV_MOD_EXEC_APU`） |
+| 失败 dump | — | `biz/biz_apu_dump.c` |
+| MMU 映射 | SPL 页表 | `hp232x_mmu.c`：`0x1400000000` NORM / `0x1500…` CORECFG / `0x1600…` NN FIFO |
+
+典型日志（业务包旁路，**非**失败本身）：
+
+```text
+[D] … apu init flag=1          ← 本包首次见 ExecBD，打开 APU 时钟/复位
+[D] … Load … dst=0x100000000
+[D] … Task>>>execBD bd_addr=0x…
+```
+
+#### 建议排查顺序
+
+1. **复现与对照**：同板先 **hp640** 再 RTT，对比 Host 报错码 / 串口；板用 Host1 chip30 或 Host2 chip24（[Test_ENV.md](Test_ENV.md)）。  
+2. **确认 APU 窗可访问**：boot 应有 APU L1；MCU `ka200 reg` 读 `0x12500074`（APU_CTRL）对照 hp640。  
+3. **分清失败点**：
+
+| 现象 | 优先查 |
+|------|--------|
+| ExecBD timeout / ADMA err | eMMC/BD、Load 是否灌对、IRAM1 WB（见 Performance 文档） |
+| `DgbRead timeout` | `biz_exec_apu_debug_read` MDBG；core_id；APU 是否已 enable |
+| `ApuClock` / PLL 后 HB 异常 | `drv_apu_pll_set` + heartbeat |
+| 包结束 / 二次包 APU 死 | `s_apu_init_flag`、`unlimited_apu_task`；是否过早 `drv_apu_enable(0)` |
+| Host 笼统错误 | 开 `BSP_BIZ_LOG_BOOT_INFO`；`biz_apu_dump_failed_status` |
+
+4. **Load→ExecBD cache**：与 hp640 同（Load 后 inv；ExecBD 不额外 flush BD）。勿先怀疑缺 flush，除非有 CPU 改 BD 证据。  
+5. **改 APU 后护栏**：staging fpfifo `-b16`；Host 升级 Load+FlashWrite。
+
+相关：`biz_exec_apu.c`、`biz_apu_dump.c`、`drv_apu.c`、`biz_emmc_exec.c`（上电）、`hp640_arm/.../spl_cmd.c`（对照）。
+
 ---
 
 ## 5. 关键文件地图
 
 ```
 hp232x/biz/
-├── biz_host_proto.h / biz_config.c   # heart_beat_interval 默认 0
+├── biz_host_proto.h / biz_config.c   # heart_beat_interval 默认 0；unlimited_apu_task
 ├── biz_subsys.c              # kick_cpu + flash worker + i2c + emmc_biz start
-├── biz_emmc_biz.c / biz_emmc_exec.c  # query/exec；Store/report dcache 受 SKIP 宏
+├── biz_emmc_biz.c / biz_emmc_exec.c  # query/exec；首次 ExecBD → drv_apu_enable
+├── biz_exec_apu.c / biz_apu_dump.c   # APU 任务 + 失败 dump（§4.10）
 ├── biz_emmc_dll.c            # DLL msh/Exec；boot 与 driver 校准衔接
-├── biz_crc32.c / biz_exec_misc.c     # CRC32 固化表；SKIP 宏下无 dcache
+├── biz_crc32.c / biz_exec_misc.c     # CRC32；IRAM1 WB 时编入 dcache
 ├── biz_log.c                 # I2C READ_LOG 数据源
 ├── biz_i2c_proxy.c           # 0xD0/0xD1 片内 MMIO 代理（绝对地址）
 ├── biz_finsh_cmds.c          # flash / biz / heart_beat / emmc_dll / phase
 hp232x/drivers/
-├── board.h                   # IRAM NC 窗口；BSP_BIZ_SKIP_HOST_DCACHE
-├── drv_flash.c               # flush leave-XIP / bringup / worker
-├── hp232x_mmu.c              # 0x07000000→PA0；mmu_flush_tables
+├── board.h                   # IRAM NC 窗口；双 NC 才 SKIP_HOST_DCACHE
+├── drv_apu.c                 # APU clk/rst/pll
+├── drv_flash.c               # flush leave-XIP / bringup / worker；WB inv+bounce
+├── hp232x_mmu.c              # APU 窗；0x07000000→PA0；mmu_flush_tables
 ├── board.c                   # idle schedule / kick / secondary_up
 ├── drv_i2c.c / drv_gpio_mcu.c
-├── drv_emmc_core.c           # HS400；100M 时 emmc_dll_offset_calibrate_100m()
+├── drv_emmc_core.c           # HS400；Load flush/inv；exec_bd
 ├── drv_emmc.h
-hp232x/rtconfig.h             # BSP_EMMC_HS400_100M（联调开 / 量产关）
+hp232x/rtconfig.h             # IRAM1 默认 WB；BSP_EMMC_HS400_100M 量产关
+hp232x/doc/
+├── Biz_Performance_Optimization.md  # fpfifo FPS / NC vs WB
+├── SMP_SETUP.md / FLASH_PORTING.md / IMAGE_DESIGN.md / EMMC_TUNING.md
 hp232x/utilities/
 ├── zmodem/                   # 串口 flash update（ZMODEM）；默认不编
                               # 需在 rtconfig.h 打开 RT_USING_ZMODEM
 hp232x/applications/
 ├── main.c                    # SMP 自启 / flash bringup / emmc_biz
 ├── cmd.c                     # md/mw
-hp232x/doc/
-├── SMP_SETUP.md              # SMP 总入口（含 Flash 冷启 Part A）
-├── FLASH_PORTING.md / IMAGE_DESIGN.md / EMMC_TUNING.md
 libcpu/.../entry_point.S      # 从核 cpu_id 门禁
 src/components.c              # hp232x 不在此放从核
 ```
@@ -643,41 +689,41 @@ MSH（调试）：`phase` / `phase reset` / `heart_beat` / `emmc_dll` / `flash s
 | Host 全路径 RTT ≫ 640（`-b 64`） | **bit CRC32** → `biz_crc32.c` 固化表+字批处理 |
 | phase 每 1 万包打印 / DDR 脏计数 | 改为静默累计 + msh `phase`；640 侧勿用 BSS 累加器 |
 | Host NC 区仍做 dcache | 双 NC 宏 → `BSP_BIZ_SKIP_HOST_DCACHE` 编译剔除 |
+| fpfifo RTT≪hp640（`-b16` CRC） | IRAM1 scratch **NC** → 默认 **WB**；见 Performance 文档 |
 
 ---
 
 ## 9. 待办（交接优先级）
 
-### P0（已完成）— 核心业务 + I2C + 全路径 CRC（**HS400@200M**）
+### P0（已完成）— 核心业务 + fpfifo FPS
 
 | 项 | 状态 |
 |----|------|
-| eMMC / Host 升级 / Flash 冷启双核 | ✅ §4.3–4.4、§4.7 |
-| I2C boot 自启 + ISR 修复 | ✅ §4.5 |
-| MCU↔KA `ka200 reg`（绝对地址，chip30） | ✅ §4.5 |
-| Host fpfifo CRC32 慢路径修复 | ✅ §4.8 |
-| KA+MCU **20260716** 固件对齐 | 交接时需板侧确认已刷 |
+| eMMC / Host 升级 / Flash 冷启双核 / I2C | ✅ §4.3–4.5、§4.7 |
+| Host fpfifo CRC 算法 + **IRAM1 默认 WB**（FPS≈hp640） | ✅ §4.8；[Biz_Performance_Optimization.md](doc/Biz_Performance_Optimization.md) |
+| HS400@100M UART A/B | ✅ §4.9（量产关宏回 200M） |
 
-### P0（本阶段）— **HS400@100M ↔ hp640 A/B**（§4.9）
+### P0（本阶段）— **APU 业务报错排查**（§4.10）
 
 | 项 | 状态 |
 |----|------|
-| hp640 同板 UART 基准（临时开 100M+DLL） | ✅ `DLL_OFFSET=0x32` + HB；已关回默认 |
-| RTT UART：`BSP_EMMC_HS400_100M` 首发 HB + Host ALIVE | ✅ §4.9 |
-| 关 100M 宏后 **200M** 回归 | ⬜ 建议交付前再跑一次 |
-| Flash 冷启@100M | ⬜ 未专门验收（UART 已绿） |
-| flash `@0xe8029` 坏 offset / `@0xe7000` error flag 清理 | ⬜ 按需 |
-| `biz_mcu_err_post(DLL_SCAN)` → `i2c_mcu` `epc=0` | ⬜ |
-| READ_LOG / `mcu_err` Host 可见 | ⬜ |
+| 复现 Host APU/ExecBD 相关失败，同板对照 hp640 | ⬜ |
+| 核对 `drv_apu_enable` / PLL / MDBG / `s_apu_init_flag` | ⬜ |
+| MMU APU 窗与 MMIO 访问 | ⬜ |
+| 修后护栏：fpfifo + Host 升级 | ⬜ |
 
-### P1 — 冷启写回镜像 / 量产链
+### P1 — 收尾 / 量产护栏
 
-Host 升级写入 Flash 后 **冷复位**，确认不回 `.U`（头 + jumper `+0x20` 见 IMAGE_DESIGN）。  
-量产 `rtconfig`：**注释** `BSP_EMMC_HS400_100M`（保持 200M）。
+| 项 | 状态 |
+|----|------|
+| 关 100M 宏后 **200M** 再确认 | ⬜ |
+| Flash 冷启@100M | ⬜ |
+| READ_LOG / `mcu_err` Host 可见；DLL 失败 → `i2c_mcu` `epc=0` | ⬜ |
+| Host 升级后冷启不回 `.U` | ⬜ |
 
 ### P2
 
-Store/APU/stress 全量；query 去 memcpy / 减 INT 重开等微优化；PCIe 按需；100M 量产化（DLL 落盘策略、去 INFO HB 等）。
+Store/stress 全量；微优化；PCIe；100M 量产化（DLL 落盘等）。
 
 ---
 
@@ -699,3 +745,5 @@ Store/APU/stress 全量；query 去 memcpy / 减 INT 重开等微优化；PCIe �
 | 2026-07-16 | **CRC32** 固化表+字批处理；`phase` 静默统计；**`BSP_BIZ_SKIP_HOST_DCACHE`**；HB 默认仅上电一次 |
 | 2026-07-17 | **`BSP_EMMC_HS400_100M`**：100M+DC`0x3c`+driver 内 DLL 校准；HB 写探测 |
 | 2026-07-17 | **UART 闭环**：同板 A/B 与 hp640 同得 `DLL=0x32`；RTT 首发 HB + main loop；§4.9 更新 |
+| 2026-07-20 | **fpfifo**：根因 IRAM1 scratch **NC**；默认 **关 `BSP_IRAM1_LOW_NC`=WB**；FPS≈hp640；文档 `Biz_Performance_Optimization.md` |
+| 2026-07-20 | **交接**：下一位 P0 → **APU 业务报错**（§4.10）；§0/§9 更新 |

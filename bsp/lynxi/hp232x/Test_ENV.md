@@ -27,6 +27,7 @@ HP232X 板测主机与自动化脚本说明。脚本源码位于本目录 [`scri
 | 拓扑查询（升级前） | `lynx-showinfo` — 须见 `[Link0] ALIVE` + `[0] ALIVE` |
 | 测试对象 | Link0 Board0 Chip24 |
 | 说明 | 串口无 MCU tty；KA I2C addr 常为 `0x34`（mux=0）。Flash `@0xe7000` 若残留 eMMC err（如 `0x6e600020`）会导致旧固件在 HS400 前打 GPIO78 卡住；新固件会先清标志再 init。 |
+| A/B 约束 | **同一 Link 同时只允许一个 Host 压测**（fpfifo/dfifo 等互斥）。**Link 或 KA200 离线 → 必须 `lynx-showinfo -r -l 0` 复位**；UART 片再 xmodem（RTT 业务后常需双次）。自动化：`scripts/ab_fpfifo_host2.py --remote`。 |
 
 ### 固件与升级方式
 #### uart启动方式测试

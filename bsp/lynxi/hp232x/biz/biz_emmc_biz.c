@@ -475,6 +475,8 @@ void biz_emmc_biz_entry(void *param)
             BIZ_ERROR("[biz] exec_tasks fail ret=%d cmd=%s(0x%02x) tag=%u\n",
                       ret, biz_hp640_cmd_name(s_task_list[0].cmd), s_task_list[0].cmd,
                       s_task_list[0].tag);
+            /* hp640 auto_run: reset_apu() on exec fail */
+            drv_apu_reset();
             drv_apu_enable(0);
             s_apu_init_flag = 0;
         }

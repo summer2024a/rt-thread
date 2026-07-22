@@ -2317,7 +2317,7 @@ int drv_emmc_exec_bd(uint64_t bd_addr)
 
     ret = emmc_wait_interrupt();
 
-    /* Match hp640: write reset bits, do NOT poll SOFTWARE_RESET (saves FPGA reset latency ×2). */
+    /* Match hp640: write reset bits, do NOT poll SOFTWARE_RESET. */
     emmc_writel(SDHCI_INT_ALL_MASK, SDHCI_INT_STATUS);
     emmc_writeb(SDHCI_RESET_CMD, SDHCI_SOFTWARE_RESET);
     emmc_writeb(SDHCI_RESET_DATA, SDHCI_SOFTWARE_RESET);

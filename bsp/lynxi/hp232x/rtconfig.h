@@ -66,9 +66,6 @@
  *     msh: biz start|upgrade         (compiled only if this macro is on)
  * - BSP_I2C_DEFER: no i2c_mcu / mcu_err auto-start;
  *     msh: i2c start                 (compiled only if this macro is on)
- * - BSP_SMP_DEFER_SECONDARY:
- *     defined   → 从核仅 msh「smp start / release」
- *     undefined → main 内 leave-XIP+flush+release（自启动）
  *
  * MCU note (HP2320): 早期 Host 查地址后复位会卡 I2C，曾默认开 BSP_I2C_DEFER。
  * 现 I2C 联调已通，默认关 DEFER → boot 自启；隔离调试再临时打开。
@@ -76,10 +73,9 @@
  */
 /* #define BSP_FLASH_DEFER_INIT */ /* 开则 flash 命令行 init/worker；关则 boot 自启 */
 /* #define BSP_BIZ_SKIP_THREADS */ /* 开则 biz 命令行 start/upgrade；关则 boot 自启 */
-/* #define BSP_I2C_DEFER */        /* 开则 i2c 手启（msh i2c start）；关则 boot 自启 */
-/* #define BSP_SMP_DEFER_SECONDARY */ /* 开则命令行启动从核；关则 boot 自启动 */
+/* #define BSP_I2C_DEFER */
+/* #define BSP_SMP_DEFER_SECONDARY */
 
-/* emmc_biz 默认绑 CPU1（auto-start / biz_emmc_biz_start） */
 #define BSP_BIZ_EMMC_ON_CPU1
 
 /*

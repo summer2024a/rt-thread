@@ -8,8 +8,9 @@ HP232X 板测主机与自动化脚本说明。脚本源码位于本目录 [`scri
 |----|-----|
 | IP | `192.168.58.36` |
 | 账号 | `lynxi` / `lx@123`（sudo 同密码） |
-| KA200串口 | `/dev/ttyUSB0` @ 115200 |
-| MCU串口 | `/dev/ttyUSB1` @ 115200 |
+| KA200 chip30 串口 | `/dev/ttyUSB0` @ 115200（**early tuning / ymodem 主测**） |
+| KA200 chip31 串口 | `/dev/ttyUSB1` @ 115200 |
+| MCU串口 | 视接线；与 chip31 勿混用同一 tty |
 | KA200复位 | `lynx-showinfo -r -l 0` |
 | MCU复位 | `/usr/local/lynx/tools/mcu-tools -l 0 -t 1 -i 2 reset_mcu` |
 | 拓扑查询（升级前） | `lynx-showinfo` — 须见 `[Link0] ALIVE` + `[2] ALIVE` |

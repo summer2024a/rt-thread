@@ -35,7 +35,7 @@
 | **应用** | 分区、FAT/ext4、GPT | Lynxi `HP640_Task` / `HeartBeat` @ 固定字节地址（见 §2.7） |
 | **块传输** | READ/WRITE_MULTIPLE_BLOCK，ADMA2 常见 | **ADMA3** 描述符链（Synopsys 扩展），轮询 INT 非 GIC 中断 |
 | **链路模式** | HS200 tuning → HS(DDR) → HS400 | 同 JEDEC 命令序列，但 **HS400_FPGA_MODE 初始化顺序不同**（§2.3） |
-| **Tuning** | 硬件 `TUNED_CLK` 置位即完成 | FPGA 模型 **iter≈17 误锁**，需 re-arm + 软件 latch（§2.4） |
+| **Tuning** | 硬件 `TUNED_CLK` 置位即完成 | FPGA 模型 **iter≈17 误锁**，RTT 需 early re-arm（§2.4）；**无 soft latch** |
 | **PHY** | 板级 device tree / 固定 delay | **efuse 选 SDCLK_DC**、AT tap、vendor DLL（§2.5） |
 | **后端** | 真实 NAND eMMC 颗粒 | **FPGA 例化 eMMC 模型**，时序窗口更窄 |
 
@@ -80,9 +80,9 @@ power / go_idle
 
 | 项 | 标准 SDHCI / 通用驱动 | 本板 hp640 / hp232x |
 |----|----------------------|---------------------|
-| 完成判据 | 硬件置 `TUNED_CLK` | hp640：自然 **~70 iter, tap≈0x35**；hp232x RTT：**iter≈17 误锁 tap=0x0f** → 需软件干预 |
-| 误锁处理 | 无（假定硬件正确） | **re-arm**：清 `TUNED_CLK`、置 `EXEC_TUNING`、reset CMD/DATA、重写 AT_CTRL |
-| 手动结束 | 无 | **iter≥63 且 tap≥0x34** 时软件置 `TUNED_CLK`（latch） |
+| 完成判据 | 硬件置 `TUNED_CLK` | **同左**（hp640 / RTT）；UART 所见 tap≈0x35 仅为该颗 chip 观测值 |
+| 误锁处理 | 无（假定硬件正确） | RTT：**early re-arm**；若已 re-arm 则 **iter≥70 soft latch**（无绝对 tap 窗） |
+| 手动结束 | 无 | 仅 **post-rearm** late latch；无 re-arm 时完全信硬件 |
 | 等待 DATA_INHIBIT | 通常等 CMD+DATA inhibit 清零 | **仅等 CMD_INHIBIT**（tuning 跳过 DATA_INHIBIT） |
 | TIMEOUT_CONTROL | 数据/命令超时常设 | **tuning 路径不设**（hp640 `!data` 分支） |
 | Tuning buffer | 可读 BUFFER 校验 pattern | **只等 DATA_AVAIL，不读 BUFFER** |
@@ -90,7 +90,7 @@ power / go_idle
 | 命令收尾 | 因驱动而异 | **固定** `udelay(1000)` → 读清 INT → 失败再 reset(CMD\|DATA) |
 | 调度环境 | 内核/UB 可能抢占 | RT-Thread 多线程；已验证关中断包裹 tuning ** alone 不能** 解决误锁 |
 
-**结论**：对标准 eMMC，上述 re-arm / latch 属于 **非标准 workaround**；对本 FPGA 后端 + RTT 时序组合则为 **必需**。
+**结论**：对标准 eMMC，early re-arm 属 **非标准 workaround**；对本 FPGA + RTT 早期误锁仍可能需要。终值 tap **随 chip 板位变化**，勿写死。
 
 ### 2.5 Host PHY / DLL（Synopsys DesignWare 扩展）
 
@@ -132,7 +132,7 @@ Host 侧通过 **读 eMMC 某 LBA 范围** 获取心跳与任务，与文件系�
 | 必须保留 | 不可照搬标准 Linux mmc 的原因 |
 |----------|--------------------------------|
 | HS400_FPGA_MODE 初始化顺序 | FPGA 后端 init_cmds 前门控 |
-| tuning re-arm + latch | 误锁 tap 导致 HS400 无 DATA_END |
+| tuning re-arm（仅 early） | RTT 早期误锁；**无** soft latch / 绝对 tap 窗 |
 | SDCLK_DC / AT / DLL 路径 | Synopsys PHY + efuse 板级参数 |
 | 紧循环 reset poll | FPGA 模型时序 |
 | ADMA3 + 固定 NC DMA 区 | 与 hp640 描述符/地址一致 |
@@ -141,20 +141,24 @@ Host 侧通过 **读 eMMC 某 LBA 范围** 获取心跳与任务，与文件系�
 
 ---
 
-## 3. A/B 对比数据（同板 192.168.58.36）
+## 3. A/B 对比数据（同板 192.168.58.36 chip30，2026-07-22 复测）
 
-hp640 增加 tuning iter log 后与 hp232x 逐步对比：
+同一 Flash 冷启、同参 sparse TRACE（`emmc tun: iter=`）：
 
-| iter | hp640 AT_STAT | hp232x AT_STAT（修复前） |
-|------|---------------|-------------------------|
-| 0 | 0x7 | 0x7 |
-| 16 | 0x17 | 0x17 |
-| 17 | （继续 EXEC_TUNING） | **TUNED_CLK 误锁 tap=0x0f** |
-| 31 | 0x26 | — |
-| 63 | 0x46 | — |
-| 70 | **完成，tap=0x35** | — |
+| iter | hp640 HC2 / EXEC / TUNED / tap | RTT HC2 / EXEC / TUNED / tap |
+|------|--------------------------------|------------------------------|
+| 0–16 | `384b` / 1 / 0 / `0x07`…`0x17` | **完全相同** |
+| **17** | `384b` / **1** / **0** / **`0x18`** | `388b` / **0** / **1** / **`0x0f`** ← early 误锁 |
+| 18+ | 继续扫 | re-arm 后从 `tap=0x7` 重扫 |
+| 成功 | **`TUNED=1 tap=0x35 iter=70`（纯 HW）** | soft latch 窗 `[0x30,0x3a]`（过渡） |
 
-前 17 步 trial tap 完全一致；**第 18 步起 hp232x 被硬件误判 tuning 完成**，而 hp640 继续扫描至 ~70 步。
+日志：Host1 `/tmp/ab_hp640_tun.log`、`/tmp/ab_rtt_tun.log`（及 `.csv`）。
+
+**结论**：前 17 步 trial tap 一致；**仅 RTT 在 iter=17 被硬件误置 `TUNED_CLK`**。hp640 同座可扫到自然 `0x35@70`。根因在 RTT 相对 SPL 的 **CMD21 收尾/时序**（非 I2C/绑核/tick，见 §10），不是 AT_CTRL 初值（两边 `0xf1d0000`）。
+
+hp640 TRACE：编译加 `-DLYNXI_EMMC_TUNING_TRACE`（默认关）。RTT：`BSP_EMMC_TUNING_TRACE`。
+
+> 注意：tuning 期间勿长时间独占 UART（dense TRACE 会拖死打印）；Host ALIVE 可先 `lynx-showinfo -r` 且不开串口。
 
 ---
 
@@ -181,8 +185,10 @@ hp640 SPL 为 **单线程裸机轮询**，无 RT-Thread 调度、无 I2C 底半�
 ### 4.3 有效差异（修复点）
 
 1. **tuning 命令收尾顺序** 对齐 hp640：成功/失败后均 `udelay(1000)` → 读清 INT → 失败再 `reset(CMD|DATA)`；**不设 TIMEOUT_CONTROL**。
-2. **拒绝 premature lock**：iter=17 tap=0x0f 时 **re-arm**（clear `TUNED_CLK`、set `EXEC_TUNING`、reset CMD/DATA、重写 AT_CTRL），继续扫描。
-3. **手动 latch**：re-arm 后 RTT 侧硬件仍可能跑满 128 iter 不自然置 `TUNED_CLK`；在 **iter≥63 且 tap≥0x34** 时软件置 `TUNED_CLK` 结束 tuning（hp640 自然完成约 iter=70 tap=0x35；0x34 同板验证 DATA 相 OK）。
+2. **成功判据对齐 hp640**：`EXEC_TUNING=0` 且 `TUNED_CLK=1` 即成功；**无绝对 tap 上下限**（板位不同）。
+3. **RTT early re-arm**：`iter<40` 且 `tap<0x20`（如 `0x0f@17`）→ re-arm 继续扫。
+4. **RTT post-rearm latch**：re-arm 后硬件常不再置 `TUNED_CLK`（本次 `code=11`）；仅此时在 **iter≥70** 且仍 `EXEC_TUNING` 时 soft latch。  
+   **无 re-arm 时不 latch**（避免扫窗中途 `0x4b` 强锁 → HB `INT=0x1`）。
 
 ### 4.4 环境因素（次要）
 
@@ -201,9 +207,9 @@ hp640 SPL 为 **单线程裸机轮询**，无 RT-Thread 调度、无 I2C 底半�
 ```
 [drv] emmc: chip=KA200M HS400 SDCLK_DC=0x21
 [drv] emmc: tuning early tap=0xf iter=17, re-arm
-[drv] emmc: tuning latch tap=0x34 iter=63
-[drv] emmc: tuning OK tap=0x34 iter=63
-[drv] emmc: HS400 OK tap=0x34
+[drv] emmc: tuning latch(post-rearm) tap=0x?? iter=70   # 仅 re-arm 后；或硬件 TUNED_CLK
+[drv] emmc: tuning OK tap=0x?? iter=??
+[drv] emmc: HS400 OK tap=0x??
 Heart-beat reported successfully (index=1)
 Entering main task processing loop
 ```
@@ -268,6 +274,115 @@ grep -aE 'tuning|heart|xfer_ok|fail|tap=' /tmp/hp232x_run.log
 
 ## 9. 后续可选
 
-- 根因级：查明 iter=17 误锁的 MMIO/调度时序差异，去掉 re-arm + 手动 latch（恢复标准 tuning 语义）
-- tap 精确对齐 hp640 0x35（当前 0x34 已稳定）
-- CPU1 绑定 `emmc_biz`：SMP 跨核调度验证见 [SMP_SETUP.md](SMP_SETUP.md)；可用 msh `biz start 1` / 诊断线程
+- **P0**：early@17 根因已修（HS200 后 `reset(CMD|DATA)` → HW `0x35@~70`）。调试脚手架（latch/re-arm/TRACE/A–X 宏）已删除，tuning 对齐 hp640 纯 HW 路径。
+- 混板回归：各 chip tap 可不同；判据是 eMMC 可用 / Host ALIVE，不是 UART 的 0x35
+
+---
+
+## 10. Early 误锁根因追查（chip30）
+
+### 10.1 测试拓扑（用户指定）
+
+| 项 | 值 |
+|----|-----|
+| 主机 | **测试主机0 / Host1** `192.168.58.36` |
+| 启动 | **Flash 冷启**（jumper） |
+| chip30 串口 | `/dev/ttyUSB0` @ 115200 |
+| chip31 串口 | `/dev/ttyUSB1` @ 115200 |
+| 实验对象 | **仅 chip30** |
+| 无 HB / eMMC 起不来 | **YMODEM** 救砖：`scripts/send_ymodem.py`（先 detach screen） |
+
+```bash
+# 开发机编译后 scp rtthread-header.bin → 58.36
+# chip30 无 msh 仍活时：
+sudo python3 send_ymodem.py --cmd 'flash updatey 0xa6000 0x40000' rtthread-header.bin
+# 然后 lynx-showinfo -r -l 0 冷启，抓 USB0
+```
+
+### 10.2 已排除（§4.2 + §10）
+
+INT_EN / ADMA / CLK / SDCLK_DC / AT_CTRL 对齐、TIMEOUT_CONTROL、buffer drain、`rt_hw_interrupt_disable` 包 tuning、AT_CTRL 写法 — **仍 early@17**。
+
+| 实验 | 结果（chip30 Flash 冷启） | 日期 |
+|------|---------------------------|------|
+| **A** `BSP_I2C_DEFER`（tuning 前无 I2C） | 仍 `early tap=0xf iter=17`；见 `i2c deferred` | 2026-07-22 |
+| **B** 关 `BSP_BIZ_EMMC_ON_CPU1`（emmc@CPU0） | 仍 `early tap=0xf@17`；re-arm 后扫满 128 → `code=11`（soft latch 因 AT 持续爬升未 stable×3） | 2026-07-22 |
+| **D** `BSP_EMMC_TUNING_CMD21_GAP_MS=1`（循环内 mdelay） | 仍 `early 0xf@17`；`emmc@CPU1`；re-arm 后 latch 未成 → bring-up fail | 2026-07-22 |
+| **E** `BSP_EMMC_TUNING_NO_TICK`（tuning 关本核 tick） | 仍 `early 0xf@17`；re-arm 后 TRACE/UART 夹杂 `\\0` 后停更（疑似 CPU1 卡死） | 2026-07-22 |
+| **F** `AT_CTRL=0xf1d0004`（`SWIN_TH_EN`） | 仍 early@17；readback 确认写入 | 2026-07-22 |
+| **G** `BSP_EMMC_TUNING_FAST_CMD21`（去 1ms quirk + 跳过 R1） | 仍 early@17；关 TRACE 后仍如此 → **非 CMD21 节拍** | 2026-07-22 |
+| **H** `AT_CTRL=0x281d0004`（`SWIN_TH=0x28`+EN） | 仍 early@17 → **非 SWIN 阈值过小** | 2026-07-22 |
+| **I** `BSP_EMMC_AT_CTRL_SKIP`（保持复位 `0xf000005`） | 仍 early@17 | 2026-07-22 |
+| **J** re-arm **不** `reset(CMD\|DATA)` | 仍 early；仍需 window latch；本组出现 HB `INT=0x1` | 2026-07-22 |
+| CMD21 顺序对齐 hp640（BLKSZ→MODE→DMA clear→CMD） | 仍 early@17 | 2026-07-22 |
+| **K** pre-tune 快照 + `ATS(L/R/C)` | 见下 **§10.2.1** | 2026-07-22 |
+| **L** re-arm 脉冲 `ATUO_TUNING_EN` | sticky 边沿可清（`ATS→0x6`）；**仍无 HW TUNED**，需 window latch | 2026-07-22 |
+| **M** CMD21 `BUF_DRAIN` | 仍 early@17 `ATS=0x7160f` | 2026-07-22 |
+| **N** 首扫 `AT_CTRL=0xf1d0001`（AT_EN） | 仍 early@17 | 2026-07-22 |
+| **O** `BSP_EMMC_TUNING_MIN_CMD21`（无 R1/INT_ALL/quirk/mid-EXEC reset；SIGNAL=0） | 仍 `early 0xf@17`；`soft-fail` **从未触发** → **非** INT_ALL/reset 关窗；见 Host1 `/tmp/ab_o.log` | 2026-07-22 |
+| **P** post-CMD21 FIFO pattern | FIFO **空**（`PRESENT=0x3ff00f0` 无 bit11） | 2026-07-22 |
+| **P2** BRR 当下读 FIFO | 仍 `words=0`；AT 占数据通路，软件无法验 pattern；early 仍在；`/tmp/ab_p2.log` | 2026-07-22 |
+| **Q** `TIMEOUT_CONTROL=0xe` 于 AT 扫描 | 仍 early@17（`TOUT=0xe` 已生效）；`/tmp/ab_q.log` | 2026-07-22 |
+| **R** HS200 `set_timing` 后 `mdelay(20)` 再 tuning | 仍 early@17；`/tmp/ab_r.log` | 2026-07-22 |
+| **S** `SW_TUNE_EN` 软件扫 `CENTER_PH_CODE` | **失败** `best_w=1`（几乎全相 CMD21 honor_ret 失败）；chip30 ALIVE bit30 掉，已 YMODEM 恢复 | 2026-07-22 |
+| **T** 全静默：`SMP_DEFER`+`I2C_DEFER`+emmc@CPU0+`QUIESCE`(irq+tick+SIG=0) | **仍** `early 0xf@17 ATS=0x7160f`；QUIESCE enter/exit 均见；`/tmp/ab_t.log` → **否 SoC 噪声主因** | 2026-07-22 |
+| **U** PHY/PAD/DLL/CPR pre-tune 对照 | PHY/PAD/DLL/CPR **全同**；仅 `TOUT` RTT=`0xa` vs hp640=`0xe`（§10 Q 已否 TOUT）；`/tmp/ab_u_rtt.log` `/tmp/ab_u_hp640.log` | 2026-07-22 |
+| **V** CMD21：`BLKSZ/COUNT/MODE` **先于** inhibit wait（真对齐 hp640 `sdhci_send_tuning`） | **仍** `early 0xf@17`（`CMD21=BLKSZ_1st` 已生效）；`/tmp/ab_v.log` | 2026-07-23 |
+| **W** CMD6 后 **CMD13** 等到 `RDY_FOR_DATA`（对齐 hp640 `__mmc_switch`；原为固定 `mdelay(10)`） | CMD13 **已生效**（`HS_TIMING=2 OK status=0x900 polls=1`）但 **仍** `early 0xf@17 ATS=0x7160f`；`/tmp/ab_w.log` → **非** CMD6 settle | 2026-07-23 |
+| **X** CMD21 BRR 后等 `DATA_INHIBIT` 清再返回 | **仍** early@17；`di=0`（BRR 时已 idle）；`/tmp/ab_x.log` | 2026-07-23 |
+| **Y** HS200 进 AT 前 PIO **CMD8 EXT_CSD** 回读 | `EXT_CSD PIO fail n=0 INT=0x18001`；随后 **无 early**，**HW `tap=0x35@71`**；`/tmp/ab_y.log` → 疑似 fail 路径 `reset(CMD\|DATA)` 副作用 | 2026-07-23 |
+| **Y2** 仅 HS200 后 `reset(CMD\|DATA)`（无 CMD8） | **成功**：无 early，**HW `tap=0x35@70`**，无 latch；ALIVE=FFFFFFFF；`/tmp/ab_y2.log` | 2026-07-23 |
+
+#### 10.2.1 §10 K 关键发现（为何总是 17）
+
+同座、同参 sparse TRACE（`pre-tune` + `ATS=…(L/R/C)`），日志 Host1：`/tmp/ab_k_hp640.log`、`/tmp/ab_k_rtt.log`。
+
+| 项 | hp640 | RTT |
+|----|-------|-----|
+| **pre-tune** CLK/HC/HC2/`EMMC_CTRL`/MSHC/MBIU/`AT_CTRL`/`SDCLK_DC`/SMPLDL/ATDL/`INT_EN`/`SIG` | **逐字段相同** | **相同** |
+| iter16 | `EXEC=1 tap=0x17` L=0 R=0 | **相同** |
+| **iter17** | `EXEC=1 TUNED=0 tap=0x18` L=0 R=0 | `EXEC=0 TUNED=1` **`ATS=0x07160f` → L=0x7 R=0x16 C=0xf** |
+| 含义 | 仍在扫 trial | **AT 收口**：窗宽 `R−L=0x0f`（= `SWIN_TH_VAL`），中心 `0x0f` |
+
+结论：
+1. early@17 **不是** 进 tuning 前寄存器配错（pre-tune 已对齐）。
+2. 总是 17：trial 从 `0x7` 走到 `0x16` 共 16 点，窗宽触达 `SWIN_TH=0x0f` 后 HW 置 `TUNED_CLK`。
+3. **差在样本判定**：RTT 在 ≈`0x17` 处被 AT 判失败（封右沿 `R=0x16`）；hp640 同点继续 PASS（L/R 仍为 0）。软件侧两边 CMD21 均无 `INT_ERROR`。
+4. re-arm 后 L/R 粘滞；**写 `AT_STAT=0` 无效**；**脉冲 `ATUO_TUNING_EN` 可清到 `ATS=0x6`**，但二次扫描仍不自然 `TUNED_CLK` → 仍靠 window latch。
+5. FIFO drain / 首扫开 `AT_EN` **不能**去掉 early。
+
+下一刀建议：early re-arm / window latch 可标为 **保底**（Y2 后正常路径不再触发）；混板回归后再考虑删除。
+
+**根因（§10 Y/Y2，2026-07-23）**：HS200 进入后（CMD6→clk→`set_timing`）SDHCI **CMD/DATA FSM 粘滞**，导致 AT 在 trial≈`0x17` 误判 FAIL → 窗宽触达 `SWIN_TH` 后 early `TUNED`（`ATS=0x07160f`）。在 `emmc_exe_tuning` 前做 **`reset(CMD|DATA)`** 后，与 hp640 同座一致：**HW `tap=0x35@iter≈70`，无 early、无 latch**。
+
+**结论（§10 A–Y2）**：early@17 根因已定位并修复（pre-AT CMD/DATA reset）。CMD13 / BLKSZ-first 等对齐项保留。Latch/re-arm 仅作保底。
+
+**过渡 soft latch（2026-07-22）**：re-arm 后 AT 爬升时，优先在 tap∈`[0x30,0x3a]` 锁（chip30 验过：`latch tap=0x30` → `ALIVE` bit30 正常）；否则晚 floor 兜底。勿锁到 `0x4b` 一类高位。
+
+### 10.3 A/B 矩阵（按序做，每次只改一项）
+
+| # | 实验 | 做法 | 期望若为根因 |
+|---|------|------|----------------|
+| A | **I2C 未起再 tuning** | `rtconfig.h` 开 `BSP_I2C_DEFER`；冷启后勿 `i2c start`，看是否仍 `early tap` | 不再 early → I2C/IRQ 干扰 |
+| B | **emmc_biz@CPU0** | 临时关 `BSP_BIZ_EMMC_ON_CPU1` | 不再 early → 跨核/从核时序 |
+| C | **逐 iter TRACE** | 开 `BSP_EMMC_TUNING_TRACE`，UART0 抓 `emmc tun: iter=` 与 hp640 同 iter 的 HC2/tap 对照 | 定位首次 `TUNED=1` 的 iter |
+| D | **拉长 CMD21 间隔** | tuning 循环内额外 `mdelay(1)`（对照 640 仅循环头 mdelay） | 若消失 → 轮询过密/总线恢复 |
+| E | **tuning 前停 tick** | `emmc_exe_tuning` 内关 local timer（慎） | 若消失 → 调度/tick 抢占 |
+| F–J | **AT_CTRL / FAST / rearm** | 见 §10.2 表 | 均已否 |
+
+通过标准：**连续多次 Flash 冷启无 `tuning early`，且硬件自然 `TUNED_CLK`（无 post-rearm latch），HB/OTA 稳定**。
+
+下一刀建议（未做）：对比 **HS200 进入前** 全量寄存器（CLK/PHY/`EMMC_CTRL`/`MSHC`）与 hp640；或在 hp640 TRACE 中打每 iter `INT_STATUS` 看是否存在“样本失败”使窗口重置。
+
+### 10.4 宏（`rtconfig.h`，默认全关）
+
+```c
+/* #define BSP_I2C_DEFER */           /* A：tuning 前不起 I2C */
+/* #define BSP_EMMC_TUNING_TRACE */   /* C：每 iter INFO 打 HC2/tap */
+/* #undef  BSP_BIZ_EMMC_ON_CPU1 */    /* B：emmc_biz 绑 CPU0 */
+/* #define BSP_EMMC_TUNING_FAST_CMD21 */
+/* #define BSP_EMMC_AT_CTRL_SKIP */
+/* #define BSP_EMMC_TUNING_REARM_NO_RESET */
+```
+
+当前 soft latch / HB 重试仅作 **能 OTA 的过渡**；§10 过关后应删掉 post-rearm latch，只保留（或也不要）early re-arm。

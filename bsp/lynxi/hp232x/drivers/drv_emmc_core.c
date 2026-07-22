@@ -16,10 +16,6 @@
 
 #define EMMC_BASE               CONFIG_EMMC_BASE_ADDR
 
-/* RTT tuning: reject premature tap lock; see doc/EMMC_TUNING.md */
-#define EMMC_TUNING_TAP_MIN         0x34U
-#define EMMC_TUNING_LATCH_MIN_ITER  63
-
 /* Runtime level: HP_LOGI / HP_LOGD via biz_log (msh: log info|debug) */
 #define EMMC_BOOT_LOG(fmt, ...)     HP_LOGI("[drv] emmc: " fmt, ##__VA_ARGS__)
 #ifdef BSP_DRV_EMMC_DEBUG
@@ -64,6 +60,7 @@
 
 #define SDHCI_CMD_INHIBIT       (1U << 0)
 #define SDHCI_DATA_INHIBIT      (1U << 1)
+#define SDHCI_DATA_AVAILABLE    (1U << 11) /* PRESENT_STATE buffer read ready */
 #define SDHCI_INT_RESPONSE      (1U << 0)
 #define SDHCI_INT_DATA_END      (1U << 1)
 #define SDHCI_INT_DMA_END       (1U << 3)
@@ -211,6 +208,12 @@
 #define EXT_CSD_TIMING_HS400    3U
 #define EXT_CSD_DDR_FLAG        4U
 #define MMC_SWITCH_MODE_WRITE_BYTE 0U
+#define MMC_CMD_SEND_STATUS     13
+#define MMC_STATUS_SWITCH_ERROR (1U << 7)
+#define MMC_STATUS_RDY_FOR_DATA (1U << 8)
+/* init_cmds CMD3 arg 0x00010000 — fixed RCA=1 (hp640 style) */
+#define EMMC_RCA                1U
+#define EMMC_CMD6_TIMEOUT_MS    500
 
 #define CMD_DESC_LINK_VALID     0x09U
 #define INTERG_DESC_LINK_VALID  0x39U
@@ -1095,10 +1098,12 @@ static int emmc_dll_config_retry(int enable)
     return ret;
 }
 
-/* hp640 sdhci_at_ctr_config() */
+/* hp640 sdhci_at_ctr_config() — 0xf1d0000 */
+#define EMMC_AT_CTRL_VAL  0xf1d0000U
+
 static void emmc_at_ctrl_config(void)
 {
-    emmc_writel(0xf1d0000, emmc_vendor_reg(AUTO_TUNING_CTRL_OFF));
+    emmc_writel(EMMC_AT_CTRL_VAL, emmc_vendor_reg(AUTO_TUNING_CTRL_OFF));
 }
 
 static uint32_t emmc_at_stat_read(void)
@@ -1333,13 +1338,34 @@ static int emmc_mmc_switch(uint8_t index, uint8_t value)
                    ((uint32_t)index << 16) |
                    ((uint32_t)value << 8);
     int ret;
+    int timeout_ms = EMMC_CMD6_TIMEOUT_MS;
+    uint32_t status = 0;
 
     ret = emmc_send_cmd(MMC_CMD_SWITCH, arg, 3);
     if (ret != BIZ_SUCCESS)
         return ret;
 
-    rt_thread_mdelay(10);
-    return BIZ_SUCCESS;
+    /* hp640 __mmc_switch: poll CMD13 until RDY_FOR_DATA / SWITCH_ERROR */
+    do {
+        ret = emmc_send_cmd(MMC_CMD_SEND_STATUS, EMMC_RCA << 16, 1);
+        if (ret == BIZ_SUCCESS)
+        {
+            status = emmc_readl(SDHCI_RESPONSE);
+            if (status & MMC_STATUS_SWITCH_ERROR)
+            {
+                EMMC_BOOT_LOG("switch idx=%u val=%u SWITCH_ERROR status=0x%x\n",
+                              index, value, status);
+                return BIZ_ERR_EMMC_INIT;
+            }
+            if (status & MMC_STATUS_RDY_FOR_DATA)
+                return BIZ_SUCCESS;
+        }
+        rt_hw_us_delay(100);
+    } while (timeout_ms-- > 0);
+
+    EMMC_BOOT_LOG("switch idx=%u val=%u CMD13 timeout status=0x%x\n",
+                  index, value, status);
+    return BIZ_ERR_EMMC_CMD_TIMEOUT;
 }
 
 static int emmc_set_card_speed_mode(uint8_t mode, int hsdowngrade)
@@ -1377,7 +1403,8 @@ static int emmc_set_card_speed_mode(uint8_t mode, int hsdowngrade)
     return BIZ_SUCCESS;
 }
 
-static int emmc_send_tuning_cmd(void)
+/* hp640 sdhci_send_tuning() — BLKSZ/COUNT/MODE before inhibit; ignore ret. */
+static void emmc_send_tuning_cmd(void)
 {
     uint16_t blk_size = (s_host.bus_width == 8) ? 128U : 64U;
     uint16_t flags = SDHCI_CMD_RESP_SHORT | SDHCI_CMD_DATA |
@@ -1389,8 +1416,12 @@ static int emmc_send_tuning_cmd(void)
     static unsigned int cmd_timeout = 100U;
     uint64_t poll_start;
     int ret = BIZ_SUCCESS;
+    uint8_t hc1;
 
-    /* hp640 sdhci_send_command(): tuning skips DATA_INHIBIT */
+    emmc_writew(SDHCI_MAKE_BLKSZ(SDHCI_DEFAULT_BOUNDARY, blk_size), SDHCI_BLOCK_SIZE);
+    emmc_writew(1, SDHCI_BLOCK_COUNT);
+    emmc_writew(SDHCI_TRNS_READ, SDHCI_TRANSFER_MODE);
+
     while (emmc_readl(SDHCI_PRESENT_STATE) & inhibit_mask)
     {
         if (time >= cmd_timeout)
@@ -1398,7 +1429,7 @@ static int emmc_send_tuning_cmd(void)
             if (cmd_timeout <= 400U)
                 cmd_timeout += cmd_timeout;
             else
-                return BIZ_ERR_EMMC_STATE_TIMEOUT;
+                return;
         }
         time++;
         rt_hw_us_delay(1000);
@@ -1406,21 +1437,13 @@ static int emmc_send_tuning_cmd(void)
 
     emmc_writel(SDHCI_INT_ALL_MASK, SDHCI_INT_STATUS);
 
-    {
-        uint8_t ctrl = emmc_readb(SDHCI_HOST_CONTROL);
-        ctrl &= (uint8_t)~SDHCI_CTRL_DMA_MASK;
-        emmc_writeb(ctrl, SDHCI_HOST_CONTROL);
-    }
-
-    emmc_writew(SDHCI_MAKE_BLKSZ(SDHCI_DEFAULT_BOUNDARY, blk_size), SDHCI_BLOCK_SIZE);
-    emmc_writew(1, SDHCI_BLOCK_COUNT);
-    emmc_writew(SDHCI_TRNS_READ, SDHCI_TRANSFER_MODE);
+    hc1 = emmc_readb(SDHCI_HOST_CONTROL);
+    hc1 &= (uint8_t)~SDHCI_CTRL_DMA_MASK;
+    emmc_writeb(hc1, SDHCI_HOST_CONTROL);
 
     emmc_writel(0, SDHCI_ARGUMENT);
     emmc_writew(SDHCI_MAKE_CMD(MMC_CMD_SEND_TUNING_BLOCK_HS200, flags), SDHCI_COMMAND);
-    emmc_dsb();
 
-    /* hp640 sdhci_send_command(): no TIMEOUT_CONTROL for tuning (!data) */
     poll_start = emmc_cntpct();
     do {
         stat = emmc_readl(SDHCI_INT_STATUS);
@@ -1438,7 +1461,7 @@ static int emmc_send_tuning_cmd(void)
     else
         ret = BIZ_ERR_EMMC_INIT;
 
-    /* hp640: SDHCI_QUIRK_WAIT_SEND_CMD before final INT clear (success or fail) */
+    /* SDHCI_QUIRK_WAIT_SEND_CMD */
     rt_hw_us_delay(1000);
 
     (void)emmc_readl(SDHCI_INT_STATUS);
@@ -1449,28 +1472,9 @@ static int emmc_send_tuning_cmd(void)
         emmc_reset(SDHCI_RESET_CMD);
         emmc_reset(SDHCI_RESET_DATA);
     }
-
-    (void)ret;
-    return BIZ_SUCCESS;
 }
 
-static int emmc_tuning_latch(int iter, uint16_t ctrl, uint32_t tap)
-{
-    if (!(ctrl & SDHCI_CTRL_EXEC_TUNING))
-        return 0;
-    if ((iter >= 65 && tap >= 0x35U) ||
-        (iter >= EMMC_TUNING_LATCH_MIN_ITER && tap >= EMMC_TUNING_TAP_MIN))
-    {
-        ctrl |= SDHCI_CTRL_TUNED_CLK;
-        ctrl &= (uint16_t)~SDHCI_CTRL_EXEC_TUNING;
-        emmc_writew(ctrl, SDHCI_HOST_CONTROL2);
-        emmc_dsb();
-        EMMC_BOOT_LOG("tuning latch tap=0x%x iter=%d\n", tap, iter);
-        return 1;
-    }
-    return 0;
-}
-
+/* hp640 sdhci_exe_tuning() — pure HW TUNED_CLK */
 static int emmc_exe_tuning(void)
 {
     uint16_t ctrl;
@@ -1486,41 +1490,18 @@ static int emmc_exe_tuning(void)
 
     emmc_writel(SDHCI_INT_DATA_AVAIL, SDHCI_INT_ENABLE);
     emmc_writel(SDHCI_INT_DATA_AVAIL, SDHCI_SIGNAL_ENABLE);
+    EMMC_BOOT_LOG("tuning AT_CTRL=0x%x\n",
+                  emmc_readl(emmc_vendor_reg(AUTO_TUNING_CTRL_OFF)));
 
     for (i = 0; i < SDHCI_TUNING_LOOP_COUNT; i++)
     {
-        (void)emmc_send_tuning_cmd();
+        emmc_send_tuning_cmd();
 
         ctrl = emmc_readw(SDHCI_HOST_CONTROL2);
-
-        if (emmc_tuning_latch(i, ctrl, emmc_at_stat_read()))
-        {
-            ret = BIZ_SUCCESS;
-            break;
-        }
-
         if (!(ctrl & SDHCI_CTRL_EXEC_TUNING))
         {
             if (ctrl & SDHCI_CTRL_TUNED_CLK)
-            {
-                uint32_t tap = emmc_at_stat_read();
-
-                if (tap >= EMMC_TUNING_TAP_MIN)
-                {
-                    ret = BIZ_SUCCESS;
-                    break;
-                }
-                EMMC_BOOT_LOG("tuning early tap=0x%x iter=%d, re-arm\n", tap, i);
-                emmc_reset(SDHCI_RESET_CMD);
-                emmc_reset(SDHCI_RESET_DATA);
-                ctrl = emmc_readw(SDHCI_HOST_CONTROL2);
-                ctrl &= (uint16_t)~SDHCI_CTRL_TUNED_CLK;
-                ctrl |= SDHCI_CTRL_EXEC_TUNING;
-                emmc_writew(ctrl, SDHCI_HOST_CONTROL2);
-                rt_hw_us_delay(1000);
-                emmc_at_ctrl_config();
-                continue;
-            }
+                ret = BIZ_SUCCESS;
             break;
         }
 
@@ -1536,6 +1517,9 @@ static int emmc_exe_tuning(void)
         ctrl = emmc_readw(SDHCI_HOST_CONTROL2);
         ctrl &= (uint16_t)~(SDHCI_CTRL_TUNED_CLK | SDHCI_CTRL_EXEC_TUNING);
         emmc_writew(ctrl, SDHCI_HOST_CONTROL2);
+        EMMC_BOOT_LOG("tuning fail iter=%d tap=0x%x HC2=0x%x\n",
+                      i, emmc_at_stat_read(),
+                      emmc_readw(SDHCI_HOST_CONTROL2));
     }
     else
     {
@@ -1560,6 +1544,13 @@ static int emmc_select_hs400(void)
     ret = emmc_sdhci_set_timing(EMMC_MODE_HS200, 0);
     if (ret != BIZ_SUCCESS)
         return ret;
+
+    /*
+     * After HS200 entry, CMD/DATA FSM can be sticky on RTT and cause AT
+     * false-fail ~tap 0x17. Reset before EXEC_TUNING (hp640-equivalent eye).
+     */
+    emmc_reset(SDHCI_RESET_CMD);
+    emmc_reset(SDHCI_RESET_DATA);
 
     ret = emmc_exe_tuning();
     if (ret != BIZ_SUCCESS)

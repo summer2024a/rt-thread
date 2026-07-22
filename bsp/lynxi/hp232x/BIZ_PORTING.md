@@ -1,13 +1,13 @@
 # HP640 SPL 业务移植进展（hp232x RT-Thread）
 
 > 本文档描述 `hp640_arm/common/spl/` 业务逻辑向 `lynxi-rtt/bsp/lynxi/hp232x` 的移植状态与测试方法，便于交接。  
-> **上一阶段（已稳）**：eMMC HS400@200M；Host Flash 升级；Flash 冷启双核；SMP / emmc_biz / I2C；**fpfifo 全路径 FPS≈hp640**（IRAM1 scratch 默认 **WB**，见 [doc/Biz_Performance_Optimization.md](doc/Biz_Performance_Optimization.md)）；HS400@100M UART A/B（§4.9，量产关回 200M）；**I2C SAR GPIO strap 对齐 hp640**（§4.5，2026-07-22）。  
+> **上一阶段（已稳）**：eMMC HS400@200M（**early@17 已根治**，纯 HW `0x35@~70`，见 §4.2）；Host Flash 升级；Flash 冷启双核；SMP / emmc_biz / I2C；**fpfifo 全路径 FPS≈hp640**（IRAM1 scratch 默认 **WB**，见 [doc/Biz_Performance_Optimization.md](doc/Biz_Performance_Optimization.md)）；HS400@100M UART A/B（§4.9，量产关回 200M）；**I2C SAR GPIO strap 对齐 hp640**（§4.5）。  
 > **本阶段移交重点 / 下一位 P0**：**APU 业务报错排查**（Host 跑 APU 相关任务包时失败 / timeout / 状态异常；§4.10 / §9）。  
-> **并行待验**：READ_LOG / `mcu_err` Host 可见；200M 回归护栏；Flash 冷启@100M；Host1 soak 交替升级长稳（§4.4）。
+> **并行待验**：READ_LOG / `mcu_err` Host 可见；200M 混板 soak；Flash 冷启@100M；Host1 soak 交替升级长稳（§4.4）。
 >
 > 设计背景见 [doc/SPL_MIGRATION_DESIGN.md](doc/SPL_MIGRATION_DESIGN.md)；SMP [doc/SMP_SETUP.md](doc/SMP_SETUP.md)；eMMC [doc/EMMC_TUNING.md](doc/EMMC_TUNING.md)；Flash [doc/FLASH_PORTING.md](doc/FLASH_PORTING.md)；镜像 [doc/IMAGE_DESIGN.md](doc/IMAGE_DESIGN.md)；宏 [doc/BSP_MACROS.md](doc/BSP_MACROS.md)；**FPS/cache** [doc/Biz_Performance_Optimization.md](doc/Biz_Performance_Optimization.md)；体积 [doc/CODE_SIZE.md](doc/CODE_SIZE.md)；BSP [HANDOFF_SLIM.md](HANDOFF_SLIM.md)；板测 [Test_ENV.md](Test_ENV.md)。
 
-**更新日期**：2026-07-22（I2C GPIO strap 双采对齐；soak 升级脚本；交接 → APU）
+**更新日期**：2026-07-23（eMMC early@17 根治 + 调试脚手架删除；交接 → APU）
 
 ---
 
@@ -17,8 +17,8 @@
 |----|------|
 | 测试板1 | **192.168.58.36**（`lynxi` / `lx@123`），UART `/dev/ttyUSB0`；拓扑 **`-l 0 -i 2 -k 30`**（chip30=RTT） |
 | 测试板2（fpfifo A/B） | **192.168.49.121** Link0 Board0 **Chip24**；无 MCU tty；见 [Test_ENV.md](Test_ENV.md) |
-| eMMC HS400@**200M** + heartbeat | ✅ tap **0x34**；`emmc_biz` @ **CPU1**；默认仅上电报一次 |
-| eMMC HS400@**100M** + DLL | ✅ UART（§4.9）；联调开 `BSP_EMMC_HS400_100M`，**量产关** |
+| eMMC HS400@**200M** + heartbeat | ✅ **纯 HW `TUNED_CLK`**（同座 `tap=0x35@iter≈70`，对齐 hp640）；**无** early re-arm / soft latch；`emmc_biz` @ **CPU1**；默认仅上电报一次 |
+| eMMC HS400@**100M** + DLL | ✅ UART（§4.9，历史）；联调开 `BSP_EMMC_HS400_100M`，**量产关**；清理后建议再 UART 回归一次 |
 | Host 升级 Load + FlashWrite | ✅ 协议对齐；**Host `Successfully`≠Flash 写完**（§4.4）；IRAM1 默认 **WB** |
 | Flash 冷启双核 + SSI/JEDEC | ✅ |
 | SMP / emmc_biz / flash / I2C 自启 | ✅ |
@@ -31,12 +31,13 @@
 
 **交给下一位的立即动作**：
 
-1. 读 **§0 / §4.4 / §4.5 / §4.8 / §4.10 / §9**；FPS/cache 细节读 [doc/Biz_Performance_Optimization.md](doc/Biz_Performance_Optimization.md)。  
-2. **确认 `rtconfig.h`**：`BSP_IRAM1_LOW_NC` **关（WB）**；`BSP_BIZ_PHASE_STATS` / `BSP_BIZ_LOG_TIMESTAMP` **关**；量产 **关** `BSP_EMMC_HS400_100M`（200M）。  
+1. 读 **§0 / §4.2 / §4.4 / §4.5 / §4.8 / §4.10 / §9**；eMMC 细节读 [doc/EMMC_TUNING.md](doc/EMMC_TUNING.md) §10 Y2；FPS 读 [doc/Biz_Performance_Optimization.md](doc/Biz_Performance_Optimization.md)。  
+2. **确认 `rtconfig.h`**：`BSP_IRAM1_LOW_NC` **关（WB）**；`BSP_BIZ_PHASE_STATS` / `BSP_BIZ_LOG_TIMESTAMP` **关**；量产 **关** `BSP_EMMC_HS400_100M`（200M）。**勿**再开已删除的 tuning A/B 宏。  
 3. **本阶段主线：APU 业务报错排查**（§4.10）— 先复现 Host 侧失败现象，再同板对照 hp640。  
-4. 回归护栏：staging `fpfifo_stress`；Host 升级后看 `MCU I2C addr`（chip30=`0x3a`）；可选 `scripts/soak_fw_upgrade_ab.py`（须 `--post-upgrade-delay`）。  
+4. 回归护栏：staging `fpfifo_stress`；Host 升级后看 `MCU I2C addr`（chip30=`0x3a`）；冷启看 `tuning OK tap=0x3x iter≈70`（**无** `tuning early` / `latch`）。  
 5. **禁止改 hp640 jumper**（`CONFIG_HP640_JUMPER`）。  
-6. 同一 Link **禁止并行** fpfifo/dfifo；离线必须 `lynx-showinfo -r -l 0` 后再 UART。
+6. 同一 Link **禁止并行** fpfifo/dfifo；离线必须 `lynx-showinfo -r -l 0` 后再 UART。  
+7. chip30 无 HB / 无 msh：YMODEM 救砖 — `scripts/send_ymodem.py` + `flash updatey 0xa6000 0x40000`（`--head640` 包）；详见 [Test_ENV.md](Test_ENV.md) / [EMMC_TUNING.md](doc/EMMC_TUNING.md) §10.1。
 
 ---
 
@@ -64,7 +65,8 @@
 
 | 已对齐 | 未移植 / 有差异 |
 |--------|----------------|
-| eMMC init → HS400 → heartbeat → query/exec | U-Boot DM/MMC 层 |
+| eMMC init → HS400 → heartbeat → query/exec | U-Boot DM/MMC 层；RTT 自管 SDHCI（非字节复刻 640） |
+| HS200 AT：`reset(CMD\|DATA)` 后纯 HW `0x35@~70` | early re-arm / soft latch（**已删**） |
 | Host 升级 Load/FlashWrite（协议 + IRAM1 **WB** cache） | — |
 | fpfifo CRC/FPS 对齐 hp640（IRAM1 默认 WB） | 开 `BSP_IRAM1_LOW_NC` 会再掉 ~30% FPS |
 | Flash 冷启：strap win + leave-XIP（**flush+icache**）+ PA0 VA alias | jumper 仍不改；BL 链见 IMAGE_DESIGN |
@@ -124,7 +126,7 @@ I2C：**中断 + 信号量**；eMMC：**轮询**。跨核 / 冷启 SMP：[doc/SM
 |------|---------|-------------|------|
 | 协议/配置 | `lynxi_hp640.h` | `biz_host_proto.h`, `biz_config.c` | Task/HeartBeat |
 | 日志环缓冲 | `spl_log_buffer.c` | `biz/biz_log.c` | `@0x100050000`，供 I2C READ_LOG |
-| eMMC | `spl_cmd.c` + `sdhci.c` | `drv_emmc_core.c` | HS400/ADMA3/tuning；**100M+DLL 见 §4.9** |
+| eMMC | `spl_cmd.c` + `sdhci.c` | `drv_emmc_core.c` | HS400/ADMA3；**200M 纯 HW tuning**（§4.2）；**100M+DLL 见 §4.9** |
 | eMMC DLL | `sdhci_scan_dll_offset()` | `drv_emmc_core.c`（100M）+ `biz_emmc_dll.c` | 读扫 `@0xFF400400`；HB 写探测 |
 | eMMC 业务 | `auto_run()` | `biz_emmc_biz.c` | CPU1 + `hp232x_kick_cpu` |
 | 任务执行 | `exec_tasks()` | `biz_emmc_exec.c` + `biz_crc32.c` | Load/FlashWrite；**CRC32 固化表**（§4.8） |
@@ -195,15 +197,37 @@ msh > log warn         # 或 error|info|debug|N（3/4/6/7）
 
 ---
 
-## 4. 当前板测状态（2026-07-16 @ 58.36；§4.9 为 2026-07-17）
+## 4. 当前板测状态（@ 58.36；§4.2 更新至 2026-07-23；§4.9 为 2026-07-17）
 
 ### 4.1 hp640 SPL（A/B 基准）— ✅
 
-Heartbeat + ID tap **0x35**（hp232x 目标 **0x34**）。
+Heartbeat：优先硬件 AT；UART 所见 tap 仅为该颗观测值。
 
-### 4.2 eMMC tuning — ✅
+### 4.2 eMMC tuning（HS400@200M）— ✅ 根因已修（2026-07-23）
 
-HS200 re-arm + iter≥63，tap **0x34**。见 [doc/EMMC_TUNING.md](doc/EMMC_TUNING.md)。
+同板 chip30 对照 hp640：自然 **`TUNED_CLK` → `tap=0x35@iter≈70`**，**无** `tuning early` / soft latch。
+
+| 项 | 说明 |
+|----|------|
+| **根因** | HS200 进入后（CMD6→clk→`set_timing`）SDHCI **CMD/DATA FSM 粘滞** → AT 在 trial≈`0x17` 误判 FAIL → early `TUNED`（`ATS=0x07160f`） |
+| **修复** | `emmc_select_hs400()` 进 `emmc_exe_tuning()` **前** `reset(CMD\|DATA)`（hp640 无对等语句，但自身不误锁） |
+| **保留对齐** | CMD6 后 CMD13→`RDY_FOR_DATA`；CMD21 **BLKSZ/COUNT/MODE 先于** inhibit；`AT_CTRL=0xf1d0000`；纯 HW `TUNED_CLK` 循环 |
+| **已删** | early re-arm、window soft latch、`drv_emmc_tuning_latch_*`、全部 `BSP_EMMC_TUNING_*` A/B 宏 |
+| **非字节级复刻** | 仍是 RTT 自管 SDHCI（非 U-Boot DM）；详见 [doc/EMMC_TUNING.md](doc/EMMC_TUNING.md) §10 |
+
+成功日志（Flash 冷启 / Host 升级后复位）：
+
+```text
+[I] [drv] emmc: chip=KA200M HS400@200M SDCLK_DC=0x21
+[I] [drv] emmc: tuning AT_CTRL=0xf1d0000
+[I] [drv] emmc: tuning OK tap=0x35 iter=70
+[I] [drv] emmc: HS400 OK tap=0x35
+[I] eMMC HS400 init OK @ 0x10040000
+[I] Entering main task processing loop
+```
+
+**验收**：上述 log + Host `ALIVE` 含 chip30；**若再现** `tuning early` / `latch` → 代码回退或未刷本修。  
+救砖：Host1 `/dev/ttyUSB0`，`mk_ka200_image.py --head640` → `send_ymodem.py --cmd 'flash updatey 0xa6000 0x40000'`。
 
 ### 4.3 SMP + emmc_biz @ CPU1 — ✅（含 Ready 卡住 + Flash 冷启从核）
 
@@ -479,7 +503,7 @@ msh > phase
 
 > **背景**：部分板级 / FPGA 路径需 HS400 **100MHz**（hp640 `HS400_100M_CLOCK`）+ 固定 `SDCLK_DC=0x3c` + **`sdhci_scan_dll_offset`**。  
 > **200M 已验路径勿改坏**：所有 100M 逻辑必须包在 `BSP_EMMC_HS400_100M` 下；量产默认 **关** 该宏。  
-> **工作区现状**：`rtconfig.h` **打开** `BSP_EMMC_HS400_100M`（联调）；交付量产或回归 200M 前务必注释掉并重编。
+> **工作区现状（2026-07-23）**：`rtconfig.h` **关** `BSP_EMMC_HS400_100M`（量产 200M）。开 100M 联调后建议 UART 再验一轮（early@17 修复后已无 soft latch）。
 
 #### 宏与代码入口
 
@@ -496,17 +520,17 @@ RTT 关键文件：`drivers/drv_emmc_core.c`（校准）、`biz/biz_emmc_dll.c`�
 |----|------|------|
 | 时钟 / DC | HS400 **100 MHz**，DC=`0x3c` | 同左 |
 | DLL lock 初态 | `DLL has error status 0x3`（继续） | `dll: lock err stat=0x3`（continue） |
-| Tuning | iter≈71，AT 路径过 | latch `tap=0x46` iter=63 |
+| Tuning | iter≈71，AT 路径过 | 历史曾 latch `tap=0x46` iter=63；**清理后请重测**（期望纯 HW） |
 | DLL scan | `final good DLL_OFFSET=**0x32**`，mlkdc=`0x7f` | read-eye `offset=**0x32**` mlkdc=`0x7f` range=0..100；HB write-probe OK |
 | 首发 HB | `Heart-beat reported successfully` | `Heart-beat reported ok` + `Entering main task` |
 | Host | ALIVE 位图含 chip30 | 同左（`lynx-showinfo` ALIVE=`FFFFFFFF`） |
 
-> **注意**：hp640 A/B 后已 **关回** `HS400_100M_CLOCK` / `CUSTOM_EMMC_DC` / auto_run DLL（勿把 100M 留在 640 默认树）。RTT 联调宏仍开。
+> **注意**：hp640 A/B 后已 **关回** `HS400_100M_CLOCK` / `CUSTOM_EMMC_DC` / auto_run DLL（勿把 100M 留在 640 默认树）。RTT 量产亦 **关** `BSP_EMMC_HS400_100M`。
 
 #### 已对齐（相对 hp640）
 
 - HS400@100M + `SDCLK_DC=0x3c`（KA200M 日志可见）。  
-- Tuning latch：`tap=0x46` / `iter=63` 可过（与 200M tap=0x34 不同，属预期）。  
+- Tuning：历史 latch `tap=0x46`/`iter=63` 可过（与 200M 的 `0x35@70` 不同，属 100M 窗）；**2026-07-23 起已无 soft latch**，开 100M 后以 HW `TUNED_CLK` 为准。  
 - DLL 读扫范围 0..127；100M 取成功窗中点，**不做** `mlkdc/4` 回减。  
 - flash 路径 / scan 完成路径的 `DLL_CTRL` 终值：flash 加载→`0x3`，scan 完成→`0x2`（与 hp640 `#ifdef HS400_100M_CLOCK` 分支一致）。  
 - 扫测地址：**只读** `0xFF400400`（勿对该地址 ADMA 写）。  
@@ -546,10 +570,10 @@ RTT 关键文件：`drivers/drv_emmc_core.c`（校准）、`biz/biz_emmc_dll.c`�
 | 200M 路径 | quiet / calibrate / HB INFO 均 `#ifdef BSP_EMMC_HS400_100M` |
 | DLL lock `stat=0x3` | 100M 上 hp640/RTT **均有**；警告后继续，属预期 |
 
-### 4.10 APU 业务报错排查（2026-07-20 交接）— 🟡 下一位 P0
+### 4.10 APU 业务报错排查 — 🟡 **本阶段 P0（2026-07-23 交接）**
 
 > **目标**：Host 下发含 APU / ExecBD 旁路上电的任务包时，RTT 与 hp640 行为对齐；定位报错（timeout / 状态异常 / Host 可见失败）。  
-> **前提**：eMMC + fpfifo 已稳；勿在排查时重开 `BSP_IRAM1_LOW_NC`（除非专门验 Flash NC）。
+> **前提**：eMMC HS400@200M（§4.2）+ fpfifo（§4.8）已稳；**勿**重开已删的 tuning A/B 宏；勿开 `BSP_IRAM1_LOW_NC`（除非专门验 Flash NC）。
 
 #### 代码入口（RTT ↔ hp640）
 
@@ -685,7 +709,7 @@ sudo python3 scripts/mcu_cli_i2c_test.py --skip-upgrade   # I2C 代理 e2e（需
 
 | 测试 | PASS |
 |------|------|
-| eMMC biz **200M** | `tuning OK tap=0x34` + `emmc_biz entry` + Host ALIVE / 首发 HB |
+| eMMC biz **200M** | `tuning OK tap=0x3x iter≈70`（**无** early/latch）+ Host ALIVE / 首发 HB |
 | eMMC biz **100M** | §4.9：`DLL … (HB write-probe OK)` + `Heart-beat reported ok` + Host ALIVE（**UART ✅**） |
 | Host 升级 | `OK Load` + `OK FlashWrite` + `@0xa6000` 非 FF |
 | Flash 冷启 | `CPU1 ready` + `JEDEC=0xc22537` + `emmc_biz entry CPU1` + 首发 HB |
@@ -705,7 +729,7 @@ MSH（调试）：`phase` / `phase reset` / `heart_beat` / `emmc_dll` / `flash s
 
 | 问题 | 处理 |
 |------|------|
-| HS200 误锁 tap=0x0f | re-arm + iter≥63（EMMC_TUNING） |
+| HS200 误锁 tap=0x0f @iter17 | **根因**：HS200 后 CMD/DATA FSM 粘滞；**修**：进 AT 前 `reset(CMD\|DATA)`；调试 latch/re-arm **已删**（§4.2 / EMMC_TUNING §10 Y2） |
 | SMP 跨核 insert | `scheduler_mp.c` flush |
 | Flash 全 `0xFF` / 假 WIP | RDSR 用 **EPROMREAD** |
 | 间歇 verify `rd=0xff` | inv-all + 页 bounce；或 **`BSP_IRAM1_LOW_NC`** |
@@ -727,13 +751,14 @@ MSH（调试）：`phase` / `phase reset` / `heart_beat` / `emmc_dll` / `flash s
 
 ## 9. 待办（交接优先级）
 
-### P0（已完成）— 核心业务 + fpfifo FPS
+### P0（已完成）— 核心业务 + fpfifo FPS + eMMC tuning
 
 | 项 | 状态 |
 |----|------|
 | eMMC / Host 升级 / Flash 冷启双核 / I2C | ✅ §4.3–4.5、§4.7 |
 | Host fpfifo CRC 算法 + **IRAM1 默认 WB**（FPS≈hp640） | ✅ §4.8；[Biz_Performance_Optimization.md](doc/Biz_Performance_Optimization.md) |
 | HS400@100M UART A/B | ✅ §4.9（量产关宏回 200M） |
+| **early@17 根治**（pre-AT `reset(CMD\|DATA)` + 删 latch） | ✅ §4.2；chip30 `0x35@70` |
 
 ### P0（本阶段）— **APU 业务报错排查**（§4.10）
 
@@ -748,11 +773,12 @@ MSH（调试）：`phase` / `phase reset` / `heart_beat` / `emmc_dll` / `flash s
 
 | 项 | 状态 |
 |----|------|
-| 关 100M 宏后 **200M** 再确认 | ⬜ |
+| 关 100M 宏后 **200M** 再确认 | ✅ chip30（2026-07-23）；建议混板再扫 |
 | Flash 冷启@100M | ⬜ |
 | READ_LOG / `mcu_err` Host 可见；DLL 失败 → `i2c_mcu` `epc=0` | ⬜ |
 | Host 升级后冷启不回 `.U` | ⬜ |
 | soak 交替升级长稳（`soak_fw_upgrade_ab.py`） | 🟡 曾 97/98 PASS；须 post-upgrade-delay |
+| 开 `BSP_EMMC_HS400_100M` 后 UART 再验（无 latch 后） | ⬜ |
 
 ### P2
 
@@ -782,3 +808,5 @@ Store/stress 全量；微优化；PCIe；100M 量产化（DLL 落盘等）。
 | 2026-07-20 | **交接**：下一位 P0 → **APU 业务报错**（§4.10）；§0/§9 更新 |
 | 2026-07-21 | Host 升级：`Successfully`≠Flash 写完；RTT FlashWrite 更慢 → soak 加 post-upgrade-delay |
 | 2026-07-22 | **I2C SAR strap**：DDR 输入 + 双采 + restore `0x14C`；`drv_gpio_mcu` bank=`0x0c`；§4.5/§0 交接更新 |
+| 2026-07-22 | （历史，**已作废**）tuning soft latch / early re-arm / HB bump latch — 见 07-23 根治与删除 |
+| 2026-07-22 | **追 early 根因**：`EMMC_TUNING.md` §10；chip30 USB0 + ymodem 救砖 |

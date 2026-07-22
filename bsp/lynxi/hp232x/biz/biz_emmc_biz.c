@@ -386,26 +386,47 @@ void biz_emmc_biz_entry(void *param)
     /* Clear sticky @0xe7000 before HS400 (do not GPIO-pulse yet). */
     latch_and_clear_emmc_error_flag();
 
-    /* HS400 first (hp640 try_init_emmc), then DLL scan/apply, then heartbeat. */
-    ret = drv_emmc_try_init(true);
-    if (ret != BIZ_SUCCESS)
+    /* HS400 + HB: eMMC must come up for OTA. Retry on HB/DATA flake. */
     {
-        BIZ_ERROR("init emmc fail (%d)\n", ret);
-        return;
-    }
+        const int hb_tries = 8;
+        int attempt;
+
+        ret = BIZ_ERR_EMMC_INIT;
+        for (attempt = 0; attempt < hb_tries; attempt++)
+        {
+            if (attempt > 0)
+                BIZ_WARN("eMMC bring-up retry %d/%d\n", attempt + 1, hb_tries);
+
+            ret = drv_emmc_try_init(true);
+            if (ret != BIZ_SUCCESS)
+            {
+                BIZ_ERROR("init emmc fail (%d) attempt %d\n", ret, attempt + 1);
+                continue;
+            }
 
 #ifdef BIZ_MOD_EMMC_DLL
-    biz_emmc_dll_boot_init();
+            if (attempt == 0)
+                biz_emmc_dll_boot_init();
 #endif
+            if (attempt == 0)
+                report_latched_emmc_error_flag();
 
-    /* hp640: check/report flash eMMC error flag after init, before HB. */
-    report_latched_emmc_error_flag();
-
-    ret = biz_emmc_report_heartbeat();
-    if (ret != BIZ_SUCCESS)
-    {
-        BIZ_ERROR("Failed to report initial heart-beat (%d), system cannot continue\n", ret);
-        return;
+            /* Two HB writes — reject marginal DATA eye that passes once. */
+            ret = biz_emmc_report_heartbeat();
+            if (ret == BIZ_SUCCESS)
+                ret = biz_emmc_report_heartbeat();
+            if (ret == BIZ_SUCCESS)
+                break;
+            BIZ_ERROR("eMMC HB verify fail (%d) attempt %d — will retune\n",
+                      ret, attempt + 1);
+        }
+        if (ret != BIZ_SUCCESS)
+        {
+            BIZ_ERROR("eMMC bring-up fail (%d) after %d tries; "
+                      "OTA unavailable without recovery\n",
+                      ret, hb_tries);
+            return;
+        }
     }
     /* Default heart_beat_interval=0: no further HB in query_task. */
 

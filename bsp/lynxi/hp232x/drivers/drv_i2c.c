@@ -56,17 +56,21 @@
 
 #define MCU_I2C_GPIO_COUNT          3U
 #define MCU_I2C_GPIO_IOC_CFG_VAL    0x608U
+/* Synopsys DW APB GPIO — same offsets as hp640 dwapb_gpio.c */
+#define GPIO_SWPORT_DDR(bank)       (0x04U + (uint32_t)(bank) * 0x0CU)
 #define GPIO_EXT_PORT_OFFSET(bank)  (0x50U + (bank) * 4U)
 
-/* Same as hp640 device_tree_output_evb.dts i2c_mux cs-gpios / cs-iocfg-regs */
+/* Same as hp640 device_tree_output_evb.dts i2c_mux cs-gpios / cs-iocfg-regs.
+ * NOTE: iocfg[0]=0x1200014C is also FLASH_IOC_SPI2_REG (leave-XIP writes 0x660a).
+ * Resolve must sample with GPIO+DDR-in, then restore iocfg for SSI. */
 static const struct {
     uint32_t iocfg_reg;
     uint8_t  bank;
     uint8_t  pin;
 } s_mcu_i2c_gpio_map[MCU_I2C_GPIO_COUNT] = {
-    { 0x1200014CU, 2, 10 }, /* portc pin 0xa */
-    { 0x1200015CU, 2,  2 }, /* portc pin 0x2 */
-    { 0x1200016CU, 2,  6 }, /* portc pin 0x6 */
+    { 0x1200014CU, 2, 10 }, /* portc pin 0xa — mux bit0; shared with SSI SPI2 */
+    { 0x1200015CU, 2,  2 }, /* portc pin 0x2 — mux bit1 */
+    { 0x1200016CU, 2,  6 }, /* portc pin 0x6 — mux bit2 */
 };
 
 #define I2C_MCU_TIMEOUT_MS          3000U
@@ -163,31 +167,85 @@ static int drv_i2c_mcu_validate_addr(uint8_t addr)
     return (addr >= DRV_I2C_ADDR_MIN && addr <= DRV_I2C_ADDR_MAX && addr < 0x78U) ? 0 : -1;
 }
 
+static void drv_i2c_gpio_dir_input(uint8_t bank, uint8_t pin)
+{
+    uint32_t addr = (uint32_t)GPIO_BASE + GPIO_SWPORT_DDR(bank);
+    uint32_t ddr = mmio_read32(addr);
+
+    mmio_write32(addr, ddr & ~(1U << pin));
+}
+
 static uint32_t drv_i2c_gpio_read_pin(uint8_t bank, uint8_t pin)
 {
     return (mmio_read32((uint32_t)GPIO_BASE + GPIO_EXT_PORT_OFFSET(bank)) >> pin) & 1U;
 }
 
-int drv_i2c_mcu_resolve_addr(void)
+static int drv_i2c_gpio_sample_mux(int bits[MCU_I2C_GPIO_COUNT])
 {
     int mux = 0;
+    int i;
 
-    for (int i = 0; i < (int)MCU_I2C_GPIO_COUNT; i++)
+    for (i = 0; i < (int)MCU_I2C_GPIO_COUNT; i++)
     {
+        bits[i] = (int)drv_i2c_gpio_read_pin(s_mcu_i2c_gpio_map[i].bank,
+                                             s_mcu_i2c_gpio_map[i].pin);
+        mux |= bits[i] << i;
+    }
+    return mux;
+}
+
+int drv_i2c_mcu_resolve_addr(void)
+{
+    uint32_t saved_iocfg[MCU_I2C_GPIO_COUNT];
+    int bits1[MCU_I2C_GPIO_COUNT];
+    int bits2[MCU_I2C_GPIO_COUNT];
+    int mux1, mux2, mux;
+    int i;
+
+    /*
+     * Align hp640 (dwapb + lite_i2c_mux):
+     *  - iocfg→0x608, DDR input, sample EXT_PORT
+     *  - hp640 probe often gets bit0 wrong first (mux=6), then
+     *    lynchip_get_mcu_i2c_addr() re-parses to mux=7 before mcu_i2c_init.
+     *    RTT: double-sample after settle; use 2nd (warn if mismatch).
+     *  - restore iocfg (bit0/0x14C shared with Flash SSI SPI2).
+     */
+    for (i = 0; i < (int)MCU_I2C_GPIO_COUNT; i++)
+    {
+        saved_iocfg[i] = mmio_read32(s_mcu_i2c_gpio_map[i].iocfg_reg);
         mmio_write32(s_mcu_i2c_gpio_map[i].iocfg_reg, MCU_I2C_GPIO_IOC_CFG_VAL);
-        mux |= (int)drv_i2c_gpio_read_pin(s_mcu_i2c_gpio_map[i].bank,
-                                          s_mcu_i2c_gpio_map[i].pin) << i;
+        drv_i2c_gpio_dir_input(s_mcu_i2c_gpio_map[i].bank,
+                               s_mcu_i2c_gpio_map[i].pin);
+    }
+
+    rt_hw_us_delay(100);
+    mux1 = drv_i2c_gpio_sample_mux(bits1);
+    rt_hw_us_delay(100);
+    mux2 = drv_i2c_gpio_sample_mux(bits2);
+
+    for (i = 0; i < (int)MCU_I2C_GPIO_COUNT; i++)
+        mmio_write32(s_mcu_i2c_gpio_map[i].iocfg_reg, saved_iocfg[i]);
+
+    /* Prefer 2nd sample — matches hp640 re-parse used for real SAR setup */
+    mux = mux2;
+    if (mux1 != mux2)
+    {
+        BIZ_WARN("MCU I2C GPIO mux unstable: 1st=%d bits=%d%d%d → 2nd=%d bits=%d%d%d "
+                 "(use 2nd; bit0/iocfg0 often flaky after leave-XIP)\n",
+                 mux1, bits1[2], bits1[1], bits1[0],
+                 mux2, bits2[2], bits2[1], bits2[0]);
     }
 
     uint8_t addr = (uint8_t)(DRV_I2C_SAR_CHIP_0 + mux);
     if (drv_i2c_mcu_validate_addr(addr) != 0)
     {
-        BIZ_WARN("MCU I2C GPIO mux invalid (mux=%d), use 0x%02x\n",
-                 mux, DRV_I2C_MCU_DEFAULT_ADDR);
+        BIZ_WARN("MCU I2C GPIO mux invalid (mux=%d bits=%d%d%d), use 0x%02x\n",
+                 mux, bits2[2], bits2[1], bits2[0], DRV_I2C_MCU_DEFAULT_ADDR);
         return (int)DRV_I2C_MCU_DEFAULT_ADDR;
     }
 
-    BIZ_INFO("MCU I2C addr parsed: 0x%02x (mux=%d)\n", addr, mux);
+    BIZ_INFO("MCU I2C addr parsed: 0x%02x (mux=%d bits=%d%d%d iocfg0 was 0x%x)\n",
+             addr, mux, bits2[2], bits2[1], bits2[0], saved_iocfg[0]);
     return (int)addr;
 }
 

@@ -11,9 +11,10 @@
 #define IOCFG_TEST                  0x12000044U
 #define IOCFG_STEP                  0x4U
 #define GPIO_IOC_CFG_VAL            0x608U
+/* Synopsys DW APB GPIO — same as hp640 dwapb_gpio.c (NOT 0x1000 stride) */
+#define GPIO_SWPORT_DR(bank)        (0x00U + (uint32_t)(bank) * 0x0CU)
+#define GPIO_SWPORT_DDR(bank)       (0x04U + (uint32_t)(bank) * 0x0CU)
 #define GPIO_EXT_PORT_OFFSET(bank)  (0x50U + (bank) * 4U)
-#define GPIO_SWPORTA_DR             0x00U
-#define GPIO_SWPORTA_DDR            0x04U
 
 static int s_gpio_inited;
 
@@ -39,11 +40,11 @@ void drv_gpio_mcu_error_init(void)
 
     *(volatile uint32_t *)(uintptr_t)addr = GPIO_IOC_CFG_VAL;
 
-    ddr = gpio_readl(GPIO_SWPORTA_DDR + bank * 0x1000U);
+    ddr = gpio_readl(GPIO_SWPORT_DDR(bank));
     ddr |= (1U << pin);
-    gpio_writel(ddr, GPIO_SWPORTA_DDR + bank * 0x1000U);
+    gpio_writel(ddr, GPIO_SWPORT_DDR(bank));
 
-    gpio_writel(1U << pin, GPIO_SWPORTA_DR + bank * 0x1000U);
+    gpio_writel(1U << pin, GPIO_SWPORT_DR(bank));
     s_gpio_inited = 1;
     BIZ_INFO("GPIO%d MCU error interrupt init\n", GPIO_EMMC_ERROR_INTERRUPT);
 }
@@ -57,7 +58,7 @@ void drv_gpio_mcu_error_pulse(void)
     if (!s_gpio_inited)
         drv_gpio_mcu_error_init();
 
-    gpio_writel(0, GPIO_SWPORTA_DR + bank * 0x1000U);
+    gpio_writel(0, GPIO_SWPORT_DR(bank));
     rt_thread_mdelay(500);
-    gpio_writel(mask, GPIO_SWPORTA_DR + bank * 0x1000U);
+    gpio_writel(mask, GPIO_SWPORT_DR(bank));
 }

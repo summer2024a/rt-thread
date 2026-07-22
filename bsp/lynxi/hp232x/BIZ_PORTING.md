@@ -1,13 +1,13 @@
 # HP640 SPL 业务移植进展（hp232x RT-Thread）
 
 > 本文档描述 `hp640_arm/common/spl/` 业务逻辑向 `lynxi-rtt/bsp/lynxi/hp232x` 的移植状态与测试方法，便于交接。  
-> **上一阶段（已稳）**：eMMC HS400@200M；Host Flash 升级；Flash 冷启双核；SMP / emmc_biz / I2C；**fpfifo 全路径 FPS≈hp640**（IRAM1 scratch 默认 **WB**，见 [doc/Biz_Performance_Optimization.md](doc/Biz_Performance_Optimization.md)）；HS400@100M UART A/B（§4.9，量产关回 200M）。  
+> **上一阶段（已稳）**：eMMC HS400@200M；Host Flash 升级；Flash 冷启双核；SMP / emmc_biz / I2C；**fpfifo 全路径 FPS≈hp640**（IRAM1 scratch 默认 **WB**，见 [doc/Biz_Performance_Optimization.md](doc/Biz_Performance_Optimization.md)）；HS400@100M UART A/B（§4.9，量产关回 200M）；**I2C SAR GPIO strap 对齐 hp640**（§4.5，2026-07-22）。  
 > **本阶段移交重点 / 下一位 P0**：**APU 业务报错排查**（Host 跑 APU 相关任务包时失败 / timeout / 状态异常；§4.10 / §9）。  
-> **并行待验**：READ_LOG / `mcu_err` Host 可见；200M 回归护栏；Flash 冷启@100M。
+> **并行待验**：READ_LOG / `mcu_err` Host 可见；200M 回归护栏；Flash 冷启@100M；Host1 soak 交替升级长稳（§4.4）。
 >
 > 设计背景见 [doc/SPL_MIGRATION_DESIGN.md](doc/SPL_MIGRATION_DESIGN.md)；SMP [doc/SMP_SETUP.md](doc/SMP_SETUP.md)；eMMC [doc/EMMC_TUNING.md](doc/EMMC_TUNING.md)；Flash [doc/FLASH_PORTING.md](doc/FLASH_PORTING.md)；镜像 [doc/IMAGE_DESIGN.md](doc/IMAGE_DESIGN.md)；宏 [doc/BSP_MACROS.md](doc/BSP_MACROS.md)；**FPS/cache** [doc/Biz_Performance_Optimization.md](doc/Biz_Performance_Optimization.md)；体积 [doc/CODE_SIZE.md](doc/CODE_SIZE.md)；BSP [HANDOFF_SLIM.md](HANDOFF_SLIM.md)；板测 [Test_ENV.md](Test_ENV.md)。
 
-**更新日期**：2026-07-20（fpfifo NC→WB 闭环；交接重心 → APU 报错）
+**更新日期**：2026-07-22（I2C GPIO strap 双采对齐；soak 升级脚本；交接 → APU）
 
 ---
 
@@ -19,10 +19,11 @@
 | 测试板2（fpfifo A/B） | **192.168.49.121** Link0 Board0 **Chip24**；无 MCU tty；见 [Test_ENV.md](Test_ENV.md) |
 | eMMC HS400@**200M** + heartbeat | ✅ tap **0x34**；`emmc_biz` @ **CPU1**；默认仅上电报一次 |
 | eMMC HS400@**100M** + DLL | ✅ UART（§4.9）；联调开 `BSP_EMMC_HS400_100M`，**量产关** |
-| Host 升级 Load + FlashWrite | ✅；IRAM0 **NC**；IRAM1 scratch 默认 **WB** + inv/bounce（Flash 已维护） |
+| Host 升级 Load + FlashWrite | ✅ 协议对齐；**Host `Successfully`≠Flash 写完**（§4.4）；IRAM1 默认 **WB** |
 | Flash 冷启双核 + SSI/JEDEC | ✅ |
 | SMP / emmc_biz / flash / I2C 自启 | ✅ |
-| **fpfifo_stress 全路径 FPS** | ✅ 对齐 hp640；根因 IRAM1 **NC** 上 CRC 扫 8KB；默认 **关 `BSP_IRAM1_LOW_NC`** |
+| **I2C SAR = `0x34+(chip&7)`** | ✅ GPIO strap：DDR 输入 + 双采 + restore iocfg（§4.5）；chip30→`0x3a`，chip31→`0x3b` |
+| **fpfifo_stress 全路径 FPS** | ✅ 对齐 hp640；默认 **关 `BSP_IRAM1_LOW_NC`** |
 | **APU 业务（ExecBD 旁路上电、ApuClock/APUDebug/…）** | 🟡 **代码已移植，未系统回归** → **下一位 P0**（§4.10） |
 | READ_LOG / `mcu_err` Host 可见 | 🟡 待验 |
 
@@ -30,10 +31,10 @@
 
 **交给下一位的立即动作**：
 
-1. 读 **§0 / §4.8 / §4.10 / §9**；FPS/cache 细节读 [doc/Biz_Performance_Optimization.md](doc/Biz_Performance_Optimization.md)。  
+1. 读 **§0 / §4.4 / §4.5 / §4.8 / §4.10 / §9**；FPS/cache 细节读 [doc/Biz_Performance_Optimization.md](doc/Biz_Performance_Optimization.md)。  
 2. **确认 `rtconfig.h`**：`BSP_IRAM1_LOW_NC` **关（WB）**；`BSP_BIZ_PHASE_STATS` / `BSP_BIZ_LOG_TIMESTAMP` **关**；量产 **关** `BSP_EMMC_HS400_100M`（200M）。  
 3. **本阶段主线：APU 业务报错排查**（§4.10）— 先复现 Host 侧失败现象，再同板对照 hp640。  
-4. 回归护栏：staging `fpfifo_stress`（路径见 Performance 文档）；Host 升级 Load/FlashWrite。  
+4. 回归护栏：staging `fpfifo_stress`；Host 升级后看 `MCU I2C addr`（chip30=`0x3a`）；可选 `scripts/soak_fw_upgrade_ab.py`（须 `--post-upgrade-delay`）。  
 5. **禁止改 hp640 jumper**（`CONFIG_HP640_JUMPER`）。  
 6. 同一 Link **禁止并行** fpfifo/dfifo；离线必须 `lynx-showinfo -r -l 0` 后再 UART。
 
@@ -253,17 +254,30 @@ UART 烧录双核正常；Flash jumper 冷启易在 `hp232x_mmu_secondary_init` 
 | CPU1 DIRECT Flash | ✅ 试验 | 默认关 |
 
 一键：`python3 scripts/flash_host_upgrade_test.py`。  
-细节：[doc/FLASH_PORTING.md](doc/FLASH_PORTING.md)。
+细节：[doc/FLASH_PORTING.md](doc/FLASH_PORTING.md)；组包：[doc/IMAGE_DESIGN.md](doc/IMAGE_DESIGN.md)（**32B JKXL**，勿用旧 64B 头）。
 
-### 4.5 I2C — boot 自启 + MCU 代理（2026-07-16 交接）
+#### Host `Successfully` 与复位竞态（2026-07-21）
+
+| 事实 | 说明 |
+|------|------|
+| 协议/地址 | RTT 与 hp640 **对齐**：Load→IRAM → FlashWrite `@0xA6000`；jumper 冷启 `@0xA7000`→`0x04040020` |
+| Host 假成功 | `ka200_tools` 发完后固定 `sleep(5)` 即打印 `Send Update Command/Firmware Successfully`；**不**等片上 `OK FlashWrite`；升级包未置 `ERR_CODE` |
+| RTT 更慢 | FlashWrite 经 CPU0 worker + 页/全量 verify，墙钟常 **>5s** |
+| 过早 `lynx-showinfo -r` | 半截升级区 → jumper MD5 失败 → **回 factory（看起来像仍是 4.11）** |
+| 真挂死 | 仅当 MD5 已过但 body 为 **64B JKXL**（入口落 padding） |
+
+挂测脚本：`scripts/soak_fw_upgrade_ab.py`（hp640↔RTT 交替；默认 `--post-upgrade-delay 8` + `--upgrade-retries 1`）。  
+Host1 示例：`--cycles 100 -l 0 -i 2 -k 30`。日志 `/tmp/soak_fw_upgrade_ab/`。
+
+### 4.5 I2C — boot 自启 + MCU 代理（2026-07-22 更新 strap）
 
 #### 板型与职责
 
 | 侧 | 芯片 | 固件 | I2C 角色 |
 |----|------|------|----------|
-| KA200 chip30 | RTT 本 BSP | `HP232x_KA200_Serdes_Update_20260716_v5.0.bin` | DW I2C0 从机 + **mailbox 代理**（`biz_i2c_proxy.c`） |
+| KA200 chip30 | RTT 本 BSP | `HP232x_KA200_Serdes_Update_*_v5.0.bin` | DW I2C0 从机 + **mailbox 代理**（`biz_i2c_proxy.c`） |
 | KA200 其余 | hp640 SPL | 640 镜像 | 仅 **I2C 从机 init**（SAR `0x34+slot`），无 RTT 代理 |
-| MCU | HP2320 | `HP232x_MCU_serdes_upgrade_20260716_V1.7.5.bin` | I2C2 master；CLI / FPGA UART 发命令 |
+| MCU | HP2320 | `HP232x_MCU_serdes_upgrade_*_V1.7.5.bin` | I2C2 master；CLI / FPGA UART 发命令 |
 
 MCU **`i2c_scan`**：对 soc0–31 做 `HAL_I2C_IsDeviceReady`，**硬件在位**；同 mux 通道 8 颗全 ACK 为正常拓扑（非 bus fault）。  
 **已移除** CLI 命令 `soc_rst`（自动复位仍由 `main` 里 `HandleSocResetSequence` 负责，勿在 CLI 手敲复位）。
@@ -275,16 +289,30 @@ MCU **`i2c_scan`**：对 soc0–31 做 `HAL_I2C_IsDeviceReady`，**硬件在位*
 | **自启（当前默认）** | 注释掉该宏 | `INIT_ENV` → `biz_i2c_ensure()` | （无 `i2c start`） |
 | **手启（调试）** | `#define BSP_I2C_DEFER` | boot **不**起 I2C | `i2c start` / `i2c status` |
 
+#### GPIO strap → SAR（对齐 hp640 `lite_i2c_mux`）
+
+| 项 | 内容 |
+|----|------|
+| 公式 | `SAR = 0x34 + mux`，`mux = gpio0\|(gpio1<<1)\|(gpio2<<2)` → 即 **`0x34+(chip_id&7)`** |
+| 引脚 | `portc` pin `0xa / 0x2 / 0x6`；iocfg `0x14C / 0x15C / 0x16C` ← `0x608` |
+| RTT 实现 | `drv_i2c_mcu_resolve_addr()`：DDR **输入**（`0x04+bank*0xc`）→ 双采（取第 2 次）→ **restore iocfg** |
+| 冲突 | **iocfg0=`0x14C` = Flash SSI SPI2**（leave-XIP 写 `0x660a`）；bit0 易抖 |
+| hp640 现象 | probe 常先读到 mux=6，`lynchip_get_mcu_i2c_addr` 再 parse 得 mux=7 才 `mcu_i2c_init` |
+| 期望 | chip30→**`0x3a`**；chip31→**`0x3b`**（勿再撞地址） |
+| GPIO78 | `drv_gpio_mcu.c` bank 步进已改为 `0x0c`（原误用 `0x1000`） |
+
 自启典型日志：
 
 ```text
 [biz] worker: i2c
-MCU I2C addr parsed: 0x3a (mux=6)
+MCU I2C addr parsed: 0x3a (mux=6 bits=110 iocfg0 was 0x660a)
 I2C MCU slave ready @ 0x3a IRQ63
 i2c_mcu thread started
 mcu_err thread started
 [biz] worker: ready
 ```
+
+若两次采样不一致会打 `MCU I2C GPIO mux unstable: 1st=… → 2nd=… (use 2nd)`。
 
 #### 代理协议（Mode B，MCU ↔ KA200）
 
@@ -314,6 +342,7 @@ ka200 reg read  30 0x04020000 4
 | 代理读 CPR → KA Data abort | `biz_i2c_proxy.c` 对齐 MMIO 访问（非 byte 读 `0x12500064`） |
 | 早期 8/8 ACK 当假 ACK abort | **已撤销**；scan 扫满 32 槽（640 仅 I2C init 时 8/8 正常） |
 | MCU 代理超时 4s 堵主循环 | 改为 **20ms**（`i2c_sensor.h`） |
+| chip30/31 SAR 相同（奇数 ID 错） | strap 缺 DDR 输入 + bit0/`0x14C` 与 SSI 冲突；**双采取第 2 次 + restore iocfg**（2026-07-22） |
 
 #### 验收状态
 
@@ -322,6 +351,7 @@ ka200 reg read  30 0x04020000 4
 | I2C boot 自启 | ✅ |
 | MCU `i2c_scan` + KA 存活 | ✅（58.36） |
 | `ka200 reg` 读/写（chip30） | ✅ |
+| SAR：chip30=`0x3a` / chip31=`0x3b` | 🟡 代码已合入，刷机后对照 boot 日志 |
 | **READ_LOG e2e** | ❓ 未验收 |
 | **mcu_err → Host 可见** | ❓ 未验收 |
 
@@ -659,8 +689,10 @@ sudo python3 scripts/mcu_cli_i2c_test.py --skip-upgrade   # I2C 代理 e2e（需
 | eMMC biz **100M** | §4.9：`DLL … (HB write-probe OK)` + `Heart-beat reported ok` + Host ALIVE（**UART ✅**） |
 | Host 升级 | `OK Load` + `OK FlashWrite` + `@0xa6000` 非 FF |
 | Flash 冷启 | `CPU1 ready` + `JEDEC=0xc22537` + `emmc_biz entry CPU1` + 首发 HB |
-| I2C 自启 | boot 日志 `I2C MCU slave ready @ 0x3a`（无需 `i2c start`） |
+| I2C 自启 | boot 日志 `I2C MCU slave ready @ 0x3a`（chip30；chip31 应为 `0x3b`） |
 | I2C 代理 | MCU `ka200 reg read 30 0x12500064 4` → `ok:` + 4 字节；KA msh 仍活 |
+| Host 升级挂测 | `python3 scripts/soak_fw_upgrade_ab.py --cycles N -l 0 -i 2 -k 30`（须 post-upgrade-delay） |
+| Infer A/B | `scripts/ab_infer_host1.py` + `_ab_infer_board.sh`（Host1） |
 | Host 全路径 | `fpfifo_stress -b 64` FPS 合理；`phase` 见 CRC32 avg 非 ms 级 |
 | READ_LOG / mcu_err | Host 侧可读 log / 可见错误（**下阶段**；DLL 失败路径曾打挂 `i2c_mcu`） |
 
@@ -720,6 +752,7 @@ MSH（调试）：`phase` / `phase reset` / `heart_beat` / `emmc_dll` / `flash s
 | Flash 冷启@100M | ⬜ |
 | READ_LOG / `mcu_err` Host 可见；DLL 失败 → `i2c_mcu` `epc=0` | ⬜ |
 | Host 升级后冷启不回 `.U` | ⬜ |
+| soak 交替升级长稳（`soak_fw_upgrade_ab.py`） | 🟡 曾 97/98 PASS；须 post-upgrade-delay |
 
 ### P2
 
@@ -747,3 +780,5 @@ Store/stress 全量；微优化；PCIe；100M 量产化（DLL 落盘等）。
 | 2026-07-17 | **UART 闭环**：同板 A/B 与 hp640 同得 `DLL=0x32`；RTT 首发 HB + main loop；§4.9 更新 |
 | 2026-07-20 | **fpfifo**：根因 IRAM1 scratch **NC**；默认 **关 `BSP_IRAM1_LOW_NC`=WB**；FPS≈hp640；文档 `Biz_Performance_Optimization.md` |
 | 2026-07-20 | **交接**：下一位 P0 → **APU 业务报错**（§4.10）；§0/§9 更新 |
+| 2026-07-21 | Host 升级：`Successfully`≠Flash 写完；RTT FlashWrite 更慢 → soak 加 post-upgrade-delay |
+| 2026-07-22 | **I2C SAR strap**：DDR 输入 + 双采 + restore `0x14C`；`drv_gpio_mcu` bank=`0x0c`；§4.5/§0 交接更新 |

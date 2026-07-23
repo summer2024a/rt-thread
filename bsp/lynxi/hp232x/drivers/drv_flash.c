@@ -151,6 +151,7 @@ static struct
     rt_sem_t req;
     rt_sem_t done;
     rt_mutex_t lock;
+    rt_thread_t worker;
     int worker_ready;
 } s_flash_svc;
 
@@ -231,6 +232,7 @@ static int flash_svc_start(void)
                          8192, 5, 20);
     if (!t)
         return -1;
+    s_flash_svc.worker = t;
     rt_thread_startup(t);
     s_flash_svc.worker_ready = 1;
     return 0;
@@ -1082,7 +1084,9 @@ int drv_flash_read(void *dst, int len, uint32_t addr)
 
 #if defined(RT_USING_SMP) && defined(BSP_FLASH_CPU0_WORKER) && \
     !defined(BSP_FLASH_DIRECT_ON_CALLER)
-    if (rt_hw_cpu_id() != 0 && s_flash_svc.worker_ready)
+    /* Bounce unless already the worker (avoid deadlock; CPU0 callers like
+     * i2cota reuse the 8KB worker stack instead of needing another 8KB). */
+    if (s_flash_svc.worker_ready && rt_thread_self() != s_flash_svc.worker)
         return flash_svc_call(FLASH_JOB_READ, RT_NULL, dst, len, addr);
 #endif
     return flash_read_local(dst, len, addr);
@@ -1095,7 +1099,7 @@ int drv_flash_write(const void *src, int len, uint32_t addr)
 
 #if defined(RT_USING_SMP) && defined(BSP_FLASH_CPU0_WORKER) && \
     !defined(BSP_FLASH_DIRECT_ON_CALLER)
-    if (rt_hw_cpu_id() != 0 && s_flash_svc.worker_ready)
+    if (s_flash_svc.worker_ready && rt_thread_self() != s_flash_svc.worker)
         return flash_svc_call(FLASH_JOB_WRITE, src, RT_NULL, len, addr);
 #endif
     return flash_write_local(src, len, addr);
@@ -1108,7 +1112,7 @@ int drv_flash_erase(uint32_t addr, int len)
 
 #if defined(RT_USING_SMP) && defined(BSP_FLASH_CPU0_WORKER) && \
     !defined(BSP_FLASH_DIRECT_ON_CALLER)
-    if (rt_hw_cpu_id() != 0 && s_flash_svc.worker_ready)
+    if (s_flash_svc.worker_ready && rt_thread_self() != s_flash_svc.worker)
         return flash_svc_call(FLASH_JOB_ERASE, RT_NULL, RT_NULL, len, addr);
 #endif
     return flash_erase_local(addr, len);

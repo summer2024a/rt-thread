@@ -4,12 +4,45 @@
  * MCU writes cmd frame to reg=0x00, KA200 accesses on-chip regs, MCU reads rsp.
  * Frame: [cmd_id][payload_len][crc8][rsvd][payload...]
  * CRC: same calcCRC() as HP2320 APP crc32.c (poly FACTOR=0x07).
+ *
+ * Phase B OTA (0xE8..0xEB): stream FW into IRAM1 host scratch, then async
+ * drv_flash_write @ flash_addr (default 0xA6000).
  */
 #include <rtthread.h>
 #include <string.h>
 #include "biz_i2c_proxy.h"
 #include "biz_log.h"
+#include "biz_exec_handlers.h"
+#include "biz_subsys.h"
+#include "board.h"
+#include "drv_flash.h"
 #include "drv_pvt.h"
+
+#define BIZ_I2C_OTA_DETAIL_OK            0U
+#define BIZ_I2C_OTA_DETAIL_BAD_PARAM     1U
+#define BIZ_I2C_OTA_DETAIL_OVERFLOW      2U
+#define BIZ_I2C_OTA_DETAIL_CRC           3U
+#define BIZ_I2C_OTA_DETAIL_FLASH         4U
+#define BIZ_I2C_OTA_DETAIL_BUSY          5U
+#define BIZ_I2C_OTA_DETAIL_INCOMPLETE    6U
+#define BIZ_I2C_OTA_DETAIL_THREAD        7U
+
+typedef struct {
+    uint8_t state;
+    uint8_t detail;
+    uint32_t total_size;
+    uint32_t img_crc32;
+    uint32_t flash_addr;
+    uint32_t recv_bytes;
+    uint8_t *buf;
+} biz_i2c_ota_ctx_t;
+
+static biz_i2c_ota_ctx_t s_ota;
+static struct rt_semaphore s_ota_commit_sem;
+static rt_thread_t s_ota_worker;
+static int s_ota_sem_inited;
+
+static void ota_flash_thread_entry(void *param);
 
 uint8_t biz_i2c_calc_crc(const uint8_t *pdat, uint32_t len)
 {
@@ -214,6 +247,222 @@ static int handle_get_soc_status(uint8_t *rsp_out, uint16_t rsp_max)
     return (int)(BIZ_I2C_CMD_HEADER_LEN + 1U);
 }
 
+static void ota_reset_session(void)
+{
+    s_ota.state = BIZ_I2C_OTA_STATE_IDLE;
+    s_ota.detail = BIZ_I2C_OTA_DETAIL_OK;
+    s_ota.total_size = 0;
+    s_ota.img_crc32 = 0;
+    s_ota.flash_addr = BIZ_I2C_OTA_FLASH_ADDR_DEFAULT;
+    s_ota.recv_bytes = 0;
+    s_ota.buf = (uint8_t *)(uintptr_t)IRAM1_HOST_SCRATCH_START;
+}
+
+static void ota_flash_thread_entry(void *param)
+{
+    (void)param;
+
+    while (1)
+    {
+        int ret;
+        uint32_t crc;
+
+        rt_sem_take(&s_ota_commit_sem, RT_WAITING_FOREVER);
+
+        BIZ_INFO("I2C OTA COMMIT size=%u crc=0x%x flash=0x%x\n",
+                 s_ota.total_size, s_ota.img_crc32, s_ota.flash_addr);
+
+        if (s_ota.img_crc32 != 0U)
+        {
+            crc = biz_crc32_calc(0, s_ota.buf, s_ota.total_size);
+            if (crc != s_ota.img_crc32)
+            {
+                BIZ_ERROR("I2C OTA CRC mismatch calc=0x%x expect=0x%x\n",
+                          crc, s_ota.img_crc32);
+                s_ota.detail = BIZ_I2C_OTA_DETAIL_CRC;
+                s_ota.state = BIZ_I2C_OTA_STATE_FAIL;
+                continue;
+            }
+        }
+
+        (void)biz_flash_worker_ensure();
+
+        ret = drv_flash_write(s_ota.buf, (int)s_ota.total_size, s_ota.flash_addr);
+        if (ret != 0)
+        {
+            BIZ_ERROR("I2C OTA FlashWrite fail flash=0x%x ret=%d\n",
+                      s_ota.flash_addr, ret);
+            s_ota.detail = BIZ_I2C_OTA_DETAIL_FLASH;
+            s_ota.state = BIZ_I2C_OTA_STATE_FAIL;
+            continue;
+        }
+
+        BIZ_INFO("I2C OTA OK FlashWrite flash=0x%x size=%u\n",
+                 s_ota.flash_addr, s_ota.total_size);
+        s_ota.detail = BIZ_I2C_OTA_DETAIL_OK;
+        s_ota.state = BIZ_I2C_OTA_STATE_OK;
+    }
+}
+
+static int ota_worker_ensure(void)
+{
+    if (s_ota_worker != RT_NULL)
+        return 0;
+    if (!s_ota_sem_inited)
+    {
+        if (rt_sem_init(&s_ota_commit_sem, "i2cota", 0, RT_IPC_FLAG_FIFO) != RT_EOK)
+            return -1;
+        s_ota_sem_inited = 1;
+    }
+    s_ota_worker = rt_thread_create("i2cota", ota_flash_thread_entry, RT_NULL,
+                                    3072, 12, 20);
+    if (s_ota_worker == RT_NULL)
+        return -1;
+    rt_thread_startup(s_ota_worker);
+    return 0;
+}
+
+static int ota_status_rsp(uint8_t *rsp_out, uint16_t rsp_max)
+{
+    biz_i2c_ota_status_t st;
+
+    if (rsp_out == RT_NULL || rsp_max < (BIZ_I2C_CMD_HEADER_LEN + sizeof(st)))
+        return -1;
+
+    st.state = s_ota.state;
+    st.detail = s_ota.detail;
+    st.recv_bytes = s_ota.recv_bytes;
+    build_rsp(rsp_out, BIZ_I2C_CMD_OTA_STATUS, (const uint8_t *)&st, (uint8_t)sizeof(st));
+    return (int)(BIZ_I2C_CMD_HEADER_LEN + sizeof(st));
+}
+
+static int handle_ota_open(const uint8_t *payload, uint8_t plen,
+                           uint8_t *rsp_out, uint16_t rsp_max)
+{
+    biz_i2c_ota_open_t open;
+    biz_i2c_ota_status_t st;
+
+    if (s_ota.state == BIZ_I2C_OTA_STATE_WRITING)
+        return -1;
+
+    if (plen < sizeof(open))
+        return -1;
+
+    memcpy(&open, payload, sizeof(open));
+    if (open.total_size == 0U ||
+        open.total_size > (uint32_t)IRAM1_HOST_SCRATCH_SIZE)
+        return -1;
+
+    if (open.flash_addr == 0U)
+        open.flash_addr = BIZ_I2C_OTA_FLASH_ADDR_DEFAULT;
+
+    if (drv_flash_bootcode_overlap(open.flash_addr, open.total_size, 1))
+        return -1;
+
+    ota_reset_session();
+    s_ota.total_size = open.total_size;
+    s_ota.img_crc32 = open.img_crc32;
+    s_ota.flash_addr = open.flash_addr;
+    s_ota.state = BIZ_I2C_OTA_STATE_RECV;
+    s_ota.detail = BIZ_I2C_OTA_DETAIL_OK;
+
+    /* Pre-create worker at OPEN — COMMIT must not rt_thread_create in I2C BH. */
+    if (ota_worker_ensure() != 0)
+    {
+        s_ota.detail = BIZ_I2C_OTA_DETAIL_THREAD;
+        s_ota.state = BIZ_I2C_OTA_STATE_FAIL;
+        return ota_status_rsp(rsp_out, rsp_max);
+    }
+
+    /* Runs on i2c_mcu BH — avoid BIZ_INFO (384B stack frame); DEBUG only. */
+    BIZ_DEBUG("I2C OTA OPEN size=%u crc=0x%x flash=0x%x\n",
+              s_ota.total_size, s_ota.img_crc32, s_ota.flash_addr);
+
+    if (rsp_out == RT_NULL || rsp_max < (BIZ_I2C_CMD_HEADER_LEN + sizeof(st)))
+        return 0;
+
+    st.state = s_ota.state;
+    st.detail = s_ota.detail;
+    st.recv_bytes = s_ota.recv_bytes;
+    build_rsp(rsp_out, BIZ_I2C_CMD_OTA_OPEN, (const uint8_t *)&st, (uint8_t)sizeof(st));
+    return (int)(BIZ_I2C_CMD_HEADER_LEN + sizeof(st));
+}
+
+static int handle_ota_data(const uint8_t *payload, uint8_t plen)
+{
+    uint32_t offset;
+    uint8_t chunk_len;
+
+    if (s_ota.state != BIZ_I2C_OTA_STATE_RECV)
+        return -1;
+    if (plen < 4U)
+        return -1;
+
+    memcpy(&offset, payload, sizeof(offset));
+    chunk_len = (uint8_t)(plen - 4U);
+    if (chunk_len == 0U)
+        return -1;
+    if (offset > s_ota.total_size ||
+        (offset + chunk_len) > s_ota.total_size)
+    {
+        s_ota.detail = BIZ_I2C_OTA_DETAIL_OVERFLOW;
+        s_ota.state = BIZ_I2C_OTA_STATE_FAIL;
+        return -1;
+    }
+
+    memcpy(s_ota.buf + offset, payload + 4U, chunk_len);
+    if ((offset + chunk_len) > s_ota.recv_bytes)
+        s_ota.recv_bytes = offset + chunk_len;
+
+    /* Progress every 32KB — DEBUG only (BH stack). */
+    if ((s_ota.recv_bytes & 0x7FFFU) < chunk_len)
+        BIZ_DEBUG("I2C OTA DATA recv=%u/%u\n", s_ota.recv_bytes, s_ota.total_size);
+
+    return 0;
+}
+
+static int handle_ota_commit(uint8_t *rsp_out, uint16_t rsp_max)
+{
+    biz_i2c_ota_status_t st;
+
+    if (s_ota.state == BIZ_I2C_OTA_STATE_WRITING)
+    {
+        s_ota.detail = BIZ_I2C_OTA_DETAIL_BUSY;
+        return ota_status_rsp(rsp_out, rsp_max);
+    }
+
+    if (s_ota.state != BIZ_I2C_OTA_STATE_RECV ||
+        s_ota.recv_bytes < s_ota.total_size)
+    {
+        BIZ_DEBUG("I2C OTA COMMIT incomplete recv=%u need=%u state=%u\n",
+                  s_ota.recv_bytes, s_ota.total_size, s_ota.state);
+        s_ota.detail = BIZ_I2C_OTA_DETAIL_INCOMPLETE;
+        s_ota.state = BIZ_I2C_OTA_STATE_FAIL;
+        return ota_status_rsp(rsp_out, rsp_max);
+    }
+
+    if (ota_worker_ensure() != 0)
+    {
+        s_ota.detail = BIZ_I2C_OTA_DETAIL_THREAD;
+        s_ota.state = BIZ_I2C_OTA_STATE_FAIL;
+        return ota_status_rsp(rsp_out, rsp_max);
+    }
+
+    s_ota.state = BIZ_I2C_OTA_STATE_WRITING;
+    s_ota.detail = BIZ_I2C_OTA_DETAIL_OK;
+    BIZ_DEBUG("I2C OTA COMMIT start size=%u\n", s_ota.total_size);
+    rt_sem_release(&s_ota_commit_sem);
+
+    if (rsp_out == RT_NULL || rsp_max < (BIZ_I2C_CMD_HEADER_LEN + sizeof(st)))
+        return 0;
+
+    st.state = s_ota.state;
+    st.detail = s_ota.detail;
+    st.recv_bytes = s_ota.recv_bytes;
+    build_rsp(rsp_out, BIZ_I2C_CMD_OTA_COMMIT, (const uint8_t *)&st, (uint8_t)sizeof(st));
+    return (int)(BIZ_I2C_CMD_HEADER_LEN + sizeof(st));
+}
+
 int biz_i2c_proxy_handle(const uint8_t *req, uint16_t req_len,
                          uint8_t *rsp_out, uint16_t rsp_max)
 {
@@ -254,6 +503,22 @@ int biz_i2c_proxy_handle(const uint8_t *req, uint16_t req_len,
             return -1;
         build_rsp(rsp_out, cmd_id, (const uint8_t *)"0", 1);
         ret = (int)(BIZ_I2C_CMD_HEADER_LEN + 1U);
+        break;
+
+    case BIZ_I2C_CMD_OTA_OPEN:
+        ret = handle_ota_open(payload, plen, rsp_out, rsp_max);
+        break;
+
+    case BIZ_I2C_CMD_OTA_DATA:
+        ret = handle_ota_data(payload, plen);
+        break;
+
+    case BIZ_I2C_CMD_OTA_COMMIT:
+        ret = handle_ota_commit(rsp_out, rsp_max);
+        break;
+
+    case BIZ_I2C_CMD_OTA_STATUS:
+        ret = ota_status_rsp(rsp_out, rsp_max);
         break;
 
     default:

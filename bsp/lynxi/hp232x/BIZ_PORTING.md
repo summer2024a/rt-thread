@@ -5,9 +5,9 @@
 > **本阶段移交重点 / 下一位 P0**：**APU 业务报错排查**（Host 跑 APU 相关任务包时失败 / timeout / 状态异常；§4.10 / §9）。  
 > **并行待验**：READ_LOG / `mcu_err` Host 可见；200M 混板 soak；Flash 冷启@100M；Host1 soak 交替升级长稳（§4.4）。
 >
-> 设计背景见 [doc/SPL_MIGRATION_DESIGN.md](doc/SPL_MIGRATION_DESIGN.md)；SMP [doc/SMP_SETUP.md](doc/SMP_SETUP.md)；eMMC [doc/EMMC_TUNING.md](doc/EMMC_TUNING.md)；Flash [doc/FLASH_PORTING.md](doc/FLASH_PORTING.md)；镜像 [doc/IMAGE_DESIGN.md](doc/IMAGE_DESIGN.md)；宏 [doc/BSP_MACROS.md](doc/BSP_MACROS.md)；**FPS/cache** [doc/Biz_Performance_Optimization.md](doc/Biz_Performance_Optimization.md)；体积 [doc/CODE_SIZE.md](doc/CODE_SIZE.md)；BSP [HANDOFF_SLIM.md](HANDOFF_SLIM.md)；板测 [Test_ENV.md](Test_ENV.md)。
+> 设计背景见 [doc/SPL_MIGRATION_DESIGN.md](doc/SPL_MIGRATION_DESIGN.md)；SMP [doc/SMP_SETUP.md](doc/SMP_SETUP.md)；eMMC [doc/EMMC_TUNING.md](doc/EMMC_TUNING.md)；Flash [doc/FLASH_PORTING.md](doc/FLASH_PORTING.md)；镜像 [doc/IMAGE_DESIGN.md](doc/IMAGE_DESIGN.md)；**I2C MCU 协议** [doc/I2C_MCU_PROTOCOL.md](doc/I2C_MCU_PROTOCOL.md)；宏 [doc/BSP_MACROS.md](doc/BSP_MACROS.md)；**FPS/cache** [doc/Biz_Performance_Optimization.md](doc/Biz_Performance_Optimization.md)；体积 [doc/CODE_SIZE.md](doc/CODE_SIZE.md)；BSP [HANDOFF_SLIM.md](HANDOFF_SLIM.md)；板测 [Test_ENV.md](Test_ENV.md)。
 
-**更新日期**：2026-07-23（eMMC early@17 根治 + 调试脚手架删除；交接 → APU）
+**更新日期**：2026-07-23（eMMC early@17 根治；**MCU Phase B I2C OTA** 文档汇总；交接 → APU）
 
 ---
 
@@ -20,6 +20,7 @@
 | eMMC HS400@**200M** + heartbeat | ✅ **纯 HW `TUNED_CLK`**（同座 `tap=0x35@iter≈70`，对齐 hp640）；**无** early re-arm / soft latch；`emmc_biz` @ **CPU1**；默认仅上电报一次 |
 | eMMC HS400@**100M** + DLL | ✅ UART（§4.9，历史）；联调开 `BSP_EMMC_HS400_100M`，**量产关**；清理后建议再 UART 回归一次 |
 | Host 升级 Load + FlashWrite | ✅ 协议对齐；**Host `Successfully`≠Flash 写完**（§4.4）；IRAM1 默认 **WB** |
+| **MCU Phase B I2C OTA**（`0xE8..0xEB`） | ✅ chip30；须 **Head640** + 冷启；协议见 [doc/I2C_MCU_PROTOCOL.md](doc/I2C_MCU_PROTOCOL.md) |
 | Flash 冷启双核 + SSI/JEDEC | ✅ |
 | SMP / emmc_biz / flash / I2C 自启 | ✅ |
 | **I2C SAR = `0x34+(chip&7)`** | ✅ GPIO strap：DDR 输入 + 双采 + restore iocfg（§4.5）；chip30→`0x3a`，chip31→`0x3b` |
@@ -135,7 +136,7 @@ I2C：**中断 + 信号量**；eMMC：**轮询**。跨核 / 冷启 SMP：[doc/SM
 | 相位统计 | SPL Round Stats / DDR 缓冲 | `BSP_BIZ_PHASE_STATS` + msh `phase` | **静默累计**，勿每包打印；§4.8 |
 | SMP 从核 | spin-table | `board.c` + `entry_point.S` 门禁 | Flash 冷启 §4.3 / SMP_SETUP Part A |
 | I2C/MCU GPIO | designware + GPIO78 | `drv_i2c.c` / `drv_gpio_mcu.c` | **默认自启**（§4.5） |
-| I2C 代理 MMIO | — | `biz/biz_i2c_proxy.c` | `0xD0/0xD1` 绝对地址；对齐 32/16-bit 读 |
+| I2C 代理 MMIO | — | `biz/biz_i2c_proxy.c` | `0xD0/0xD1`；**OTA `0xE8..0xEB`** → IRAM→Flash |
 | DMA 区 | SPL BSS | `.dma_nocache` 64KB | **位置勿改** |
 
 ### 3.2 当前 `rtconfig.h` 要点（生产 / 联调默认）
@@ -299,11 +300,12 @@ Host1 示例：`--cycles 100 -l 0 -i 2 -k 30`。日志 `/tmp/soak_fw_upgrade_ab/
 
 | 侧 | 芯片 | 固件 | I2C 角色 |
 |----|------|------|----------|
-| KA200 chip30 | RTT 本 BSP | `HP232x_KA200_Serdes_Update_*_v5.0.bin` | DW I2C0 从机 + **mailbox 代理**（`biz_i2c_proxy.c`） |
+| KA200 chip30 | RTT 本 BSP | `HP232x_KA200_Serdes_Update_*_v5.0.bin` | DW I2C0 从机 + **mailbox 代理**（`biz_i2c_proxy.c`）+ **I2C OTA `0xE8..0xEB`**（MCU Phase B） |
 | KA200 其余 | hp640 SPL | 640 镜像 | 仅 **I2C 从机 init**（SAR `0x34+slot`），无 RTT 代理 |
 | MCU | HP2320 | `HP232x_MCU_serdes_upgrade_*_V1.7.5.bin` | I2C2 master；CLI / FPGA UART 发命令 |
 
 MCU **`i2c_scan`**：对 soc0–31 做 `HAL_I2C_IsDeviceReady`，**硬件在位**；同 mux 通道 8 颗全 ACK 为正常拓扑（非 bus fault）。  
+**已知**：KA200 硬复位后 MCU 侧 I2C2 可能卡住 → `found 0/32`，以往需 MCU 复位；CLI `i2c_scan` 现会 `i2c_reinit` 并在 0 命中时重试一次（完整 SoC 复位路径仍建议显式恢复）。  
 **已移除** CLI 命令 `soc_rst`（自动复位仍由 `main` 里 `HandleSocResetSequence` 负责，勿在 CLI 手敲复位）。
 
 #### KA200：自启 vs 手启（`BSP_I2C_DEFER`）
@@ -380,7 +382,28 @@ ka200 reg read  30 0x04020000 4
 | **mcu_err → Host 可见** | ❓ 未验收 |
 
 联调脚本：`scripts/mcu_cli_i2c_test.py`（先 KA 稳定 → 再 MCU `+++` → scan + reg R/W → `quit` + 30s + host reset）。  
-MCU 协议详述：`lynxi-mcu/.../Doc/I2C_PROTOCOL.md`。
+MCU 协议详述：`lynxi-mcu/.../Doc/I2C_PROTOCOL.md`。  
+**RTT 协议汇总**：[doc/I2C_MCU_PROTOCOL.md](doc/I2C_MCU_PROTOCOL.md)。
+
+#### MCU Phase B：I2C OTA（`0xE8..0xEB`，2026-07-23）
+
+| 项 | 说明 |
+|----|------|
+| 路径 | Host `mcu-tools --target ka200` → FPGA UART → MCU → I2C mailbox → IRAM → Flash `@0xA6000` |
+| 命令 | OPEN/`0xE8` → DATA/`0xE9`（~120B 片）→ COMMIT/`0xEA`（异步）→ STATUS/`0xEB` |
+| 编译 | RTT：**无**独立 OTA 宏（`biz_i2c_proxy` 常编入）；MCU：`PROXY`+`OTA`（见 `BUILD.md`） |
+| 缓冲 | 整镜像仅在 `IRAM1_HOST_SCRATCH`（256KB）；MCU 静态 524B 包快照 |
+| 镜像 | 须 **`*_Head640.bin`**（jumper：头@`0xA6000`，body@`0xA7000`）；裸 `*_v5.0.bin` 给 `ka200_tools` |
+| 落盘判据 | 串口 `[flash] program ok` + `I2C OTA OK FlashWrite`；页 PP+WIP+回读 |
+| 生效 | **冷复位** 走 jumper；软 reboot 可能仍跑旧 IRAM 镜像 |
+| Host gap | 默认包间 800ms；`MCU_OTA_PKT_GAP_MS`（下限 800）；见 `mcu_tools/README.md` |
+
+```bash
+mcu-tools -l 0 -i 2 -t 1 -u HP232x_KA200_Serdes_Update_*_Head640.bin \
+  --target ka200 --soc 30 -d
+```
+
+实现：`biz/biz_i2c_proxy.c`（`i2cota` worker + `drv_flash_write`）；MCU `ka200_ota_relay.c`。
 
 ### 4.6 启动链诊断
 
@@ -641,6 +664,7 @@ hp232x/rtconfig.h             # IRAM1 默认 WB；BSP_EMMC_HS400_100M 量产关
 hp232x/doc/
 ├── Biz_Performance_Optimization.md  # fpfifo FPS / NC vs WB
 ├── SMP_SETUP.md / FLASH_PORTING.md / IMAGE_DESIGN.md / EMMC_TUNING.md
+├── I2C_MCU_PROTOCOL.md       # MCU Mode B + Phase B OTA 协议汇总
 hp232x/utilities/
 ├── zmodem/                   # 串口 flash update（ZMODEM）；默认不编
                               # 需在 rtconfig.h 打开 RT_USING_ZMODEM
@@ -664,10 +688,11 @@ MCU（HP2320，与 KA I2C 代理配套）：
 lynxi-mcu/Lynchip_mcu_HP2320/HP2320_APP/
 ├── Core/Src/cmd_ka200_i2c.c    # i2c_scan / ka200 reg CLI
 ├── Core/Src/ka200_i2c_cmd.c    # mailbox 组帧
+├── Core/Src/ka200_ota_relay.c  # Phase B UART→I2C OTA
 ├── Core/Src/mcu_to_ka200.c     # I2C2 + 自动 probe
 ├── Core/Inc/i2c_sensor.h       # MCU_I2C_CMD_TIMEOUT=20
-└── Doc/I2C_PROTOCOL.md
-lynxi-bsp-tools/lynxlink_tools/mcu_tools/   # FPGA UART ka200_reg
+└── Doc/I2C_PROTOCOL.md / MCU_OTA_PHASE_B.md
+lynxi-bsp-tools/lynxlink_tools/mcu_tools/   # FPGA UART；README 含 gap
 ```
 
 ---
@@ -712,6 +737,7 @@ sudo python3 scripts/mcu_cli_i2c_test.py --skip-upgrade   # I2C 代理 e2e（需
 | eMMC biz **200M** | `tuning OK tap=0x3x iter≈70`（**无** early/latch）+ Host ALIVE / 首发 HB |
 | eMMC biz **100M** | §4.9：`DLL … (HB write-probe OK)` + `Heart-beat reported ok` + Host ALIVE（**UART ✅**） |
 | Host 升级 | `OK Load` + `OK FlashWrite` + `@0xa6000` 非 FF |
+| MCU Phase B OTA | `mcu-tools --target ka200` + Head640；KA 串口 `I2C OTA OK FlashWrite`；冷启进新版 |
 | Flash 冷启 | `CPU1 ready` + `JEDEC=0xc22537` + `emmc_biz entry CPU1` + 首发 HB |
 | I2C 自启 | boot 日志 `I2C MCU slave ready @ 0x3a`（chip30；chip31 应为 `0x3b`） |
 | I2C 代理 | MCU `ka200 reg read 30 0x12500064 4` → `ok:` + 4 字节；KA msh 仍活 |
@@ -810,3 +836,4 @@ Store/stress 全量；微优化；PCIe；100M 量产化（DLL 落盘等）。
 | 2026-07-22 | **I2C SAR strap**：DDR 输入 + 双采 + restore `0x14C`；`drv_gpio_mcu` bank=`0x0c`；§4.5/§0 交接更新 |
 | 2026-07-22 | （历史，**已作废**）tuning soft latch / early re-arm / HB bump latch — 见 07-23 根治与删除 |
 | 2026-07-22 | **追 early 根因**：`EMMC_TUNING.md` §10；chip30 USB0 + ymodem 救砖 |
+| 2026-07-23 | **MCU Phase B I2C OTA**：`doc/I2C_MCU_PROTOCOL.md`；§4.5 OTA 小节；Head640 + gap 说明 |

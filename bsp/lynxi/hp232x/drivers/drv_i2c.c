@@ -465,19 +465,12 @@ static int drv_i2c_mcu_write_byte(uint8_t data)
         {
             if (sd->rx_frame_len < MCU_I2C_MAX_DATA_LEN)
                 sd->rx_frame[sd->rx_frame_len++] = data;
-
-            /* Finish as soon as a full mailbox frame is buffered */
-            if (sd->rx_frame_len >= BIZ_I2C_CMD_HEADER_LEN)
-            {
-                uint16_t need = (uint16_t)(BIZ_I2C_CMD_HEADER_LEN + sd->rx_frame[1]);
-                if (sd->rx_frame_len >= need)
-                    drv_i2c_mcu_try_finish_mailbox();
-            }
-            else if (sd->rx_frame_len == 1 &&
-                     sd->rx_frame[0] == MCU_I2C_CMD_READ_LOG)
-            {
-                /* may still receive more — wait for STOP for 1-byte case */
-            }
+            /*
+             * Do NOT finish mailbox here. OTA DATA memcpy (and other handlers)
+             * used to run mid-RX while MCU master still clocks → long SCL
+             * stretch → STM32 Mem_Write can hang past Host ACK timeout.
+             * Finish only on STOP (see DRV_I2C_SLAVE_STOP).
+             */
         }
     }
 

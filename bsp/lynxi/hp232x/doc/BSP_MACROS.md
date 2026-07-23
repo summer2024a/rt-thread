@@ -79,9 +79,10 @@
 正交关系：
 
 - I2C **只**由 `BSP_I2C_DEFER` 控制，与 `BSP_BIZ_SKIP_THREADS` 无关。  
-- Flash worker 是否自启：看 `BSP_FLASH_DEFER_INIT`，与 emmc_biz 独立。
+- Flash worker 是否自启：看 `BSP_FLASH_DEFER_INIT`，与 emmc_biz 独立。  
+- **`biz_i2c_proxy.c`（含 `0xD0/0xD1` + Phase B OTA `0xE8..0xEB`）随 biz 常编入**，没有 `BSP_DRV_MOD_I2C_OTA`；`BSP_I2C_DEFER` 只推迟线程启动，不裁代码。对端 MCU 用 `HP2320_KA200_I2C_PROXY` / `HP2320_KA200_OTA` 裁剪（见 MCU `BUILD.md`、`doc/I2C_MCU_PROTOCOL.md` §1.1）。
 
-相关代码：`applications/main.c`、`biz/biz_subsys.c`、`biz/biz_finsh_cmds.c`。
+相关代码：`applications/main.c`、`biz/biz_subsys.c`、`biz/biz_finsh_cmds.c`、`biz/biz_i2c_proxy.c`。
 
 ---
 

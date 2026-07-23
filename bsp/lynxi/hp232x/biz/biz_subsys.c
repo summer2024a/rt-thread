@@ -20,7 +20,8 @@
 extern rt_uint64_t rt_cpu_mpidr_table[];
 #endif
 
-#define I2C_BH_STACK_SIZE       2048
+/* 4KB: mailbox+OTA on BH; safe now that heap is 48KB (emmc_biz still fits). */
+#define I2C_BH_STACK_SIZE       4096
 #define MCU_ERR_STACK_SIZE      1024
 #define EMMC_BIZ_STACK_SIZE     8192
 

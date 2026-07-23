@@ -159,7 +159,7 @@ extern int __bss_end;
 
 /* Heap and page pool sizes — must fit within IRAM1 usable 256KB */
 #define PAGE_POOL_SIZE          0x4000UL    /* 16KB */
-#define HEAP_POOL_SIZE          0x08000UL    /* 32KB */
+#define HEAP_POOL_SIZE          0x0C000UL   /* 48KB — was 32KB; ~18KB margin to stack_guard */
 
 /* Kernel text/data base address — depends on BL2_BOOT macro */
 #ifdef BSP_USING_HP232X_BL21

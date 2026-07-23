@@ -26,11 +26,37 @@
 #define BIZ_I2C_CMD_READ_IP_REG         0xD0U
 #define BIZ_I2C_CMD_WRITE_IP_REG        0xD1U
 
+/* Phase B: MCU→KA200 firmware OTA via mailbox (see MCU_OTA_PHASE_B.md) */
+#define BIZ_I2C_CMD_OTA_OPEN            0xE8U
+#define BIZ_I2C_CMD_OTA_DATA            0xE9U
+#define BIZ_I2C_CMD_OTA_COMMIT          0xEAU
+#define BIZ_I2C_CMD_OTA_STATUS          0xEBU
+
+#define BIZ_I2C_OTA_STATE_IDLE          0U
+#define BIZ_I2C_OTA_STATE_RECV          1U
+#define BIZ_I2C_OTA_STATE_WRITING       2U
+#define BIZ_I2C_OTA_STATE_OK            3U
+#define BIZ_I2C_OTA_STATE_FAIL          4U
+
+#define BIZ_I2C_OTA_FLASH_ADDR_DEFAULT  0x000A6000UL
+
 /* Absolute MMIO address + length (no base+offset; saves 4B on wire) */
 typedef struct __attribute__((packed)) {
     uint32_t reg_addr;
     uint8_t  access_len;
 } biz_i2c_ip_reg_desc_t;
+
+typedef struct __attribute__((packed)) {
+    uint32_t total_size;
+    uint32_t img_crc32;
+    uint32_t flash_addr;
+} biz_i2c_ota_open_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t state;
+    uint8_t detail;
+    uint32_t recv_bytes; /* high-water bytes accepted into IRAM */
+} biz_i2c_ota_status_t;
 
 uint8_t biz_i2c_calc_crc(const uint8_t *pdat, uint32_t len);
 

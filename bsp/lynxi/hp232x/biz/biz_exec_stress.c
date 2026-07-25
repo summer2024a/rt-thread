@@ -84,7 +84,8 @@ static int process_stress(unsigned int blk_cnt, unsigned int type,
         stress_cache_flush(wr, xfer_bytes);
     }
 
-    t0 = rt_tick_get();
+    /* Match hp640 get_timer(): report elapsed milliseconds, not ticks. */
+    t0 = rt_tick_get_millisecond();
     if (times == 0)
     {
         while (1)
@@ -135,7 +136,7 @@ static int process_stress(unsigned int blk_cnt, unsigned int type,
         }
     }
 
-    cost = rt_tick_get() - t0;
+    cost = rt_tick_get_millisecond() - t0;
     if (tcost_ms)
         *tcost_ms = (unsigned int)cost;
 

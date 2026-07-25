@@ -493,9 +493,23 @@ void biz_emmc_biz_entry(void *param)
         ret = biz_emmc_exec_tasks(s_task_list, HP640_TAKS_PKG_LENGTH, s_task_ret);
         if (ret != BIZ_SUCCESS)
         {
-            BIZ_ERROR("[biz] exec_tasks fail ret=%d cmd=%s(0x%02x) tag=%u\n",
-                      ret, biz_hp640_cmd_name(s_task_list[0].cmd), s_task_list[0].cmd,
-                      s_task_list[0].tag);
+            int fail_idx = 0;
+            int i;
+
+            /* task_ret[2*i]=tag, [2*i+1]=ret — find the failing step (not pkg head). */
+            for (i = 0; i < (int)HP640_TAKS_PKG_LENGTH; i++)
+            {
+                if (s_task_ret[2 * i + 1] != BIZ_SUCCESS)
+                {
+                    fail_idx = i;
+                    break;
+                }
+            }
+            BIZ_ERROR("[biz] exec_tasks fail ret=%d idx=%d cmd=%s(0x%02x) tag=%u\n",
+                      ret, fail_idx,
+                      biz_hp640_cmd_name(s_task_list[fail_idx].cmd),
+                      s_task_list[fail_idx].cmd,
+                      s_task_list[fail_idx].tag);
             /* hp640 auto_run: reset_apu() on exec fail */
             drv_apu_reset();
             drv_apu_enable(0);

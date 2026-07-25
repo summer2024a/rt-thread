@@ -32,6 +32,11 @@ static inline void mmio_write32(uint64_t addr, uint32_t val)
     *(volatile uint32_t *)(uintptr_t)addr = val;
 }
 
+static inline void mmio_write64(uint64_t addr, uint64_t val)
+{
+    *(volatile uint64_t *)(uintptr_t)addr = val;
+}
+
 static inline uint32_t mmio_read32(uint64_t addr)
 {
     return *(volatile uint32_t *)(uintptr_t)addr;
@@ -207,10 +212,20 @@ const char *biz_hp640_cmd_name(unsigned char cmd)
     case HP640_CMD_Idle:       return "Idle";
     case HP640_CMD_Load:       return "Load";
     case HP640_CMD_Store:      return "Store";
+    case HP640_CMD_ExecBD:     return "ExecBD";
+    case HP640_CMD_Write:      return "Write";
+    case HP640_CMD_DgbRead:    return "DgbRead";
+    case HP640_CMD_Copy:       return "Copy";
+    case HP640_CMD_Wait:       return "Wait";
+    case HP640_CMD_DgbWait:    return "DgbWait";
     case HP640_CMD_FlashWrite: return "FlashWrite";
     case HP640_CMD_FlashRead:  return "FlashRead";
     case HP640_CMD_Config:     return "Config";
     case HP640_CMD_Delay:      return "Delay";
+    case HP640_CMD_PWM:        return "PWM";
+    case HP640_CMD_ApuClock:   return "ApuClock";
+    case HP640_CMD_CRC32:      return "CRC32";
+    case HP640_CMD_APUDebug:   return "APUDebug";
     default:                   return "Cmd";
     }
 }
@@ -335,6 +350,11 @@ static int exec_task_exec_bd(const HP640_Task *task)
 
 static int exec_task_write(const HP640_Task *task)
 {
+    /* Align hp640: SPL_DEBUG("Task>>>write imm_value=… dst_addr=…") */
+    BIZ_DEBUG("Task>>>write imm_value=0x%lx dst_addr=0x%lx size=%u\n",
+              (unsigned long)task->imm_value, (unsigned long)task->dst_addr,
+              task->size);
+
     switch (task->size)
     {
     case 1:
@@ -346,7 +366,12 @@ static int exec_task_write(const HP640_Task *task)
     case 4:
         mmio_write32(task->dst_addr, (uint32_t)task->imm_value);
         break;
+    case 8:
+        mmio_write64(task->dst_addr, (uint64_t)task->imm_value);
+        break;
     default:
+        BIZ_ERROR("unsupported size of write task (%u); only 1,2,4,8\n",
+                  task->size);
         return BIZ_ERR_PRIM_PARAM;
     }
     return BIZ_SUCCESS;

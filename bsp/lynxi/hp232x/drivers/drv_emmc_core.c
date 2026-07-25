@@ -2246,16 +2246,19 @@ int drv_emmc_write_blocks(uint32_t addr, uint8_t *buf, uint16_t blk_cnt, uint16_
     return emmc_write_data(addr, buf, blk_cnt, blk_size);
 }
 
+/* hp640 emmc_wait_interrupt: poll until DATA_END or INT_ERROR (no soft spin cap).
+ * emmc_biz owns CPU1 — hang on stuck ADMA is acceptable for A/B with SPL. */
 static int emmc_wait_interrupt(void)
 {
     uint32_t stat;
     int ret = BIZ_SUCCESS;
-    unsigned int spins = 0;
 
     do {
         stat = emmc_readl(SDHCI_INT_STATUS);
         if (stat & SDHCI_INT_ERROR)
         {
+            EMMC_BOOT_LOG("wait INT_ERROR INT=0x%x ADMA_ERR=0x%x\n",
+                          stat, emmc_readb(SDHCI_ADMA_ERROR));
             if (stat & SDHCI_INT_TIMEOUT)
                 ret = BIZ_ERR_EMMC_CMD_TIMEOUT;
             else if (stat & SDHCI_INT_CRC)
@@ -2268,26 +2271,7 @@ static int emmc_wait_interrupt(void)
                 ret = BIZ_ERR_EMMC_DATA_TIMEOUT;
             break;
         }
-
-        if (stat & SDHCI_INT_DATA_END)
-            break;
-
-#ifdef BSP_DRV_EMMC_DEBUG
-        if ((spins % 1000000U) == 0U && spins > 0U)
-            EMMC_DBG_LOG("wait spin=%u INT=0x%x\n", spins, stat);
-#endif
-
-        if (++spins > 5000000U)
-        {
-#ifdef BSP_EMMC_HS400_100M
-            if (!s_emmc_xfer_quiet)
-#endif
-                EMMC_BOOT_LOG("wait timeout INT=0x%x ADMA_ERR=0x%x\n",
-                              stat, emmc_readb(SDHCI_ADMA_ERROR));
-            ret = BIZ_ERR_EMMC_DATA_TIMEOUT;
-            break;
-        }
-    } while (1);
+    } while (!(stat & SDHCI_INT_DATA_END));
 
     return ret;
 }

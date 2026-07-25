@@ -9,6 +9,7 @@
  * drv_flash_write @ flash_addr (default 0xA6000).
  */
 #include <rtthread.h>
+#include <rthw.h>
 #include <string.h>
 #include "biz_i2c_proxy.h"
 #include "biz_log.h"
@@ -258,6 +259,32 @@ static void ota_reset_session(void)
     s_ota.buf = (uint8_t *)(uintptr_t)IRAM1_HOST_SCRATCH_START;
 }
 
+static void ota_scratch_dcache_clean(void)
+{
+    uintptr_t line = 64;
+    uintptr_t s;
+    uintptr_t e;
+    int len;
+
+    if (s_ota.buf == RT_NULL || s_ota.total_size == 0U)
+        return;
+    /* NC scratch: CPU stores already coherent with DRAM. */
+    if (hp232x_addr_is_normal_nc(s_ota.buf, s_ota.total_size))
+        return;
+
+    /*
+     * I2C OTA fills IRAM1 via CPU memcpy (WB). drv_flash_write then does
+     * invalidate_dcache_all — without a prior clean, dirty lines are dropped
+     * and page PP programs stale DRAM (Host eMMC Load is DMA→DRAM + inv, so
+     * it does not hit this). Flush scratch to DRAM before FlashWrite.
+     */
+    s = (uintptr_t)s_ota.buf & ~(line - 1U);
+    e = ((uintptr_t)s_ota.buf + s_ota.total_size + line - 1U) & ~(line - 1U);
+    len = (int)(e - s);
+    if (len > 0)
+        rt_hw_cpu_dcache_ops(RT_HW_CACHE_FLUSH, (void *)s, len);
+}
+
 static void ota_flash_thread_entry(void *param)
 {
     (void)param;
@@ -266,6 +293,7 @@ static void ota_flash_thread_entry(void *param)
     {
         int ret;
         uint32_t crc;
+        int retry;
 
         rt_sem_take(&s_ota_commit_sem, RT_WAITING_FOREVER);
 
@@ -285,9 +313,21 @@ static void ota_flash_thread_entry(void *param)
             }
         }
 
+        ota_scratch_dcache_clean();
         (void)biz_flash_worker_ensure();
 
-        ret = drv_flash_write(s_ota.buf, (int)s_ota.total_size, s_ota.flash_addr);
+        ret = -1;
+        for (retry = 0; retry < 3; retry++)
+        {
+            if (retry > 0)
+            {
+                BIZ_WARN("I2C OTA FlashWrite retry=%d\n", retry);
+                ota_scratch_dcache_clean();
+            }
+            ret = drv_flash_write(s_ota.buf, (int)s_ota.total_size, s_ota.flash_addr);
+            if (ret == 0)
+                break;
+        }
         if (ret != 0)
         {
             BIZ_ERROR("I2C OTA FlashWrite fail flash=0x%x ret=%d\n",

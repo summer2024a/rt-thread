@@ -104,6 +104,7 @@ Host 文件 → UART 524B → MCU static 524B 快照
 - MCU **不**缓存整镜像。
 - COMMIT **不得**在 I2C ISR/BH 同步堵死 FlashWrite；由 `i2cota` 线程执行。
 - MCU 轮询 `0xEB` 至 `ok` 后再回 Host UART `0x5B`。
+- **Cache**：I2C DATA 用 CPU `memcpy` 填 WB scratch；COMMIT 前必须 **dcache clean/flush** 再 `drv_flash_write`（其内部会 `invalidate_dcache_all`）。Host eMMC Load 是 DMA→DRAM + invalidate，无此问题。
 
 ## 5. 实现文件
 

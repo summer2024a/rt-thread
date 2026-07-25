@@ -395,6 +395,7 @@ MCU 协议详述：`lynxi-mcu/.../Doc/I2C_PROTOCOL.md`。
 | 缓冲 | 整镜像仅在 `IRAM1_HOST_SCRATCH`（256KB）；MCU 静态 524B 包快照 |
 | 镜像 | 须 **`*_Head640.bin`**（jumper：头@`0xA6000`，body@`0xA7000`）；裸 `*_v5.0.bin` 给 `ka200_tools` |
 | 落盘判据 | 串口 `[flash] program ok` + `I2C OTA OK FlashWrite`；页 PP+WIP+回读 |
+| Cache | COMMIT 前 flush WB scratch（I2C memcpy 脏行）；勿只依赖 flash 内 `invalidate_all` |
 | 生效 | **冷复位** 走 jumper；软 reboot 可能仍跑旧 IRAM 镜像 |
 | Host gap | 默认包间 800ms；`MCU_OTA_PKT_GAP_MS`（下限 800）；见 `mcu_tools/README.md` |
 

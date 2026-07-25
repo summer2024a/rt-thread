@@ -122,6 +122,21 @@ static void flash_dcache_inv(const void *p, int len)
     rt_hw_cpu_dcache_ops(RT_HW_CACHE_INVALIDATE, (void *)start, (int)(end - start));
 }
 
+/* Clean WB dirty lines to DRAM (I2C OTA CPU memcpy); no-op for NC. */
+static void flash_src_dcache_clean(const void *src, int len)
+{
+    uintptr_t line = (uintptr_t)ARCH_DMA_MINALIGN;
+    uintptr_t start;
+    uintptr_t end;
+
+    if (!src || len <= 0 || hp232x_addr_is_normal_nc(src, (size_t)len))
+        return;
+
+    start = (uintptr_t)src & ~(line - 1U);
+    end = ((uintptr_t)src + (uintptr_t)len + line - 1U) & ~(line - 1U);
+    rt_hw_cpu_dcache_ops(RT_HW_CACHE_FLUSH, (void *)start, (int)(end - start));
+}
+
 #if defined(RT_USING_SMP) && defined(BSP_FLASH_CPU0_WORKER) && \
     !defined(BSP_FLASH_DIRECT_ON_CALLER)
 /*
@@ -197,9 +212,12 @@ static int flash_svc_call(int op, const void *src, void *dst, int len, uint32_t 
     if (!s_flash_svc.worker_ready)
         return BIZ_ERR_NORMAL;
 
-    /* Caller CPU (usually CPU1 after Load): drop stale lines before bounce. */
+    /* Caller CPU: WB CPU stores must hit DRAM before bounce/inv (I2C OTA). */
     if (op == FLASH_JOB_WRITE && src && len > 0)
+    {
+        flash_src_dcache_clean(src, len);
         flash_dcache_inv(src, len);
+    }
 
     rt_mutex_take(s_flash_svc.lock, RT_WAITING_FOREVER);
     s_flash_svc.job.op = op;
@@ -1038,13 +1056,21 @@ static int flash_write_local(const void *src, int len, uint32_t addr)
     uint32_t erase_start;
     uint32_t erase_len;
     int ret;
+    rt_thread_t self = rt_thread_self();
+    rt_uint8_t old_prio = 0;
+    rt_uint8_t hi_prio = 2; /* above i2c_mcu(3); PP must not be preempted by I2C BH */
+    int prio_raised = 0;
 
     /*
-     * Host upgrade src: WB → inv-all + page bounce; NC (BSP_IRAM1_LOW_NC) → skip inv-all.
-     * Page bounce+verify always kept as a programming-hole guard.
+     * WB src: CPU stores (I2C OTA memcpy) leave dirty lines. Host eMMC Load is
+     * DMA→DRAM so inv-only was enough; OTA needs clean-before-inv or inv drops
+     * the image. Always clean src range before invalidate.
      */
     if (!hp232x_addr_is_normal_nc(src, (size_t)len))
+    {
+        flash_src_dcache_clean(src, len);
         __asm_invalidate_dcache_all();
+    }
 
     erase_start = (addr / DRV_FLASH_SUBSECTOR_SIZE) * DRV_FLASH_SUBSECTOR_SIZE;
     erase_len = ((uint32_t)len + DRV_FLASH_SUBSECTOR_SIZE - 1U) / DRV_FLASH_SUBSECTOR_SIZE;
@@ -1054,16 +1080,37 @@ static int flash_write_local(const void *src, int len, uint32_t addr)
              (unsigned)addr, len, (int)rt_hw_cpu_id(),
              hp232x_addr_is_normal_nc(src, (size_t)len) ? "NC" : "WB");
 
+    /*
+     * Phase B: MCU polls OTA STATUS over I2C while we program. i2c_mcu (prio 3)
+     * would preempt flash worker (prio 5) mid-PP → FIFO underrun / verify fail.
+     * Host eMMC path does not poll I2C during FlashWrite.
+     */
+    if (self)
+    {
+        old_prio = rt_sched_thread_get_curr_prio(self);
+        if (old_prio > hi_prio)
+        {
+            rt_thread_control(self, RT_THREAD_CTRL_CHANGE_PRIORITY, &hi_prio);
+            prio_raised = 1;
+        }
+    }
+
     ret = flash_run_erase(erase_start, (int)erase_len);
     if (ret == 0)
     {
         if (!hp232x_addr_is_normal_nc(src, (size_t)len))
+        {
+            flash_src_dcache_clean(src, len);
             __asm_invalidate_dcache_all();
+        }
         BIZ_INFO("[flash] erase ok, programming...\n");
         ret = flash_run_write(src, len, addr);
     }
     if (ret == 0)
         BIZ_INFO("[flash] program ok\n");
+
+    if (prio_raised && self)
+        rt_thread_control(self, RT_THREAD_CTRL_CHANGE_PRIORITY, &old_prio);
 
     if (ret != 0)
         return BIZ_ERR_FLASH_WRITE_CHECK;

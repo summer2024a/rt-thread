@@ -158,6 +158,8 @@ flash ssi_probe [0|1]               # 分核直连 SSI（诊断，见 §5）
 | 原因 | 处理（已合入） |
 |------|----------------|
 | CPU1 Load WB、CPU0 读 src：擦长窗口 + stale line | WB：`invalidate_dcache_all` 擦前/擦后；或开 **`BSP_IRAM1_LOW_NC`** |
+| **I2C OTA** CPU `memcpy` 填 WB scratch 后只 inv | 写闪前 **clean/flush src**（`drv_flash` + `biz_i2c_proxy`） |
+| **I2C OTA** MCU 轮询 STATUS 抢占 flash worker | 写闪时 flash 线程升到 prio **2**（高于 `i2c_mcu`=3）；MCU writing 态轮询 500ms |
 | 单页未写上仍被整包当数据错 | **按页 memcpy bounce + 页级回读失败重 PP** |
 | 整包仍对不齐 | `exec_task_flash_write` 整包 verify 失败整段重试（上限约 10×） |
 

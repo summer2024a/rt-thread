@@ -11,6 +11,7 @@
  */
 #include <rtthread.h>
 #include <string.h>
+#include <stdlib.h>
 #include <errno.h>
 
 #ifdef RT_USING_FINSH

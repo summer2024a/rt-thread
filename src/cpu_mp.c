@@ -250,7 +250,7 @@ void rt_cpus_lock_status_restore(struct rt_thread *thread)
 RTM_EXPORT(rt_cpus_lock_status_restore);
 
 /* A safe API with debugging feature to be called in most codes */
-
+#ifdef RT_USING_DEBUG
 #undef rt_cpu_get_id
 /**
  * @brief Get logical CPU ID
@@ -268,6 +268,7 @@ rt_base_t rt_cpu_get_id(void)
 
     return rt_hw_cpu_id();
 }
+#endif /* RT_USING_DEBUG */
 
 /**
  * @}

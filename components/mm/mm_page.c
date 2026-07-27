@@ -260,6 +260,7 @@ static struct installed_page_reg
 static RT_DEFINE_SPINLOCK(_inst_page_reg_lock);
 static struct installed_page_reg *_inst_page_reg_head;
 
+#ifndef BSP_HP232X_MM_MINIMAL
 static void _print_region_list(void)
 {
     struct installed_page_reg *iter;
@@ -275,6 +276,7 @@ static void _print_region_list(void)
     }
     rt_spin_unlock(&_inst_page_reg_lock);
 }
+#endif /* BSP_HP232X_MM_MINIMAL */
 
 static struct installed_page_reg *_find_page_region(rt_ubase_t page_va)
 {

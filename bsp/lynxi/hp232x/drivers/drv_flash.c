@@ -1087,7 +1087,8 @@ static int flash_write_local(const void *src, int len, uint32_t addr)
      */
     if (self)
     {
-        old_prio = rt_sched_thread_get_curr_prio(self);
+        /* BSP: read sched priv directly; rt_sched_thread_get_curr_prio is kernel-only. */
+        old_prio = RT_SCHED_PRIV(self).current_priority;
         if (old_prio > hi_prio)
         {
             rt_thread_control(self, RT_THREAD_CTRL_CHANGE_PRIORITY, &hi_prio);
